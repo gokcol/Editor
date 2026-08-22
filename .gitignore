@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+public/vs/
+*.dmg
+*.zip
+.DS_Store
