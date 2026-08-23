@@ -78,6 +78,11 @@ const defaultSettings = {
   editorTabSize: 2,
 };
 const supportedFontFamilies = new Set(['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono']);
+const defaultToolTimeoutMs = 120_000;
+const defaultToolOutputLimitBytes = 8 * 1024 * 1024;
+const metafontProofTimeoutMs = 45_000;
+const metafontConversionTimeoutMs = 120_000;
+const maxMetafontProofSvgBytes = 6 * 1024 * 1024;
 
 function toolPath() {
   return [
@@ -89,27 +94,108 @@ function toolPath() {
   ].filter(Boolean).join(':');
 }
 
-function run(command, args, cwd, extraEnv = {}) {
+async function recordMainProcessFailure(kind, reason) {
+  try {
+    const directory = app.isReady() ? app.getPath('userData') : os.tmpdir();
+    const message = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.appendFile(path.join(directory, 'main-process-errors.log'), `[${new Date().toISOString()}] ${kind}\n${message}\n\n`, 'utf8');
+  } catch {
+    // Logging an unexpected fault must never create a second one.
+  }
+}
+
+process.on('uncaughtException', (error) => {
+  console.error('Diagram Foundry main-process exception:', error);
+  void recordMainProcessFailure('uncaughtException', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Diagram Foundry main-process rejection:', reason);
+  void recordMainProcessFailure('unhandledRejection', reason);
+});
+
+function run(command, args, cwd, extraEnv = {}, options = {}) {
+  const requestedTimeout = Number(options.timeoutMs);
+  const requestedOutputLimit = Number(options.maxOutputBytes);
+  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : defaultToolTimeoutMs;
+  const maxOutputBytes = Number.isFinite(requestedOutputLimit) && requestedOutputLimit > 0 ? requestedOutputLimit : defaultToolOutputLimitBytes;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: { ...process.env, PATH: toolPath(), ...extraEnv },
-      windowsHide: true,
-    });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else {
-        const error = new Error(`${command} exited with ${code}`);
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
+    let outputBytes = 0;
+    let timeout;
+    let forceKillTimeout;
+    let terminatedFor;
+    let settled = false;
+    let child;
+
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (forceKillTimeout) clearTimeout(forceKillTimeout);
+      if (error) reject(error);
+      else resolve(result);
+    };
+
+    const commandError = (message, details = {}) => {
+      const error = new Error(message);
+      error.stdout = stdout;
+      error.stderr = stderr;
+      Object.assign(error, details);
+      return error;
+    };
+
+    const terminate = (reason) => {
+      if (settled || terminatedFor || !child) return;
+      terminatedFor = reason;
+      try { child.kill('SIGTERM'); } catch { /* already exited */ }
+      forceKillTimeout = setTimeout(() => {
+        if (settled) return;
+        try { child.kill('SIGKILL'); } catch { /* already exited */ }
+      }, 1_500);
+    };
+
+    const appendOutput = (field, chunk) => {
+      const text = chunk.toString();
+      const bytes = Buffer.byteLength(text, 'utf8');
+      const remaining = Math.max(0, maxOutputBytes - outputBytes);
+      if (remaining > 0) {
+        const safeText = bytes <= remaining ? text : Buffer.from(text).subarray(0, remaining).toString('utf8');
+        if (field === 'stdout') stdout += safeText;
+        else stderr += safeText;
+      }
+      outputBytes += bytes;
+      if (outputBytes > maxOutputBytes) terminate('output limit');
+    };
+
+    try {
+      child = spawn(command, args, {
+        cwd,
+        env: { ...process.env, PATH: toolPath(), ...extraEnv },
+        windowsHide: true,
+      });
+    } catch (error) {
+      finish(error);
+      return;
+    }
+
+    child.stdout.on('data', (chunk) => appendOutput('stdout', chunk));
+    child.stderr.on('data', (chunk) => appendOutput('stderr', chunk));
+    child.on('error', (error) => finish(error));
+    child.on('close', (code, signal) => {
+      if (terminatedFor === 'timeout') {
+        finish(commandError(`${command} timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`, { code, signal, timedOut: true }));
+      } else if (terminatedFor === 'output limit') {
+        finish(commandError(`${command} produced more than ${Math.floor(maxOutputBytes / (1024 * 1024))} MB of output and was stopped.`, { code, signal, outputLimited: true }));
+      } else if (code === 0) {
+        finish(undefined, { stdout, stderr });
+      } else {
+        finish(commandError(`${command} exited with ${code ?? signal ?? 'an unknown status'}.`, { code, signal }));
       }
     });
+    timeout = setTimeout(() => terminate('timeout'), timeoutMs);
   });
 }
 
@@ -918,6 +1004,23 @@ async function makeRenderDirectory(prefix = 'render') {
   return directory;
 }
 
+async function removeRenderDirectory(directory) {
+  try { await fs.rm(directory, { recursive: true, force: true }); } catch { /* temporary cleanup never blocks a render */ }
+}
+
+async function readTextTail(filePath, maximumBytes = 128 * 1024) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stats = await handle.stat();
+    const length = Math.min(stats.size, maximumBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, Math.max(0, stats.size - length));
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 function compilerLabel(command) {
   return latexPdfEngines[command]?.label || command;
 }
@@ -1124,7 +1227,7 @@ function missingMetafontToolMessage(error, command) {
 
 async function metafontErrorMessage(directory, baseName, error, command) {
   let log = '';
-  try { log = await fs.readFile(path.join(directory, `${baseName}.log`), 'utf8'); } catch { /* compiler may have failed before making a log */ }
+  try { log = await readTextTail(path.join(directory, `${baseName}.log`)); } catch { /* compiler may have failed before making a log */ }
   return [missingMetafontToolMessage(error, command), error?.stderr, error?.stdout, log, error?.message]
     .filter(Boolean)
     .join('\n')
@@ -1145,24 +1248,30 @@ async function renderMetafont(source, suggestedName = 'font.mf') {
   let activeTool = 'mf-nowin';
 
   try {
-    await run('mf-nowin', [`\\mode:=localfont; nonstopmode; input ${baseName}`], directory, env);
+    await run('mf-nowin', [`\\mode:=localfont; nonstopmode; input ${baseName}`], directory, env, { timeoutMs: metafontProofTimeoutMs });
     const gfPath = await metafontGfPath(directory, baseName);
 
     // GFtoDVI uses gray.tfm for the bitmap proof pages. Generate it locally so
     // a packaged app does not depend on a globally installed generated metric.
-    await run('mf-nowin', ['\\mode:=localfont; nonstopmode; input gray'], directory, env);
+    await run('mf-nowin', ['\\mode:=localfont; nonstopmode; input gray'], directory, env, { timeoutMs: metafontProofTimeoutMs });
     activeTool = 'gftodvi';
-    await run('gftodvi', [path.basename(gfPath)], directory, env);
+    await run('gftodvi', [path.basename(gfPath)], directory, env, { timeoutMs: metafontProofTimeoutMs });
 
     const dviPath = path.join(directory, `${baseName}.dvi`);
     const svgPath = path.join(directory, `${baseName}.svg`);
     await fs.access(dviPath);
     activeTool = 'dvisvgm';
-    await run('dvisvgm', ['--page=1', '--no-fonts', `--output=${svgPath}`, dviPath], directory, env);
+    await run('dvisvgm', ['--page=1', '--no-fonts', `--output=${svgPath}`, dviPath], directory, env, { timeoutMs: metafontProofTimeoutMs });
+    const svgStats = await fs.stat(svgPath);
+    if (svgStats.size > maxMetafontProofSvgBytes) {
+      throw new Error(`The generated MetaFont proof is ${(svgStats.size / (1024 * 1024)).toFixed(1)} MB. Reduce its complexity before previewing it.`);
+    }
     const svg = await fs.readFile(svgPath, 'utf8');
-    return { ok: true, svg, gfPath, dviPath, svgPath, directory };
+    return { ok: true, svg };
   } catch (error) {
     return { ok: false, error: await metafontErrorMessage(directory, baseName, error, activeTool) };
+  } finally {
+    await removeRenderDirectory(directory);
   }
 }
 
@@ -1190,14 +1299,14 @@ async function convertMetafontToTtf(source, suggestedName = 'font.mf') {
       `--fullname=${familyName} Regular`,
       '--encoding=standard',
       mfPath,
-    ], directory, metafontEnvironment(directory));
+    ], directory, metafontEnvironment(directory), { timeoutMs: metafontConversionTimeoutMs });
     await fs.access(pfbPath);
   } catch (error) {
     return { ok: false, error: await metafontErrorMessage(directory, baseName, error, 'mf2pt1') };
   }
 
   try {
-    await run('fontforge', ['-lang=ff', '-c', 'Open($1); Generate($2);', pfbPath, ttfPath], directory);
+    await run('fontforge', ['-lang=ff', '-c', 'Open($1); Generate($2);', pfbPath, ttfPath], directory, {}, { timeoutMs: metafontConversionTimeoutMs });
     await fs.access(ttfPath);
     return { ok: true, ttfPath, pfbPath, directory };
   } catch (error) {
@@ -1307,12 +1416,8 @@ async function exportPayload(payload) {
       } else {
         const proof = await renderMetafont(source, `${suggestedName}.mf`);
         if (!proof.ok) return { ok: false, error: proof.error };
-        if (format === 'svg') {
-          generated = proof.svgPath;
-        } else {
-          const result = await convertSvg(proof.svg, format, scale);
-          generated = result.output;
-        }
+        const result = await convertSvg(proof.svg, format, scale);
+        generated = result.output;
       }
     } else if (sourceType === 'markdown' || sourceType === 'text') {
       const result = await convertHtml(html || source, format, scale);

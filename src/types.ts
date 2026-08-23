@@ -164,8 +164,8 @@ declare global {
           | { ok: false; error: string }
         >;
         metafont: (source: string, name: string) => Promise<
-          | { ok: true; svg: string; directory: string; log?: string; artifacts?: { gfPath?: string; pkPath?: string; dviPath?: string } }
-          | { ok: false; error: string; log?: string }
+          | { ok: true; svg: string }
+          | { ok: false; error: string }
         >;
         export: (payload: {
           sourceType: SourceType;

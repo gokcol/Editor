@@ -12,8 +12,11 @@ import { compactPath, documentOutline, findInSource, sourceFromAssistantReply } 
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
 import type { AppSettings, DocumentModel, ExportFormat, FileNode, PreviewState, Project, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
-// Ship Monaco's worker/editor assets with the desktop app instead of loading a CDN.
-loader.config({ paths: { vs: './vs' } });
+// Resolve Monaco against the real renderer document. A relative `./vs` turns
+// into `file:///vs` inside a packaged Electron worker, which makes Monaco fall
+// back to the UI thread and can freeze a busy editor.
+const monacoVsUrl = new URL('./vs/', window.location.href).toString().replace(/\/$/, '');
+loader.config({ paths: { vs: monacoVsUrl } });
 
 const SOURCE_META: Record<SourceType, { label: string; short: string; color: string; language: string; extension: string }> = {
   tikz: { label: 'TikZ', short: 'TZ', color: 'amber', language: 'foundry-tikz', extension: 'tikz' },
@@ -375,11 +378,25 @@ function App() {
   const appBodyRef = useRef<HTMLElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   const renderTokenRef = useRef(0);
+  const metafontRenderInFlightRef = useRef(false);
   const toastTimerRef = useRef<number | undefined>(undefined);
   const panelLayoutRef = useRef(panelLayout);
   const documentsRef = useRef(documents);
   const localWritePathsRef = useRef(new Map<string, number>());
   const pendingRevealLineRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    // Monaco rejects an internal cancellation promise while disposing a model
+    // during tab/source switches. It is expected, but Electron otherwise
+    // surfaces it as an uncaught renderer error in the packaged app.
+    const ignoreMonacoCancellation = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const message = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+      if (reason?.name === 'Canceled' || message === 'Canceled: Canceled') event.preventDefault();
+    };
+    window.addEventListener('unhandledrejection', ignoreMonacoCancellation);
+    return () => window.removeEventListener('unhandledrejection', ignoreMonacoCancellation);
+  }, []);
   const activeDocument = documents.find((document) => document.id === activeId) ?? documents[0];
   const effectiveAppearance: PreviewAppearance = settings.appearance === 'system' ? systemAppearance : settings.appearance;
   const interfaceScale = settings.uiScale / 100;
@@ -545,6 +562,10 @@ function App() {
     latexMode: LatexRenderMode = 'pdf',
     engine: TexPdfEngine = texPdfEngine,
   ) => {
+    const isMetafont = document.sourceType === 'metafont';
+    // MetaFont invokes several native tools. A second click while a proof is
+    // running must not launch another pipeline or invalidate the current one.
+    if (isMetafont && metafontRenderInFlightRef.current) return;
     const token = ++renderTokenRef.current;
     setPreview({ status: 'rendering', revision: document.revision, message: 'Building preview…' });
     try {
@@ -585,14 +606,19 @@ function App() {
         return;
       }
 
-      if (document.sourceType === 'metafont') {
-        const result = await window.diagramApi.render.metafont(document.value, document.name);
-        if (token !== renderTokenRef.current) return;
-        if (!result.ok) {
-          setPreview({ status: 'error', revision: document.revision, message: result.error });
-          return;
+      if (isMetafont) {
+        metafontRenderInFlightRef.current = true;
+        try {
+          const result = await window.diagramApi.render.metafont(document.value, document.name);
+          if (token !== renderTokenRef.current) return;
+          if (!result.ok) {
+            setPreview({ status: 'error', revision: document.revision, message: result.error });
+            return;
+          }
+          setPreview({ status: 'ready', revision: document.revision, kind: 'svg', content: result.svg, message: 'MetaFont GF glyph proof · first generated glyph.' });
+        } finally {
+          metafontRenderInFlightRef.current = false;
         }
-        setPreview({ status: 'ready', revision: document.revision, kind: 'svg', content: result.svg, message: 'MetaFont GF glyph proof · first generated glyph.' });
         return;
       }
 
@@ -627,7 +653,10 @@ function App() {
 
   useEffect(() => {
     if (!activeDocument || !settings.previewAutoRender) return undefined;
-    const delay = activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'latex' || activeDocument.sourceType === 'metafont' ? 850 : 380;
+    // MetaFont proofing launches mf-nowin → gftodvi → dvisvgm. It stays manual
+    // so normal typing cannot accumulate native compiler jobs in the background.
+    if (activeDocument.sourceType === 'metafont') return undefined;
+    const delay = activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'latex' ? 850 : 380;
     const mode: LatexRenderMode = activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf';
     const timer = window.setTimeout(() => renderDocument(activeDocument, mode), delay);
     return () => window.clearTimeout(timer);
@@ -1961,7 +1990,7 @@ function App() {
                 </select>
               </label>}
               {activeDocument.sourceType === 'latex' && latexPreviewMode === 'dvi' && <span className="tex-classic-engine" title="DVI always uses classic latex; XeLaTeX and LuaLaTeX produce PDF only.">classic latex</span>}
-              <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title="Render preview (⌘↵)">▶ Render</button>
+              <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'}>▶ {activeDocument.sourceType === 'metafont' ? 'Render proof' : 'Render'}</button>
             </div>
           </div>
 
@@ -2081,7 +2110,7 @@ function App() {
       <footer className="statusbar">
         <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
         <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
-        <span>{settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
+        <span>{activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
         <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
         <span className="status-spacer"></span>
         <button onClick={() => setProjectSearchOpen(true)}>Find</button>
