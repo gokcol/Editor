@@ -3482,6 +3482,28 @@ function App() {
           }}
         >
           <section className={`output-viewer-modal${outputViewerFullscreen ? ' is-fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="Live output viewer" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <button
+              className="output-viewer-close-button"
+              type="button"
+              aria-label="Close output viewer"
+              title="Close output viewer"
+              onPointerDown={(event) => {
+                // Close on press rather than waiting for click. Embedded PDF
+                // and SVG surfaces can occasionally consume the matching
+                // mouse-up event on macOS, which otherwise leaves a visible
+                // close control that appears unresponsive.
+                event.preventDefault();
+                event.stopPropagation();
+                closeOutputViewer();
+              }}
+              onClick={(event) => {
+                // Keyboard activation produces click without pointerdown.
+                event.stopPropagation();
+                closeOutputViewer();
+              }}
+            >
+              ×
+            </button>
             <PreviewViewport
               key={`output-viewer-${activeDocument.id}`}
               className="output-viewer-viewport"
@@ -3511,8 +3533,6 @@ function App() {
                 if (line) { closeOutputViewer(); revealEditorLine(line); }
                 else showToast('The renderer did not report a source line for this issue.', 'info');
               }}
-              onClose={closeOutputViewer}
-              closeLabel="Close output viewer"
             />
           </section>
         </div>,
