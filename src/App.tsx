@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Editor, { loader, type Monaco, type OnMount } from '@monaco-editor/react';
 import type * as MonacoEditor from 'monaco-editor';
 import mermaid from 'mermaid';
@@ -565,6 +566,8 @@ function App() {
   const [isTaskRunning, setIsTaskRunning] = useState(false);
   const [pythonTask, setPythonTask] = useState<PythonTaskState>(EMPTY_PYTHON_TASK);
   const [pythonInspectorView, setPythonInspectorView] = useState<'output' | 'source'>('output');
+  const [outputViewerOpen, setOutputViewerOpen] = useState(false);
+  const [outputViewerFullscreen, setOutputViewerFullscreen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<Array<Pick<Project, 'root' | 'name'>>>([]);
   const [recentProjectsOpen, setRecentProjectsOpen] = useState(false);
   const [paletteHistory, setPaletteHistory] = useState<string[]>(() => {
@@ -624,6 +627,16 @@ function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToast({ text, tone });
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3800);
+  }, []);
+
+  const openOutputViewer = useCallback(() => {
+    setOutputViewerFullscreen(false);
+    setOutputViewerOpen(true);
+  }, []);
+
+  const closeOutputViewer = useCallback(() => {
+    setOutputViewerFullscreen(false);
+    setOutputViewerOpen(false);
   }, []);
 
   const enabledSourceTypes = useMemo(
@@ -2257,6 +2270,7 @@ function App() {
     { id: 'auto-render', label: settings.previewAutoRender ? 'Disable automatic preview' : 'Enable automatic preview', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, previewAutoRender: !current.previewAutoRender })) },
     { id: 'explorer', label: 'Toggle Explorer', hint: '', group: 'View', run: () => togglePanel('explorerOpen') },
     { id: 'preview', label: activeDocument?.sourceType === 'python' ? 'Toggle Python output' : 'Toggle live preview', hint: '', group: 'View', run: () => togglePanel('previewOpen') },
+    { id: 'output-viewer', label: 'Open live output viewer', hint: '', group: 'View', run: openOutputViewer },
     { id: 'references', label: 'Toggle reference deck', hint: '⌘⇧R', group: 'View', run: () => togglePanel('referenceOpen') },
     { id: 'reset-layout', label: 'Reset panel layout', hint: '', group: 'View', run: resetPanelLayout },
     { id: 'prompt-studio', label: 'Open Prompt Studio', hint: '⌘⇧L', group: 'View', run: () => setPromptOpen(true) },
@@ -2271,7 +2285,7 @@ function App() {
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openProject, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -2362,6 +2376,17 @@ function App() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [aboutOpen]);
+
+  useEffect(() => {
+    if (!outputViewerOpen || outputViewerFullscreen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeOutputViewer();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [closeOutputViewer, outputViewerFullscreen, outputViewerOpen]);
 
   const configureMonaco = useCallback((monaco: Monaco) => {
     registerFoundryLanguages(monaco);
@@ -2908,6 +2933,7 @@ function App() {
                 onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
                 onExport={() => setExportOpen(true)}
                 onPrompt={() => setPromptOpen(true)}
+                onOpenViewer={openOutputViewer}
                 onJumpToError={(message) => {
                   const line = lineFromRenderMessage(message);
                   if (line) revealEditorLine(line);
@@ -3262,6 +3288,46 @@ function App() {
             </div>
           </section>
         </div>
+      )}
+
+      {outputViewerOpen && createPortal(
+        <div className="output-viewer-backdrop" data-theme={effectiveAppearance} onMouseDown={closeOutputViewer}>
+          <section className={`output-viewer-modal${outputViewerFullscreen ? ' is-fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="Live output viewer" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <PreviewViewport
+              key={`output-viewer-${activeDocument.id}`}
+              className="output-viewer-viewport"
+              preview={preview}
+              sourceType={activeDocument.sourceType}
+              previewDocument={preview.kind === 'svg' && preview.content ? previewDocument(preview.content, effectiveAppearance) : undefined}
+              htmlDocument={preview.kind === 'html' && preview.content
+                ? activeDocument.sourceType === 'markdown'
+                  ? markdownPreviewDocument(preview.content, effectiveAppearance)
+                  : preview.content
+                : undefined}
+              title="Live output"
+              eyebrow={`${SOURCE_META[activeDocument.sourceType].label} · separate viewer`}
+              background={previewBackground}
+              onBackgroundChange={setPreviewBackground}
+              presentationMode={outputViewerFullscreen}
+              onPresentationModeChange={setOutputViewerFullscreen}
+              presentationStyle="inline"
+              presentationLabel="Full screen"
+              onRender={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')}
+              onCopyOutput={preview.kind === 'pdf' ? undefined : copyPreviewOutput}
+              onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
+              onExport={() => { closeOutputViewer(); setExportOpen(true); }}
+              onPrompt={() => { closeOutputViewer(); setPromptOpen(true); }}
+              onJumpToError={(message) => {
+                const line = lineFromRenderMessage(message);
+                if (line) { closeOutputViewer(); revealEditorLine(line); }
+                else showToast('The renderer did not report a source line for this issue.', 'info');
+              }}
+              onClose={closeOutputViewer}
+              closeLabel="Close output viewer"
+            />
+          </section>
+        </div>,
+        document.body,
       )}
     </main>
   );

@@ -28,7 +28,13 @@ export type PreviewViewportProps = {
   onExport?: () => void;
   onPrompt?: () => void;
   onJumpToError?: (message: string) => void;
+  /** Opens the output in a separate, larger viewer when the parent provides one. */
+  onOpenViewer?: () => void;
   onClose?: () => void;
+  closeLabel?: string;
+  /** Whether presentation uses a viewport overlay (default) or fills its parent container. */
+  presentationStyle?: 'overlay' | 'inline';
+  presentationLabel?: string;
 };
 
 const SOURCE_LABELS: Record<SourceType, { label: string; short: string }> = {
@@ -95,7 +101,11 @@ export default function PreviewViewport({
   onExport,
   onPrompt,
   onJumpToError,
+  onOpenViewer,
   onClose,
+  closeLabel = 'Hide live preview',
+  presentationStyle = 'overlay',
+  presentationLabel = 'Full screen',
 }: PreviewViewportProps) {
   const [uncontrolledBackground, setUncontrolledBackground] = useState<PreviewBackground>('grid');
   const [uncontrolledPresentation, setUncontrolledPresentation] = useState(false);
@@ -231,6 +241,7 @@ export default function PreviewViewport({
   const viewportClassName = [
     'preview-viewport',
     isPresentationMode && 'is-presentation-mode',
+    isPresentationMode && `is-presentation-${presentationStyle}`,
     className,
   ].filter(Boolean).join(' ');
 
@@ -267,13 +278,14 @@ export default function PreviewViewport({
       <header className="preview-viewport-heading">
         <div>
           <p className="preview-viewport-eyebrow">{eyebrow}</p>
-          <h2>{title}</h2>
+          <h2>{onOpenViewer ? <button className="preview-viewport-title-button" type="button" onClick={onOpenViewer} title={`Open ${title} in a separate viewer`}>{title}</button> : title}</h2>
         </div>
         <div className="preview-viewport-heading-actions">
           <span className={`preview-viewport-status ${preview.status}`} aria-live="polite">
             <span aria-hidden="true"></span>{STATUS_LABELS[preview.status]}
           </span>
-          {onClose && <button className="preview-viewport-icon-button" type="button" onClick={onClose} aria-label="Hide live preview" title="Hide live preview">×</button>}
+          {onOpenViewer && <button className="preview-viewport-icon-button" type="button" onClick={onOpenViewer} aria-label={`Open ${title} in a separate viewer`} title="Open separate output viewer">⤢</button>}
+          {onClose && <button className="preview-viewport-icon-button" type="button" onClick={onClose} aria-label={closeLabel} title={closeLabel}>×</button>}
         </div>
       </header>
 
@@ -307,6 +319,7 @@ export default function PreviewViewport({
         data-background={background}
         onWheel={handleWheel}
         onKeyDown={handleStageKeyDown}
+        onDoubleClick={onOpenViewer}
         tabIndex={0}
         aria-label={`${source.label} output canvas. Use plus and minus to zoom, or 0 to fit.`}
       >
@@ -365,15 +378,15 @@ export default function PreviewViewport({
           {onExport && <button type="button" onClick={onExport}>⇩ Export</button>}
           {onPrompt && <button type="button" onClick={onPrompt}>✦ Prompt</button>}
         </div>
-        <button
+        {onOpenViewer ? <button className="preview-viewport-present-button" type="button" onClick={onOpenViewer} title="Open the output in a separate viewer">Open viewer ↗</button> : <button
           className="preview-viewport-present-button"
           type="button"
           onClick={() => setPresentation(!isPresentationMode)}
           aria-pressed={isPresentationMode}
-          title={isPresentationMode ? 'Exit presentation mode (Esc)' : 'Enter presentation mode'}
+          title={isPresentationMode ? `Exit ${presentationLabel} (Esc)` : `Enter ${presentationLabel}`}
         >
-          {isPresentationMode ? 'Exit presentation' : 'Present'}
-        </button>
+          {isPresentationMode ? `Exit ${presentationLabel}` : presentationLabel}
+        </button>}
       </footer>
     </section>
   );
