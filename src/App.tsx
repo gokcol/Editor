@@ -445,6 +445,7 @@ function App() {
   const metafontRenderInFlightRef = useRef(false);
   const toastTimerRef = useRef<number | undefined>(undefined);
   const panelLayoutRef = useRef(panelLayout);
+  const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   const documentsRef = useRef(documents);
   const localWritePathsRef = useRef(new Map<string, number>());
   const pendingRevealLineRef = useRef<number | null>(null);
@@ -461,6 +462,7 @@ function App() {
     window.addEventListener('unhandledrejection', ignoreMonacoCancellation);
     return () => window.removeEventListener('unhandledrejection', ignoreMonacoCancellation);
   }, []);
+  useEffect(() => () => panelResizeCleanupRef.current?.(), []);
   const activeDocument = documents.find((document) => document.id === activeId) ?? documents[0];
   const effectiveAppearance: PreviewAppearance = settings.appearance === 'system' ? systemAppearance : settings.appearance;
   const interfaceScale = settings.uiScale / 100;
@@ -501,14 +503,28 @@ function App() {
   }, [commitPanelLayout, showToast]);
 
   const startPanelResize = useCallback((target: PanelResizeTarget, event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
+    event.stopPropagation();
+    panelResizeCleanupRef.current?.();
     const appRect = appBodyRef.current?.getBoundingClientRect();
     const inspectorRect = inspectorRef.current?.getBoundingClientRect();
     if (!appRect || (target === 'preview' && !inspectorRect)) return;
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
     const initial = { ...panelLayoutRef.current };
-    document.body.classList.add('panel-resizing');
+    let finished = false;
+    document.body.classList.add('panel-resizing', `panel-resizing-${target}`);
 
     const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      // A missed pointer-up can otherwise leave a global pointer listener
+      // alive. This is the safety net for releases outside the app window.
+      if (moveEvent.pointerType !== 'touch' && (moveEvent.buttons & 1) === 0) {
+        finish();
+        return;
+      }
+
       const next = { ...initial };
       const logicalWidth = appRect.width / interfaceScale;
       const currentColumns = workbenchColumns(
@@ -546,15 +562,48 @@ function App() {
       setPanelLayout(next);
     };
 
-    const stop = () => {
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', stop);
-      document.body.classList.remove('panel-resizing');
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('blur', finish);
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      handle.removeEventListener('lostpointercapture', finish);
+      try {
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      } catch {
+        // The OS can invalidate a captured pointer as a window is torn down.
+      }
+      document.body.classList.remove('panel-resizing', `panel-resizing-${target}`);
+      if (panelResizeCleanupRef.current === finish) panelResizeCleanupRef.current = null;
       commitPanelLayout(panelLayoutRef.current);
     };
 
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId === pointerId) finish();
+    };
+    const onPointerCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId === pointerId) finish();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') finish();
+    };
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === 'Escape') finish();
+    };
+
+    try { handle.setPointerCapture(pointerId); } catch { /* Global listeners remain as a fallback. */ }
+    panelResizeCleanupRef.current = finish;
     window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('blur', finish);
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    handle.addEventListener('lostpointercapture', finish);
   }, [commitPanelLayout, interfaceScale]);
 
   useEffect(() => {
@@ -1996,8 +2045,8 @@ function App() {
             </div>
           </div>
           <div className="project-actions">
-            <button className="accent-button" onClick={newProject}>New project</button>
-            <button className="outline-button" onClick={openProject}>Open folder</button>
+            <button className="accent-button" onClick={newProject} title="Create a new project folder">New project</button>
+            <button className="outline-button" onClick={openProject} title="Open an existing project folder">Open folder</button>
           </div>
           <div className="explorer-utilities">
             <button onClick={() => setProjectSearchOpen(true)} title="Find in project">⌕ Find</button>
@@ -2073,8 +2122,8 @@ function App() {
                   <span className="tab-close" onClick={(event) => closeDocument(document, event)} title="Close tab">×</span>
                 </button>
               ))}
-              <button className="new-tab" onClick={() => openNewSource()} title="New source tab — choose a format">＋</button>
             </div>
+            <button className="new-tab" onClick={() => openNewSource()} title="New source tab — choose a format" aria-label="New source tab">＋</button>
             <div className="tab-tools">
               <button className="compact-button" onClick={formatActive} title="Format source (⌥⇧F)">Format</button>
               {activeDocument.sourceType === 'latex' && <div className="latex-preview-mode" role="group" aria-label="LaTeX preview format">
@@ -2164,30 +2213,34 @@ function App() {
         </section>
 
         {inspectorOpen && <aside className="inspector-panel" ref={inspectorRef} style={inspectorStyle}>
-          {panelLayout.previewOpen && <PreviewViewport
-            preview={preview}
-            sourceType={activeDocument.sourceType}
-            previewDocument={preview.kind === 'svg' && preview.content ? previewDocument(preview.content, effectiveAppearance) : undefined}
-            htmlDocument={preview.kind === 'html' && preview.content
-              ? activeDocument.sourceType === 'markdown'
-                ? markdownPreviewDocument(preview.content, effectiveAppearance)
-                : preview.content
-              : undefined}
-            background={previewBackground}
-            onBackgroundChange={setPreviewBackground}
-            onRender={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')}
-            onCopyOutput={preview.kind === 'pdf' ? undefined : copyPreviewOutput}
-            onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
-            onExport={() => setExportOpen(true)}
-            onPrompt={() => setPromptOpen(true)}
-            onJumpToError={(message) => {
-              const line = lineFromRenderMessage(message);
-              if (line) revealEditorLine(line);
-              else showToast('The renderer did not report a source line for this issue.', 'info');
-            }}
-            onClose={() => togglePanel('previewOpen')}
-          />}
-          {panelLayout.previewOpen && panelLayout.referenceOpen && <div className="panel-resizer preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize preview and references" onPointerDown={(event) => startPanelResize('preview', event)} />}
+          {panelLayout.previewOpen && (
+            <div className="preview-pane">
+              <PreviewViewport
+                preview={preview}
+                sourceType={activeDocument.sourceType}
+                previewDocument={preview.kind === 'svg' && preview.content ? previewDocument(preview.content, effectiveAppearance) : undefined}
+                htmlDocument={preview.kind === 'html' && preview.content
+                  ? activeDocument.sourceType === 'markdown'
+                    ? markdownPreviewDocument(preview.content, effectiveAppearance)
+                    : preview.content
+                  : undefined}
+                background={previewBackground}
+                onBackgroundChange={setPreviewBackground}
+                onRender={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')}
+                onCopyOutput={preview.kind === 'pdf' ? undefined : copyPreviewOutput}
+                onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
+                onExport={() => setExportOpen(true)}
+                onPrompt={() => setPromptOpen(true)}
+                onJumpToError={(message) => {
+                  const line = lineFromRenderMessage(message);
+                  if (line) revealEditorLine(line);
+                  else showToast('The renderer did not report a source line for this issue.', 'info');
+                }}
+                onClose={() => togglePanel('previewOpen')}
+              />
+              {panelLayout.referenceOpen && <div className="panel-resizer preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize preview and references" onPointerDown={(event) => startPanelResize('preview', event)} />}
+            </div>
+          )}
 
           {panelLayout.referenceOpen && (
             <section className="reference-section" style={{ '--reference-font-size': `${settings.referenceFontSize}px` } as React.CSSProperties}>
