@@ -1,6 +1,6 @@
 {
   "name": "diagram-foundry",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A local, source-first TikZ, LaTeX, MetaFont, SVG, Mermaid, and Markdown editor for macOS.",
   "private": true,
   "main": "electron/main.cjs",

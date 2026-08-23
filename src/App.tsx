@@ -2466,7 +2466,7 @@ function App() {
             <div className="modal-title"><div><p className="eyebrow">Source-first starters</p><h2>Template gallery</h2></div><button className="icon-button" onClick={() => setTemplateGalleryOpen(false)}>×</button></div>
             <p className="modal-copy">Open a complete local starter in a fresh tab, then adapt it as ordinary source.</p>
             <div className="template-grid">
-              {(Object.keys(SOURCE_META) as SourceType[]).map((type) => <button key={type} className={`template-card ${SOURCE_META[type].color}`} onClick={() => { createUnsavedStarterDocument(type); setTemplateGalleryOpen(false); }}><span className="template-badge">{SOURCE_META[type].short}</span><strong>{SOURCE_META[type].label} starter</strong><small>{SOURCE_DESCRIPTIONS[type]}</small><code>{samples[type].name}</code><em>Open template →</em></button>)}
+              {(Object.keys(SOURCE_META) as SourceType[]).map((type) => <button key={type} type="button" className={`template-card ${SOURCE_META[type].color}`} aria-label={`Open ${SOURCE_META[type].label} starter template (${samples[type].name})`} onClick={() => { createUnsavedStarterDocument(type); setTemplateGalleryOpen(false); }}><span className="template-badge">{SOURCE_META[type].short}</span><span className="template-card-copy"><strong>{SOURCE_META[type].label} starter</strong><small>{SOURCE_DESCRIPTIONS[type]} <code>{samples[type].name}</code></small></span><span className="template-card-open" aria-hidden="true">→</span></button>)}
             </div>
           </section>
         </div>
