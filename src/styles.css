@@ -190,6 +190,9 @@ body.panel-resizing, body.panel-resizing * { user-select: none !important; }
 body.panel-resizing-explorer, body.panel-resizing-inspector { cursor: col-resize; }
 body.panel-resizing-preview { cursor: row-resize; }
 body.panel-resizing * { cursor: inherit !important; }
+.panel-resize-shield { position: fixed; z-index: 2147483647; inset: 0; pointer-events: auto; touch-action: none; background: transparent; -webkit-app-region: no-drag; }
+.panel-resize-shield-explorer, .panel-resize-shield-inspector { cursor: col-resize; }
+.panel-resize-shield-preview { cursor: row-resize; }
 
 .statusbar { display: flex; align-items: center; gap: 14px; padding: 0 11px; border-top: 1px solid var(--border); background: #0c111a; color: #68758c; font-size: 9px; }.statusbar span { white-space: nowrap; }.language-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; }.language-dot.amber { background: var(--amber); }.language-dot.violet { background: var(--violet); }.language-dot.cyan { background: var(--cyan); }.status-spacer { flex: 1; }.statusbar button { padding: 0; border: 0; background: transparent; color: #75839a; font-size: 9px; }.statusbar button:hover, .statusbar button.active { color: #b8faf4; }
 

@@ -513,6 +513,14 @@ function App() {
     const handle = event.currentTarget;
     const pointerId = event.pointerId;
     const initial = { ...panelLayoutRef.current };
+    // The Inspector can contain an embedded PDF/object or iframe. Once a drag
+    // crosses one of those surfaces, Electron can otherwise deliver the
+    // release to that nested surface instead of this renderer. A top-level
+    // shield keeps the remainder of the drag in the same document.
+    const dragShield = document.createElement('div');
+    dragShield.className = `panel-resize-shield panel-resize-shield-${target}`;
+    dragShield.setAttribute('aria-hidden', 'true');
+    document.body.append(dragShield);
     let finished = false;
     document.body.classList.add('panel-resizing', `panel-resizing-${target}`);
 
@@ -565,13 +573,15 @@ function App() {
     const finish = () => {
       if (finished) return;
       finished = true;
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('pointercancel', onPointerCancel, true);
+      window.removeEventListener('mouseup', onMouseUp, true);
       window.removeEventListener('blur', finish);
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       handle.removeEventListener('lostpointercapture', finish);
+      dragShield.remove();
       try {
         if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
       } catch {
@@ -588,6 +598,9 @@ function App() {
     const onPointerCancel = (cancelEvent: PointerEvent) => {
       if (cancelEvent.pointerId === pointerId) finish();
     };
+    const onMouseUp = (mouseEvent: MouseEvent) => {
+      if (mouseEvent.button === 0) finish();
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') finish();
     };
@@ -597,9 +610,13 @@ function App() {
 
     try { handle.setPointerCapture(pointerId); } catch { /* Global listeners remain as a fallback. */ }
     panelResizeCleanupRef.current = finish;
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerCancel);
+    // Capture phase means even a top-level child that stops propagation cannot
+    // strand the session. The drag shield additionally prevents PDF/iframe
+    // content from becoming that child in the first place.
+    window.addEventListener('pointermove', onPointerMove, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerCancel, true);
+    window.addEventListener('mouseup', onMouseUp, true);
     window.addEventListener('blur', finish);
     window.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
