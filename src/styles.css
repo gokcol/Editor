@@ -44,7 +44,7 @@ button:disabled { cursor: wait; opacity: .65; }
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(225px, 290px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(225px, 290px) minmax(0, 1fr);
   align-items: center;
   gap: 22px;
   padding: 0 18px 0 80px;
@@ -53,6 +53,9 @@ button:disabled { cursor: wait; opacity: .65; }
   backdrop-filter: blur(20px);
   -webkit-app-region: drag;
 }
+
+/* The empty state still carries its folder and new-source actions. */
+.empty-workspace-shell .topbar { grid-template-columns: minmax(225px, 290px) minmax(0, 1fr) auto; }
 
 .topbar button, .topbar input { -webkit-app-region: no-drag; }
 
@@ -70,13 +73,10 @@ button:disabled { cursor: wait; opacity: .65; }
 .status-orb { width: 7px; height: 7px; border-radius: 50%; background: #65ded4; box-shadow: 0 0 0 4px rgba(91, 222, 212, .11); }
 .top-actions { display: flex; gap: 8px; align-items: center; }
 
-.ghost-button, .prompt-button, .outline-button, .accent-button, .compact-button, .icon-button { border: 0; transition: transform .16s ease, background .16s ease, border-color .16s ease, color .16s ease; }
+.ghost-button, .outline-button, .accent-button, .compact-button, .icon-button { border: 0; transition: transform .16s ease, background .16s ease, border-color .16s ease, color .16s ease; }
 .ghost-button { padding: 7px 10px; border-radius: 8px; background: transparent; color: #aeb9cd; font-size: 11px; }
 .ghost-button:hover { background: #202a3b; color: #f1f4fd; }
 .ghost-button kbd { margin-right: 4px; }
-.prompt-button { padding: 8px 12px; border-radius: 9px; border: 1px solid rgba(161, 138, 255, .36); background: linear-gradient(135deg, rgba(135, 102, 244, .38), rgba(64, 196, 200, .26)); color: #f6f5ff; font-size: 12px; font-weight: 650; box-shadow: inset 0 1px rgba(255, 255, 255, .09), 0 7px 20px rgba(86, 67, 177, .17); }
-.prompt-button:hover { transform: translateY(-1px); background: linear-gradient(135deg, rgba(142, 108, 251, .56), rgba(60, 210, 202, .34)); }
-.prompt-button span { color: #d8d0ff; margin-right: 4px; }
 
 .app-body { width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-columns: 43px 245px minmax(0, 1fr) 390px; overflow: hidden; }
 
@@ -219,7 +219,8 @@ kbd { color: #98a6bd; font-family: inherit; font-size: .95em; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(-7px) scale(.985); } }
 
 @media (max-width: 1180px) {
-  .topbar { grid-template-columns: 220px minmax(0, 1fr) auto; padding-right: 11px; }
+  .topbar { grid-template-columns: 220px minmax(0, 1fr); padding-right: 11px; }
+  .empty-workspace-shell .topbar { grid-template-columns: 220px minmax(0, 1fr) auto; }
   .project-crumb small { display: none; }
   .ghost-button { font-size: 0; }.ghost-button kbd { margin: 0; font-size: 11px; }
 }
@@ -234,7 +235,7 @@ kbd { color: #98a6bd; font-family: inherit; font-size: .95em; }
    status content from reintroducing page-level horizontal scrolling. */
 .topbar, .statusbar { min-width: 0; overflow: hidden; }
 .reference-section { min-width: 0; overflow: hidden; }
-.app-shell.compressed-workbench .topbar { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding-right: 11px; }
+.app-shell.compressed-workbench .topbar { grid-template-columns: minmax(0, 1fr); gap: 10px; padding-right: 11px; }
 .app-shell.compressed-workbench .project-crumb { display: none; }
 .app-shell.compressed-workbench .statusbar { gap: 8px; }
 .app-shell.compressed-workbench .statusbar > span:nth-of-type(3), .app-shell.compressed-workbench .statusbar > span:nth-of-type(4) { display: none; }
@@ -302,9 +303,6 @@ kbd { color: #98a6bd; font-family: inherit; font-size: .95em; }
 /* Light mode needs its own ink and control palette—not translucent dark-mode colors. */
 .app-shell[data-theme="light"] .ghost-button { color: #466078; }
 .app-shell[data-theme="light"] .ghost-button:hover { color: #17334b; background: #e9f1f7; }
-.app-shell[data-theme="light"] .prompt-button { border-color: #7862cc; background: linear-gradient(135deg, #7158c5, #087f80); color: #ffffff; box-shadow: 0 7px 18px rgba(75, 75, 147, .18); }
-.app-shell[data-theme="light"] .prompt-button:hover { background: linear-gradient(135deg, #654bbd, #056d70); }
-.app-shell[data-theme="light"] .prompt-button span { color: #f1edff; }
 .app-shell[data-theme="light"] .icon-button { color: #58708a; }
 .app-shell[data-theme="light"] .icon-button:hover { color: #18364f; background: #e6eef5; }
 .app-shell[data-theme="light"] .accent-button { border-color: #087e7b; background: #087e7b; color: #ffffff; }

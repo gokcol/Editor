@@ -2677,11 +2677,6 @@ function App() {
           <span>{project ? project.name : 'Scratchpad'}</span>
           <small>{project ? project.root : 'Create or open a folder to start a project'}</small>
         </div>
-        <div className="top-actions">
-          <button className="ghost-button" onClick={() => setPaletteOpen(true)} title="Command Palette (⌘⇧P)"><kbd>⌘⇧P</kbd> Command Palette</button>
-          <button className="ghost-button settings-shortcut" onClick={() => setSettingsOpen(true)} title="Settings (⌘,)">⚙ Settings</button>
-          <button className="prompt-button" onClick={() => setPromptOpen(true)}><span>✦</span> Prompt Studio</button>
-        </div>
       </header>
 
       <section
