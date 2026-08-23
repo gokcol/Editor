@@ -313,10 +313,9 @@ function sanitizeSvg(svg: string) {
 }
 
 function previewDocument(svg: string, appearance: PreviewAppearance) {
-  const page = appearance === 'light' ? '#f8fbff' : '#111722';
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     :root { color-scheme: ${appearance}; }
-    html, body { min-height: 100%; margin: 0; background: ${page}; }
+    html, body { min-height: 100%; margin: 0; background: transparent; }
     body { display: grid; place-items: center; padding: 28px; box-sizing: border-box; }
     svg { width: min(100%, 980px); height: auto; max-height: 100%; overflow: visible; }
   </style></head><body>${sanitizeSvg(svg)}</body></html>`;
@@ -648,10 +647,25 @@ function App() {
     return entries;
   }, []);
 
+  const clearPanelResizeArtifacts = useCallback(() => {
+    panelResizeCleanupRef.current?.();
+    // A pointer release that occurs outside Electron can leave an orphaned
+    // shield behind. It is intentionally invisible, so remove it explicitly
+    // before opening any modal surface as a final safety net.
+    document.querySelectorAll('.panel-resize-shield').forEach((element) => element.remove());
+    document.body.classList.remove(
+      'panel-resizing',
+      'panel-resizing-explorer',
+      'panel-resizing-inspector',
+      'panel-resizing-preview',
+    );
+  }, []);
+
   const openOutputViewer = useCallback(() => {
+    clearPanelResizeArtifacts();
     setOutputViewerFullscreen(false);
     setOutputViewerOpen(true);
-  }, []);
+  }, [clearPanelResizeArtifacts]);
 
   const closeOutputViewer = useCallback(() => {
     setOutputViewerFullscreen(false);
@@ -719,7 +733,7 @@ function App() {
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
     event.stopPropagation();
-    panelResizeCleanupRef.current?.();
+    clearPanelResizeArtifacts();
     const appRect = appBodyRef.current?.getBoundingClientRect();
     const inspectorRect = inspectorRef.current?.getBoundingClientRect();
     if (!appRect || (target === 'preview' && !inspectorRect)) return;
@@ -791,6 +805,7 @@ function App() {
       window.removeEventListener('pointercancel', onPointerCancel, true);
       window.removeEventListener('mouseup', onMouseUp, true);
       window.removeEventListener('blur', finish);
+      window.removeEventListener('pagehide', finish);
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       handle.removeEventListener('lostpointercapture', finish);
@@ -831,10 +846,11 @@ function App() {
     window.addEventListener('pointercancel', onPointerCancel, true);
     window.addEventListener('mouseup', onMouseUp, true);
     window.addEventListener('blur', finish);
+    window.addEventListener('pagehide', finish);
     window.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
     handle.addEventListener('lostpointercapture', finish);
-  }, [commitPanelLayout, interfaceScale]);
+  }, [clearPanelResizeArtifacts, commitPanelLayout, interfaceScale]);
 
   useEffect(() => {
     let mounted = true;
@@ -3458,7 +3474,13 @@ function App() {
       )}
 
       {outputViewerOpen && createPortal(
-        <div className="output-viewer-backdrop" data-theme={effectiveAppearance} onMouseDown={closeOutputViewer}>
+        <div
+          className={`output-viewer-backdrop${outputViewerFullscreen ? ' is-fullscreen' : ''}`}
+          data-theme={effectiveAppearance}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeOutputViewer();
+          }}
+        >
           <section className={`output-viewer-modal${outputViewerFullscreen ? ' is-fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="Live output viewer" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <PreviewViewport
               key={`output-viewer-${activeDocument.id}`}
