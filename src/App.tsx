@@ -62,6 +62,12 @@ const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|m
 type PanelLayout = Pick<AppSettings, 'explorerOpen' | 'previewOpen' | 'referenceOpen' | 'explorerWidth' | 'inspectorWidth' | 'previewSplit'>;
 type PanelLayoutKey = keyof PanelLayout;
 type PanelResizeTarget = 'explorer' | 'inspector' | 'preview';
+const WORKBENCH_RAIL_WIDTH = 43;
+const WORKBENCH_MIN_EDITOR_WIDTH = 360;
+const WORKBENCH_MIN_EXPLORER_WIDTH = 180;
+const WORKBENCH_MAX_EXPLORER_WIDTH = 480;
+const WORKBENCH_MIN_INSPECTOR_WIDTH = 280;
+const WORKBENCH_MAX_INSPECTOR_WIDTH = 760;
 const DEFAULT_PANEL_LAYOUT: PanelLayout = {
   explorerOpen: DEFAULT_SETTINGS.explorerOpen,
   previewOpen: DEFAULT_SETTINGS.previewOpen,
@@ -84,6 +90,63 @@ function panelLayoutFromSettings(settings: AppSettings): PanelLayout {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/**
+ * The application shell is intentionally scaled as one unit for the Interface
+ * scale preference. That means a 1,024px window at 110% has roughly 931px of
+ * logical workspace. Keep persisted panel preferences intact, but temporarily
+ * fit their rendered widths into that logical workspace so the whole editor
+ * never needs a horizontal scrollbar.
+ */
+function workbenchColumns(
+  viewportWidth: number,
+  interfaceScale: number,
+  explorerVisible: boolean,
+  inspectorVisible: boolean,
+  explorerPreference: number,
+  inspectorPreference: number,
+) {
+  const logicalWidth = Math.max(0, Math.floor(viewportWidth / Math.max(interfaceScale, 0.01)));
+  const sideBudget = Math.max(0, logicalWidth - WORKBENCH_RAIL_WIDTH - WORKBENCH_MIN_EDITOR_WIDTH);
+  let explorerWidth = explorerVisible
+    ? clamp(explorerPreference, WORKBENCH_MIN_EXPLORER_WIDTH, WORKBENCH_MAX_EXPLORER_WIDTH)
+    : 0;
+  let inspectorWidth = inspectorVisible
+    ? clamp(inspectorPreference, WORKBENCH_MIN_INSPECTOR_WIDTH, WORKBENCH_MAX_INSPECTOR_WIDTH)
+    : 0;
+  const preferredSideWidth = explorerWidth + inspectorWidth;
+
+  if (preferredSideWidth > sideBudget) {
+    const minimumExplorer = explorerVisible ? WORKBENCH_MIN_EXPLORER_WIDTH : 0;
+    const minimumInspector = inspectorVisible ? WORKBENCH_MIN_INSPECTOR_WIDTH : 0;
+    const minimumSideWidth = minimumExplorer + minimumInspector;
+
+    if (sideBudget >= minimumSideWidth) {
+      // The preview/reference deck is the least disruptive panel to compact
+      // first: navigation remains stable while the code editor retains room.
+      let reduction = preferredSideWidth - sideBudget;
+      const inspectorReduction = Math.min(reduction, inspectorWidth - minimumInspector);
+      inspectorWidth -= inspectorReduction;
+      reduction -= inspectorReduction;
+      explorerWidth -= Math.min(reduction, explorerWidth - minimumExplorer);
+    } else if (minimumSideWidth > 0) {
+      // On an unusually small logical window, share the remaining space
+      // between visible side panels instead of letting either force overflow.
+      explorerWidth = explorerVisible
+        ? Math.min(explorerWidth, Math.round(sideBudget * (minimumExplorer / minimumSideWidth)))
+        : 0;
+      inspectorWidth = inspectorVisible
+        ? Math.min(inspectorWidth, Math.max(0, sideBudget - explorerWidth))
+        : 0;
+    }
+  }
+
+  return {
+    explorerWidth,
+    inspectorWidth,
+    compressed: preferredSideWidth > sideBudget,
+  };
 }
 
 /**
@@ -373,6 +436,7 @@ function App() {
   const [dragActive, setDragActive] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [previewBackground, setPreviewBackground] = useState<PreviewBackground>('grid');
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
 
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const appBodyRef = useRef<HTMLElement | null>(null);
@@ -402,6 +466,14 @@ function App() {
   const interfaceScale = settings.uiScale / 100;
   const explorerVisible = !zenMode && panelLayout.explorerOpen;
   const inspectorOpen = !zenMode && (panelLayout.previewOpen || panelLayout.referenceOpen);
+  const renderedWorkbenchColumns = useMemo(() => workbenchColumns(
+    viewportWidth,
+    interfaceScale,
+    explorerVisible,
+    inspectorOpen,
+    panelLayout.explorerWidth,
+    panelLayout.inspectorWidth,
+  ), [explorerVisible, inspectorOpen, interfaceScale, panelLayout.explorerWidth, panelLayout.inspectorWidth, viewportWidth]);
 
   const showToast = useCallback((text: string, tone: ToastTone = 'info') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -438,12 +510,35 @@ function App() {
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       const next = { ...initial };
+      const logicalWidth = appRect.width / interfaceScale;
+      const currentColumns = workbenchColumns(
+        appRect.width,
+        interfaceScale,
+        initial.explorerOpen,
+        initial.previewOpen || initial.referenceOpen,
+        initial.explorerWidth,
+        initial.inspectorWidth,
+      );
       if (target === 'explorer') {
-        const maxWidth = Math.max(180, Math.min(480, (appRect.width / interfaceScale) - 43 - (initial.previewOpen || initial.referenceOpen ? initial.inspectorWidth : 0) - 360));
-        next.explorerWidth = clamp(((moveEvent.clientX - appRect.left) / interfaceScale) - 43, 180, maxWidth);
+        const maxWidth = Math.max(WORKBENCH_MIN_EXPLORER_WIDTH, Math.min(
+          WORKBENCH_MAX_EXPLORER_WIDTH,
+          logicalWidth - WORKBENCH_RAIL_WIDTH - currentColumns.inspectorWidth - WORKBENCH_MIN_EDITOR_WIDTH,
+        ));
+        next.explorerWidth = clamp(
+          ((moveEvent.clientX - appRect.left) / interfaceScale) - WORKBENCH_RAIL_WIDTH,
+          WORKBENCH_MIN_EXPLORER_WIDTH,
+          maxWidth,
+        );
       } else if (target === 'inspector') {
-        const maxWidth = Math.max(280, Math.min(760, (appRect.width / interfaceScale) - 43 - (initial.explorerOpen ? initial.explorerWidth : 0) - 360));
-        next.inspectorWidth = clamp((appRect.right - moveEvent.clientX) / interfaceScale, 280, maxWidth);
+        const maxWidth = Math.max(WORKBENCH_MIN_INSPECTOR_WIDTH, Math.min(
+          WORKBENCH_MAX_INSPECTOR_WIDTH,
+          logicalWidth - WORKBENCH_RAIL_WIDTH - currentColumns.explorerWidth - WORKBENCH_MIN_EDITOR_WIDTH,
+        ));
+        next.inspectorWidth = clamp(
+          (appRect.right - moveEvent.clientX) / interfaceScale,
+          WORKBENCH_MIN_INSPECTOR_WIDTH,
+          maxWidth,
+        );
       } else if (inspectorRect) {
         next.previewSplit = clamp(((moveEvent.clientY - inspectorRect.top) / inspectorRect.height) * 100, 30, 75);
       }
@@ -470,6 +565,13 @@ function App() {
       .finally(() => { if (mounted) setSettingsReady(true); });
     return () => { mounted = false; };
   }, [showToast]);
+
+  useEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+    updateViewportWidth();
+    window.addEventListener('resize', updateViewportWidth);
+    return () => window.removeEventListener('resize', updateViewportWidth);
+  }, []);
 
   useEffect(() => {
     if (!settingsReady) return;
@@ -1673,16 +1775,16 @@ function App() {
       : activeDocument?.sourceType === 'metafont'
         ? ['ttf', 'svg', 'png', 'pdf']
       : ['png', 'svg', 'pdf'];
-  // A transformed, compensating shell lets the full workbench scale without
-  // clipping at the window edge. It is intentionally separate from the source
-  // font-size preference, which remains useful for dense code.
+  // A transformed, compensating shell makes interface scale independent from
+  // the source-font preference. The workbench grid above uses the same logical
+  // width so larger interface scales never push it past the window edge.
   const appShellStyle: React.CSSProperties = {
     '--ui-scale': String(interfaceScale),
     width: `${100 / interfaceScale}%`,
     height: `${100 / interfaceScale}%`,
   } as React.CSSProperties;
   const appBodyStyle: React.CSSProperties = {
-    gridTemplateColumns: `${zenMode ? '0px' : '43px'} ${explorerVisible ? `${panelLayout.explorerWidth}px` : '0px'} minmax(380px, 1fr) ${inspectorOpen ? `${panelLayout.inspectorWidth}px` : '0px'}`,
+    gridTemplateColumns: `${zenMode ? '0px' : `${WORKBENCH_RAIL_WIDTH}px`} ${renderedWorkbenchColumns.explorerWidth}px minmax(0px, 1fr) ${renderedWorkbenchColumns.inspectorWidth}px`,
   };
   const inspectorStyle: React.CSSProperties = {
     gridTemplateRows: panelLayout.previewOpen && panelLayout.referenceOpen
@@ -1842,7 +1944,7 @@ function App() {
   }
 
   return (
-    <main className={`app-shell${zenMode ? ' zen-mode' : ''}${dragActive ? ' drag-active' : ''}`} data-theme={effectiveAppearance} style={appShellStyle}>
+    <main className={`app-shell${renderedWorkbenchColumns.compressed ? ' compressed-workbench' : ''}${zenMode ? ' zen-mode' : ''}${dragActive ? ' drag-active' : ''}`} data-theme={effectiveAppearance} style={appShellStyle}>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
