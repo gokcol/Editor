@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('diagramApi', {
   project: {
     open: () => ipcRenderer.invoke('project:open'),
+    openFile: (projectRoot) => ipcRenderer.invoke('project:open-file', projectRoot),
     openRecent: (root) => ipcRenderer.invoke('project:open-recent', root),
     create: (name) => ipcRenderer.invoke('project:create', name),
     refresh: (root) => ipcRenderer.invoke('project:refresh', root),
@@ -22,7 +23,8 @@ contextBridge.exposeInMainWorld('diagramApi', {
     buildProfiles: () => ipcRenderer.invoke('project:build-profiles'),
     runBuild: (root, relativePath, profileId) => ipcRenderer.invoke('project:run-build', root, relativePath, profileId),
     runPython: (source, name, options) => ipcRenderer.invoke('project:run-python', source, name, options),
-    saveAs: (suggestedName, content, type) => ipcRenderer.invoke('project:save-as', suggestedName, content, type),
+    writeOpenedFile: (fileHandle, content) => ipcRenderer.invoke('project:write-open-file', fileHandle, content),
+    saveAs: (suggestedName, content, type, projectRoot) => ipcRenderer.invoke('project:save-as', suggestedName, content, type, projectRoot),
   },
   render: {
     tikz: (source, name, engine) => ipcRenderer.invoke('render:tikz', source, name, engine),

@@ -1142,6 +1142,44 @@ function App() {
     }
   }, [documents, hydrateProject, showToast]);
 
+  const openStandaloneFile = useCallback(async () => {
+    try {
+      const opened = await window.diagramApi.project.openFile(project?.root);
+      if ('canceled' in opened) return;
+      const isProjectFile = 'relativePath' in opened;
+      const existing = isProjectFile
+        ? documents.find((document) => document.relativePath === opened.relativePath)
+        : documents.find((document) => document.fileHandle === opened.fileHandle);
+      if (existing) {
+        setActiveId(existing.id);
+        return;
+      }
+      const document: DocumentModel = {
+        id: `file-${crypto.randomUUID()}`,
+        name: opened.name,
+        sourceType: opened.sourceType,
+        value: opened.content,
+        ...(isProjectFile ? { relativePath: opened.relativePath } : { fileHandle: opened.fileHandle }),
+        dirty: false,
+        revision: 0,
+      };
+      if (isProjectFile) {
+        setSelectedFolderPath(parentFolderPath(opened.relativePath));
+        setCollapsedPaths((current) => {
+          const next = new Set(current);
+          for (const ancestor of ancestorFolderPaths(opened.relativePath)) next.delete(ancestor);
+          return next;
+        });
+      }
+      setDocuments((current) => [...current, document]);
+      setActiveId(document.id);
+      setPreview(EMPTY_PREVIEW);
+      showToast(`Opened ${opened.name}.`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not open that source file.', 'error');
+    }
+  }, [documents, project?.root, showToast]);
+
   const newProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Creating a new project will close the current scratchpad tabs. Continue without saving those edits?')) return;
     const name = window.prompt('Name your new diagram project:', 'Diagram Project');
@@ -1493,10 +1531,33 @@ function App() {
         showToast(`${activeDocument.name} saved.`, 'success');
         return;
       }
-      const result = await window.diagramApi.project.saveAs(activeDocument.name, content, activeDocument.sourceType);
+      if (activeDocument.fileHandle && !saveAs) {
+        await window.diagramApi.project.writeOpenedFile(activeDocument.fileHandle, content);
+        setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, dirty: false } : document));
+        showToast(`${activeDocument.name} saved.`, 'success');
+        return;
+      }
+      const result = await window.diagramApi.project.saveAs(activeDocument.name, content, activeDocument.sourceType, project?.root);
       if (result.canceled) return;
-      const name = result.path?.split('/').at(-1) ?? activeDocument.name;
-      setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, name, value: content, dirty: false } : document));
+      const name = result.name ?? activeDocument.name;
+      const savedRelativePath = result.relativePath;
+      setDocuments((current) => current.map((document) => document.id === activeDocument.id ? {
+        ...document,
+        name,
+        value: content,
+        relativePath: savedRelativePath,
+        fileHandle: result.fileHandle,
+        dirty: false,
+      } : document));
+      if (project && savedRelativePath) {
+        setSelectedFolderPath(parentFolderPath(savedRelativePath));
+        setCollapsedPaths((current) => {
+          const next = new Set(current);
+          for (const ancestor of ancestorFolderPaths(savedRelativePath)) next.delete(ancestor);
+          return next;
+        });
+        await refreshProject();
+      }
       showToast(`${name} saved.`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not save the file.', 'error');
@@ -1504,14 +1565,23 @@ function App() {
   }, [activeDocument, project, refreshProject, settings.formatOnSave, showToast]);
 
   useEffect(() => {
-    if (!settings.autoSave || !project || !activeDocument?.relativePath || !activeDocument.dirty) return undefined;
+    if (!settings.autoSave || !activeDocument?.dirty) return undefined;
     const documentId = activeDocument.id;
     const relativePath = activeDocument.relativePath;
+    const fileHandle = activeDocument.fileHandle;
     const source = activeDocument.value;
+    const persist = project && relativePath
+      ? () => {
+        localWritePathsRef.current.set(relativePath, Date.now());
+        return window.diagramApi.project.writeFile(project.root, relativePath, source);
+      }
+      : fileHandle
+        ? () => window.diagramApi.project.writeOpenedFile(fileHandle, source)
+        : undefined;
+    if (!persist) return undefined;
     const timer = window.setTimeout(() => {
       setAutoSaving(true);
-      localWritePathsRef.current.set(relativePath, Date.now());
-      void window.diagramApi.project.writeFile(project.root, relativePath, source)
+      void persist()
         .then(() => {
           setDocuments((current) => current.map((document) => document.id === documentId && document.value === source ? { ...document, dirty: false } : document));
         })
@@ -1519,7 +1589,7 @@ function App() {
         .finally(() => setAutoSaving(false));
     }, 1050);
     return () => window.clearTimeout(timer);
-  }, [activeDocument?.dirty, activeDocument?.id, activeDocument?.relativePath, activeDocument?.value, project?.root, settings.autoSave, showToast]);
+  }, [activeDocument?.dirty, activeDocument?.fileHandle, activeDocument?.id, activeDocument?.relativePath, activeDocument?.value, project?.root, settings.autoSave, showToast]);
 
   const closeDocument = useCallback((document: DocumentModel, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -2165,7 +2235,8 @@ function App() {
 
   const actions = useMemo(() => [
     { id: 'new-project', label: 'New project', hint: '⌘⇧N', group: 'File', run: newProject },
-    { id: 'open-project', label: 'Open project…', hint: '⌘O', group: 'File', run: openProject },
+    { id: 'open-file', label: 'Open file…', hint: '⌘O', group: 'File', run: openStandaloneFile },
+    { id: 'open-project', label: 'Open folder…', hint: '⌘⇧O', group: 'File', run: openProject },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
     ...enabledSourceTypes.map((type) => ({
       id: `new-${type}`,
@@ -2285,7 +2356,7 @@ function App() {
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -2596,7 +2667,7 @@ function App() {
             <small>{project ? project.root : 'No source tabs open'}</small>
           </div>
           <div className="top-actions">
-            <button className="ghost-button" onClick={() => void openProject()} title="Open folder (⌘O)">Open folder</button>
+            <button className="ghost-button" onClick={() => void openProject()} title="Open folder (⌘⇧O)">Open folder</button>
             <button className="accent-button empty-new-source-button" onClick={() => openNewSource()}>＋ New source</button>
           </div>
         </header>
@@ -2612,9 +2683,10 @@ function App() {
             <div className="empty-workspace-mark" aria-hidden="true"><span></span><span></span><span></span></div>
             <p className="eyebrow">Workspace ready</p>
             <h1>No source tabs open</h1>
-            <p>Start with an empty source file, open a folder, or drop an existing source here. Closing the last tab leaves this workspace ready for the next task.</p>
+            <p>Start with an empty source file, open one file, open a folder, or drop an existing source here. Closing the last tab leaves this workspace ready for the next task.</p>
             <div className="empty-workspace-actions">
               <button className="accent-button" onClick={() => openNewSource()}>＋ New source</button>
+              <button className="outline-button" onClick={() => void openStandaloneFile()}>Open file</button>
               <button className="outline-button" onClick={() => void openProject()}>Open folder</button>
               <button className="outline-button" onClick={() => void newProject()}>New project</button>
             </div>
@@ -2652,6 +2724,7 @@ function App() {
           <span>No editor tabs open</span>
           <span>Use ⌘N to create an empty source</span>
           <span className="status-spacer"></span>
+          <button onClick={() => void openStandaloneFile()}>Open file</button>
           <button onClick={() => void openProject()}>Open folder</button>
           <button onClick={() => openNewSource()}>New source</button>
         </footer>
@@ -3109,7 +3182,7 @@ function App() {
             <div className="settings-section automation-settings">
               <div className="settings-section-head"><span>Workflow</span><small>Keep local source and preview in sync without losing control.</small></div>
               <div className="settings-switch-grid">
-                <label><input type="checkbox" checked={settings.autoSave} onChange={(event) => setSettings((current) => ({ ...current, autoSave: event.target.checked }))} /><span><strong>Auto-save project files</strong><small>Write after a brief idle pause; scratchpad tabs stay unsaved.</small></span></label>
+                <label><input type="checkbox" checked={settings.autoSave} onChange={(event) => setSettings((current) => ({ ...current, autoSave: event.target.checked }))} /><span><strong>Auto-save saved files</strong><small>Write project and individually opened files after a brief idle pause; scratchpad tabs stay unsaved.</small></span></label>
                 <label><input type="checkbox" checked={settings.previewAutoRender} onChange={(event) => setSettings((current) => ({ ...current, previewAutoRender: event.target.checked }))} /><span><strong>Automatic preview</strong><small>Render after source changes; use Render for manual builds anytime.</small></span></label>
               </div>
             </div>

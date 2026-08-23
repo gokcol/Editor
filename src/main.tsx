@@ -37,6 +37,7 @@ if (!window.diagramApi) {
   window.diagramApi = {
     project: {
       open: async () => ({ canceled: true }),
+      openFile: async () => ({ canceled: true }),
       openRecent: async () => { throw new Error('Recent projects are available in the desktop app.'); },
       create: async () => ({ canceled: true }),
       refresh: async () => { throw new Error('Project folders are available in the desktop app.'); },
@@ -51,6 +52,7 @@ if (!window.diagramApi) {
       onChanged: () => () => undefined,
       buildProfiles: async () => [],
       runBuild: async () => ({ ok: false, profile: 'tikz-pdf', error: 'Build profiles require the local desktop shell.' }),
+      writeOpenedFile: async () => { throw new Error('Opening individual files requires the local desktop shell.'); },
       saveAs: async () => ({ canceled: true }),
     },
     render: {

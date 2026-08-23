@@ -100,9 +100,29 @@ export type DocumentModel = {
   sourceType: SourceType;
   value: string;
   relativePath?: string;
+  /** Opaque main-process permission for a file opened outside a project. */
+  fileHandle?: string;
   dirty: boolean;
   revision: number;
 };
+
+export type OpenedProjectSourceFile = {
+  name: string;
+  sourceType: SourceType;
+  content: string;
+  /** A file within the currently opened project retains its project binding. */
+  relativePath: string;
+};
+
+export type OpenedStandaloneSourceFile = {
+  name: string;
+  sourceType: SourceType;
+  content: string;
+  /** Opaque handle used to save this independently opened file in place. */
+  fileHandle: string;
+};
+
+export type OpenedSourceFile = OpenedProjectSourceFile | OpenedStandaloneSourceFile;
 
 export type ReferenceEntry = {
   id: string;
@@ -187,6 +207,7 @@ declare global {
     diagramApi: {
       project: {
         open: () => Promise<Project | { canceled: true }>;
+        openFile: (projectRoot?: string) => Promise<OpenedSourceFile | { canceled: true }>;
         openRecent: (root: string) => Promise<Project>;
         create: (name: string) => Promise<Project | { canceled: true }>;
         refresh: (root: string) => Promise<Project>;
@@ -203,7 +224,8 @@ declare global {
         runBuild: (root: string, relativePath: string, profileId: string) => Promise<{ ok: boolean; profile: string; outputPath?: string; outputRelativePath?: string; error?: string }>;
         /** Runs the editor's current Python buffer locally; no source must be saved first. */
         runPython?: (source: string, name: string, options?: PythonRunOptions) => Promise<PythonRunResult>;
-        saveAs: (suggestedName: string, content: string, type: SourceType) => Promise<{ path?: string; canceled?: boolean }>;
+        writeOpenedFile: (fileHandle: string, content: string) => Promise<{ name: string }>;
+        saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; canceled?: boolean }>;
       };
       render: {
         tikz: (source: string, name: string, engine?: TexPdfEngine) => Promise<

@@ -12,6 +12,9 @@ let mainWindow;
 let rendererReady = false;
 let pendingRendererActions = [];
 const projectWatchers = new Map();
+// Standalone source files are granted to a renderer through opaque handles.
+// The renderer never receives an arbitrary filesystem write capability.
+const standaloneFileHandles = new Map();
 let nextProjectWatcherId = 1;
 const maxProjectWatchers = 12;
 const maxProjectWatchDirectories = 256;
@@ -709,6 +712,79 @@ async function projectFile(workspace, relativePath) {
   const realTarget = await fs.realpath(target);
   if (!isInside(workspace.realRoot, realTarget)) throw new Error('That file resolves outside the current project.');
   return { target, relativePath: relativePathFor(workspace.root, target), stat };
+}
+
+function standaloneFilesFor(sender) {
+  const senderId = sender.id;
+  let files = standaloneFileHandles.get(senderId);
+  if (files) return files;
+  files = new Map();
+  standaloneFileHandles.set(senderId, files);
+  sender.once('destroyed', () => standaloneFileHandles.delete(senderId));
+  return files;
+}
+
+function grantStandaloneFile(sender, target) {
+  const files = standaloneFilesFor(sender);
+  for (const [fileHandle, knownTarget] of files) {
+    if (knownTarget === target) return fileHandle;
+  }
+  const fileHandle = `source-${randomUUID()}`;
+  files.set(fileHandle, target);
+  return fileHandle;
+}
+
+async function regularStandaloneFile(target) {
+  const stat = await fs.lstat(target);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Only regular source files can be opened or saved directly.');
+  return { target, stat };
+}
+
+async function openedStandaloneFile(sender, fileHandle) {
+  if (typeof fileHandle !== 'string' || !fileHandle.trim()) throw new Error('The opened file reference is invalid.');
+  const target = standaloneFileHandles.get(sender.id)?.get(fileHandle);
+  if (!target) throw new Error('This source file is no longer available to Yedit. Open it again to continue.');
+  return regularStandaloneFile(target);
+}
+
+async function projectRelativeSourcePath(projectRoot, target) {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return undefined;
+  const workspace = await projectWorkspace(projectRoot);
+  const realTarget = await fs.realpath(target);
+  if (!isInside(workspace.realRoot, realTarget)) return undefined;
+  const relativePath = relativePathFor(workspace.realRoot, realTarget);
+  return (await projectFile(workspace, relativePath)).relativePath;
+}
+
+async function sourceLocation(sender, target, projectRoot) {
+  const relativePath = await projectRelativeSourcePath(projectRoot, target);
+  return relativePath ? { relativePath } : { fileHandle: grantStandaloneFile(sender, target) };
+}
+
+async function standaloneSourcePayload(sender, filePath, projectRoot) {
+  const target = path.resolve(filePath);
+  const extension = path.extname(target).toLowerCase();
+  if (!sourceExtensions.has(extension)) throw new Error('Choose a supported Yedit source file.');
+  await regularStandaloneFile(target);
+  return {
+    name: path.basename(target),
+    sourceType: typeForPath(target),
+    content: await fs.readFile(target, 'utf8'),
+    ...await sourceLocation(sender, target, projectRoot),
+  };
+}
+
+async function saveStandaloneSource(target, content) {
+  const noFollow = fssync.constants.O_NOFOLLOW;
+  if (typeof noFollow !== 'number') throw new Error('This macOS runtime cannot safely save an opened source file.');
+  const flags = fssync.constants.O_WRONLY | fssync.constants.O_CREAT | fssync.constants.O_TRUNC | noFollow;
+  const file = await fs.open(target, flags, 0o600);
+  try {
+    await file.writeFile(content, 'utf8');
+  } finally {
+    await file.close();
+  }
+  return regularStandaloneFile(target);
 }
 
 async function projectDestination(workspace, relativePath) {
@@ -1897,7 +1973,8 @@ function menuTemplate(settings = defaultSettings) {
       label: 'File',
       submenu: [
         { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: () => sendToRenderer('new-project') },
-        { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => sendToRenderer('open-project') },
+        { label: 'Open File…', accelerator: 'CmdOrCtrl+O', click: () => sendToRenderer('open-file') },
+        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+Shift+O', click: () => sendToRenderer('open-project') },
         { type: 'separator' },
         { label: 'New Source File…', accelerator: 'CmdOrCtrl+N', click: () => sendToRenderer('new-file') },
         {
@@ -2036,6 +2113,16 @@ ipcMain.handle('project:open', async () => {
   return projectPayload(picked.filePaths[0]);
 });
 
+ipcMain.handle('project:open-file', async (event, projectRoot) => {
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open a Yedit source file',
+    properties: ['openFile'],
+    filters: [{ name: 'Yedit source files', extensions: [...sourceExtensions].map((extension) => extension.slice(1)).sort() }],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
+  return standaloneSourcePayload(event.sender, picked.filePaths[0], projectRoot);
+});
+
 ipcMain.handle('project:create', async (_event, name) => {
   const parent = await dialog.showOpenDialog(mainWindow, {
     title: 'Choose where to create the project',
@@ -2106,7 +2193,14 @@ ipcMain.handle('project:unwatch', async (event, watchId) => {
 ipcMain.handle('project:build-profiles', async () => buildProfiles.map((profile) => ({ ...profile, sourceTypes: [...profile.sourceTypes] })));
 ipcMain.handle('project:run-build', async (_event, root, relativePath, profileId) => runBuildProfile(root, relativePath, profileId));
 ipcMain.handle('project:run-python', async (_event, source, name, options) => runPythonSource(source, name, options));
-ipcMain.handle('project:save-as', async (_event, suggestedName, content, type) => {
+ipcMain.handle('project:write-open-file', async (event, fileHandle, content) => {
+  if (typeof content !== 'string') throw new Error('Source content must be text.');
+  const source = await openedStandaloneFile(event.sender, fileHandle);
+  await saveStandaloneSource(source.target, content);
+  return { name: path.basename(source.target) };
+});
+ipcMain.handle('project:save-as', async (event, suggestedName, content, type, projectRoot) => {
+  if (typeof content !== 'string') throw new Error('Source content must be text.');
   const extension = extensionForType(type);
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save source as',
@@ -2114,8 +2208,9 @@ ipcMain.handle('project:save-as', async (_event, suggestedName, content, type) =
     filters: [{ name: `${type} source`, extensions: [extension] }],
   });
   if (result.canceled || !result.filePath) return { canceled: true };
-  await fs.writeFile(result.filePath, content, 'utf8');
-  return { path: result.filePath };
+  const target = path.resolve(result.filePath);
+  await saveStandaloneSource(target, content);
+  return { name: path.basename(target), ...await sourceLocation(event.sender, target, projectRoot) };
 });
 ipcMain.handle('render:tikz', async (_event, source, name, engine) => renderTikz(source, name, engine));
 ipcMain.handle('render:latex', async (_event, source, name, mode, engine) => renderLatex(source, name, mode, engine));
