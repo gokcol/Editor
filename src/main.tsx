@@ -49,6 +49,7 @@ if (!window.diagramApi) {
     render: {
       tikz: async (_source, _name, _engine) => ({ ok: false as const, error: 'TikZ previews require the local desktop shell.' }),
       latex: async (_source, _name, _mode, _engine) => ({ ok: false as const, error: 'LaTeX previews require the local desktop shell.' }),
+      metafont: async () => ({ ok: false as const, error: 'MetaFont previews require the local desktop shell.' }),
       export: async () => ({ ok: false, error: 'Exports require the local desktop shell.' }),
     },
     settings: {

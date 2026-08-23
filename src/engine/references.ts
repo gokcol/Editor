@@ -89,6 +89,50 @@ export const references: Record<SourceType, ReferenceEntry[]> = {
       insertText: '\\begin{itemize}\n  \\item ${1:First point}\n  \\item ${2:Second point}\n\\end{itemize}${0}',
     },
   ],
+  metafont: [
+    {
+      id: 'mf-beginchar', title: 'Glyph program', category: 'Glyphs', tags: ['beginchar', 'endchar', 'character', 'codepoint'],
+      syntax: 'beginchar(code, width#, height#, depth#); … endchar;',
+      description: 'Defines one character outline at a codepoint. Dimensions use MetaFont’s device-independent “sharp” units.',
+      example: 'beginchar("A", 8u#, 10u#, 0);\n  draw (1u, 0) -- (4u, 9u);\nendchar;',
+      insertText: 'beginchar("${1:A}", ${2:8u#}, ${3:10u#}, ${4:0});\n  ${0}\nendchar;',
+    },
+    {
+      id: 'mf-draw-path', title: 'Draw a path', category: 'Drawing', tags: ['draw', 'path', 'curve', 'stroke'],
+      syntax: 'draw point -- point .. control .. point;',
+      description: 'Strokes straight and Bézier path segments with the currently selected pen. For traced TTF output, prefer closed fill/unfill paths.',
+      example: 'draw (1u, 0) -- (4u, 9u) -- (7u, 0);',
+      insertText: 'draw (${1:0}, ${2:0}) -- (${3:4u}, ${4:9u}) -- (${5:8u}, ${6:0});${0}',
+    },
+    {
+      id: 'mf-fill-outline', title: 'Filled outline', category: 'Drawing', tags: ['fill', 'unfill', 'outline', 'ttf', 'closed-path'],
+      syntax: 'fill closed_path;\nunfill counter_path;',
+      description: 'Builds a closed glyph outline and optional counter. This is the most portable starting point for MetaFont-to-TTF conversion.',
+      example: 'fill (1u, 0) -- (4u, 9u) -- (7u, 0) -- cycle;\nunfill (3u, 3u) -- (4u, 5u) -- (5u, 3u) -- cycle;',
+      insertText: 'fill (${1:1u}, ${2:0}) -- (${3:4u}, ${4:9u}) -- (${5:7u}, ${6:0}) -- cycle;${0}',
+    },
+    {
+      id: 'mf-pen', title: 'Select a pen', category: 'Drawing', tags: ['pickup', 'pencircle', 'pen', 'stroke'],
+      syntax: 'pickup pencircle scaled amount;',
+      description: 'Selects a pen for subsequent drawing commands. Scaled circular pens are a dependable first choice for experiments.',
+      example: 'pickup pencircle scaled 1u;',
+      insertText: 'pickup pencircle scaled ${1:1u};${0}',
+    },
+    {
+      id: 'mf-units', title: 'Design unit', category: 'Setup', tags: ['u', 'unit', 'define_pixels', 'dimension'],
+      syntax: 'u# := 1/8pt#;\ndefine_pixels(u);',
+      description: 'Sets a reusable design unit, then makes a pixel-scaled counterpart available for glyph geometry.',
+      example: 'u# := 1/8pt#;\ndefine_pixels(u);',
+      insertText: 'u# := ${1:1/8pt#};\ndefine_pixels(u);${0}',
+    },
+    {
+      id: 'mf-definition', title: 'Reusable definition', category: 'Structure', tags: ['def', 'vardef', 'enddef', 'macro'],
+      syntax: 'def name = … enddef;',
+      description: 'Packages a reusable operation. Use vardef when a definition needs local variables or parameters.',
+      example: 'def stem(expr x) =\n  draw (x, 0) -- (x, 8u);\nenddef;',
+      insertText: 'def ${1:name} =\n  ${0}\nenddef;',
+    },
+  ],
   svg: [
     {
       id: 'svg-viewbox', title: 'viewBox', category: 'Canvas', tags: ['viewbox', 'responsive', 'canvas'],

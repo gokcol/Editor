@@ -41,6 +41,18 @@ export function documentOutline(type: SourceType, source: string): OutlineEntry[
       return;
     }
 
+    if (type === 'metafont') {
+      const glyph = /^\s*beginchar\s*\(\s*(?:"([^"]+)"|'([^']+)'|([^,\s)]+))/.exec(line);
+      const definition = /^\s*(?:vardef|def)\s+([A-Za-z_][\w@]*(?:#)?)/.exec(line);
+      if (glyph) {
+        const name = glyph[1] ?? glyph[2] ?? glyph[3] ?? 'glyph';
+        entries.push({ id: `mf-glyph-${lineNumber}`, line: lineNumber, depth: 0, label: `Glyph ${cleanLabel(name)}`, kind: 'node' });
+      } else if (definition) {
+        entries.push({ id: `mf-definition-${lineNumber}`, line: lineNumber, depth: 1, label: cleanLabel(definition[1]), kind: 'group' });
+      }
+      return;
+    }
+
     if (type === 'mermaid') {
       const diagram = /^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|mindmap|timeline|quadrantChart|pie|gitGraph)\b/i.exec(line);
       const group = /^\s*(subgraph|participant|section)\s+(.+)/i.exec(line);
@@ -92,6 +104,8 @@ export function sourceFromAssistantReply(reply: string, type: SourceType): strin
     ? '(?:tikz|tex|latex)?'
     : type === 'latex'
       ? '(?:tex|latex|ltx)?'
+    : type === 'metafont'
+      ? '(?:metafont|mf)?'
     : type === 'mermaid'
       ? '(?:mermaid|mmd)?'
       : type === 'markdown'

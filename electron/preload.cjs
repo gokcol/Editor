@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('diagramApi', {
   render: {
     tikz: (source, name, engine) => ipcRenderer.invoke('render:tikz', source, name, engine),
     latex: (source, name, mode, engine) => ipcRenderer.invoke('render:latex', source, name, mode, engine),
+    metafont: (source, name) => ipcRenderer.invoke('render:metafont', source, name),
     export: (payload) => ipcRenderer.invoke('render:export', payload),
   },
   settings: {

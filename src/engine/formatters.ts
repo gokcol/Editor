@@ -63,6 +63,15 @@ export function formatLatex(source: string): string {
   return formatTex(source);
 }
 
+/**
+ * MetaFont source can use deliberately aligned equations and glyph geometry.
+ * Only remove trailing whitespace, leaving blank lines and author indentation
+ * intact instead of applying TeX's environment-oriented formatter.
+ */
+export function formatMetafont(source: string): string {
+  return source.split('\n').map(trimTrailing).join('\n');
+}
+
 export function formatMarkdown(source: string): string {
   const lines = source.split('\n').map(trimTrailing);
   const formatted: string[] = [];
@@ -91,6 +100,7 @@ export function formatSource(type: SourceType, source: string): string {
   if (type === 'mermaid') return formatMermaid(source);
   if (type === 'markdown') return formatMarkdown(source);
   if (type === 'text') return formatText(source);
+  if (type === 'metafont') return formatMetafont(source);
   if (type === 'latex') return formatLatex(source);
   return formatTikz(source);
 }

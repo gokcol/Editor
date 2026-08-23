@@ -49,7 +49,7 @@ function safelySend(webContents, channel, payload) {
 
 // Keep ordinary LaTeX documents separate from focused TikZ sources.  `.tex`
 // is intentionally LaTeX; `.tikz` is the explicit TikZ-only extension.
-const sourceExtensions = new Set(['.tex', '.latex', '.ltx', '.tikz', '.svg', '.mmd', '.mermaid', '.md', '.markdown', '.txt']);
+const sourceExtensions = new Set(['.tex', '.latex', '.ltx', '.tikz', '.mf', '.svg', '.mmd', '.mermaid', '.md', '.markdown', '.txt']);
 // PDF-producing LaTeX engines intentionally remain explicit.  The classic
 // `latex` command produces DVI and is handled separately below.
 const latexPdfEngines = Object.freeze({
@@ -137,6 +137,7 @@ function typeForPath(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.tex' || ext === '.latex' || ext === '.ltx') return 'latex';
   if (ext === '.tikz') return 'tikz';
+  if (ext === '.mf') return 'metafont';
   if (ext === '.svg') return 'svg';
   if (ext === '.mmd' || ext === '.mermaid') return 'mermaid';
   if (ext === '.md' || ext === '.markdown') return 'markdown';
@@ -147,6 +148,7 @@ function typeForPath(filePath) {
 function extensionForType(type) {
   if (type === 'latex') return 'tex';
   if (type === 'tikz') return 'tikz';
+  if (type === 'metafont') return 'mf';
   if (type === 'svg') return 'svg';
   if (type === 'mermaid') return 'mmd';
   if (type === 'markdown') return 'md';
@@ -835,6 +837,13 @@ const buildProfiles = [
     compiler: 'latex',
     engine: 'latex',
   },
+  {
+    id: 'metafont-ttf',
+    label: 'Convert MetaFont to TTF',
+    sourceTypes: ['metafont'],
+    outputExtension: 'ttf',
+    compiler: 'mf2pt1 + fontforge',
+  },
 ];
 
 async function runBuildProfile(root, relativePath, profileId) {
@@ -851,6 +860,28 @@ async function runBuildProfile(root, relativePath, profileId) {
   const baseName = path.parse(source.target).name;
   const outputPath = path.join(outputDirectory, `${baseName}.${profile.outputExtension}`);
   await fs.mkdir(outputDirectory, { recursive: true });
+
+  if (profile.id === 'metafont-ttf') {
+    try {
+      const sourceText = await fs.readFile(source.target, 'utf8');
+      const conversion = await convertMetafontToTtf(sourceText, path.basename(source.target));
+      if (!conversion.ok) return { ok: false, profile: profile.id, error: conversion.error };
+      await fs.copyFile(conversion.ttfPath, outputPath);
+      return {
+        ok: true,
+        profile: profile.id,
+        outputPath,
+        outputRelativePath: relativePathFor(workspace.root, outputPath),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        profile: profile.id,
+        error: [error?.stderr, error?.stdout, error?.message].filter(Boolean).join('\n') || String(error),
+      };
+    }
+  }
+
   try {
     await runTexCompiler(profile.compiler, [
       '-interaction=nonstopmode',
@@ -1044,6 +1075,136 @@ async function renderTikz(source, suggestedName = 'diagram.tikz', requestedEngin
   }
 }
 
+function metafontBaseName(suggestedName, fallback = 'font') {
+  const candidate = path.basename(suggestedName || `${fallback}.mf`)
+    .replace(/\.mf$/i, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return candidate || fallback;
+}
+
+function metafontEnvironment(directory) {
+  // Keep all generated metrics, GF files, and proof-font lookups confined to
+  // this render job. A trailing colon lets kpathsea retain its normal fallback
+  // paths for plain MetaFont support files such as modes.mf and gray.mf.
+  const localPath = `${directory}:`;
+  return {
+    MFINPUTS: localPath,
+    TFMFONTS: localPath,
+    GFFONTS: localPath,
+    PKFONTS: localPath,
+    TEXFONTS: localPath,
+  };
+}
+
+async function metafontGfPath(directory, baseName) {
+  const files = await fs.readdir(directory);
+  const gfName = files.find((file) => file.startsWith(`${baseName}.`) && /\.\d+gf$/i.test(file));
+  if (!gfName) throw new Error('MetaFont finished without producing a GF font. Add at least one beginchar definition before rendering a glyph proof.');
+  return path.join(directory, gfName);
+}
+
+function missingMetafontToolMessage(error, command) {
+  if (!isMissingCommand(error, command)) return '';
+  if (command === 'fontforge') {
+    return 'TTF export needs FontForge. Install the FontForge command-line tool (for example, `brew install fontforge`) and restart Diagram Foundry.';
+  }
+  if (command === 'mf2pt1') {
+    return 'TTF export needs mf2pt1, which is included with a full TeX Live or MacTeX installation.';
+  }
+  if (command === 'mf-nowin') {
+    return 'MetaFont preview needs the headless `mf-nowin` command from TeX Live or MacTeX.';
+  }
+  if (command === 'gftodvi' || command === 'dvisvgm') {
+    return 'MetaFont preview needs gftodvi and dvisvgm from a full TeX Live or MacTeX installation.';
+  }
+  return `${command} is unavailable.`;
+}
+
+async function metafontErrorMessage(directory, baseName, error, command) {
+  let log = '';
+  try { log = await fs.readFile(path.join(directory, `${baseName}.log`), 'utf8'); } catch { /* compiler may have failed before making a log */ }
+  return [missingMetafontToolMessage(error, command), error?.stderr, error?.stdout, log, error?.message]
+    .filter(Boolean)
+    .join('\n')
+    .slice(-12000) || String(error?.message || error);
+}
+
+/**
+ * Compile a genuine MetaFont GF file, then turn its first glyph-proof page
+ * into sandbox-safe SVG. Unlike tracing, this path works for ordinary MetaFont
+ * programs and faithfully shows the generated bitmap output.
+ */
+async function renderMetafont(source, suggestedName = 'font.mf') {
+  const directory = await makeRenderDirectory('metafont');
+  const baseName = metafontBaseName(suggestedName);
+  const mfPath = path.join(directory, `${baseName}.mf`);
+  const env = metafontEnvironment(directory);
+  await fs.writeFile(mfPath, source, 'utf8');
+  let activeTool = 'mf-nowin';
+
+  try {
+    await run('mf-nowin', [`\\mode:=localfont; nonstopmode; input ${baseName}`], directory, env);
+    const gfPath = await metafontGfPath(directory, baseName);
+
+    // GFtoDVI uses gray.tfm for the bitmap proof pages. Generate it locally so
+    // a packaged app does not depend on a globally installed generated metric.
+    await run('mf-nowin', ['\\mode:=localfont; nonstopmode; input gray'], directory, env);
+    activeTool = 'gftodvi';
+    await run('gftodvi', [path.basename(gfPath)], directory, env);
+
+    const dviPath = path.join(directory, `${baseName}.dvi`);
+    const svgPath = path.join(directory, `${baseName}.svg`);
+    await fs.access(dviPath);
+    activeTool = 'dvisvgm';
+    await run('dvisvgm', ['--page=1', '--no-fonts', `--output=${svgPath}`, dviPath], directory, env);
+    const svg = await fs.readFile(svgPath, 'utf8');
+    return { ok: true, svg, gfPath, dviPath, svgPath, directory };
+  } catch (error) {
+    return { ok: false, error: await metafontErrorMessage(directory, baseName, error, activeTool) };
+  }
+}
+
+/**
+ * Convert mf2pt1-compatible MetaFont outlines to a TTF. mf2pt1 emits a
+ * Type 1 outline font from the MetaFont program; FontForge then performs the
+ * final OpenType conversion. The required tools remain local and never touch
+ * the user's source file.
+ */
+async function convertMetafontToTtf(source, suggestedName = 'font.mf') {
+  const directory = await makeRenderDirectory('metafont-ttf');
+  const baseName = metafontBaseName(suggestedName);
+  const mfPath = path.join(directory, `${baseName}.mf`);
+  const pfbPath = path.join(directory, `${baseName}.pfb`);
+  const ttfPath = path.join(directory, `${baseName}.ttf`);
+  const postscriptName = `${baseName.replace(/[^A-Za-z0-9]/g, '') || 'FoundryFont'}-Regular`;
+  const familyName = safeName(baseName.replace(/[-_]+/g, ' '));
+  await fs.writeFile(mfPath, source, 'utf8');
+
+  try {
+    await run('mf2pt1', [
+      `--output-dir=${directory}`,
+      `--name=${postscriptName}`,
+      `--family=${familyName}`,
+      `--fullname=${familyName} Regular`,
+      '--encoding=standard',
+      mfPath,
+    ], directory, metafontEnvironment(directory));
+    await fs.access(pfbPath);
+  } catch (error) {
+    return { ok: false, error: await metafontErrorMessage(directory, baseName, error, 'mf2pt1') };
+  }
+
+  try {
+    await run('fontforge', ['-lang=ff', '-c', 'Open($1); Generate($2);', pfbPath, ttfPath], directory);
+    await fs.access(ttfPath);
+    return { ok: true, ttfPath, pfbPath, directory };
+  } catch (error) {
+    return { ok: false, error: await metafontErrorMessage(directory, baseName, error, 'fontforge') };
+  }
+}
+
 async function convertSvg(svg, format, scale = 1) {
   const directory = await makeRenderDirectory('svg');
   const input = path.join(directory, 'diagram.svg');
@@ -1135,6 +1296,24 @@ async function exportPayload(payload) {
         await run('pdftocairo', args, compilation.directory);
         generated = output;
       }
+    } else if (sourceType === 'metafont') {
+      if (!['png', 'svg', 'pdf', 'ttf'].includes(format)) {
+        return { ok: false, error: 'MetaFont source files support GF-proof PNG, SVG, and PDF exports, plus TTF outline conversion.' };
+      }
+      if (format === 'ttf') {
+        const conversion = await convertMetafontToTtf(source, `${suggestedName}.mf`);
+        if (!conversion.ok) return { ok: false, error: conversion.error };
+        generated = conversion.ttfPath;
+      } else {
+        const proof = await renderMetafont(source, `${suggestedName}.mf`);
+        if (!proof.ok) return { ok: false, error: proof.error };
+        if (format === 'svg') {
+          generated = proof.svgPath;
+        } else {
+          const result = await convertSvg(proof.svg, format, scale);
+          generated = result.output;
+        }
+      }
     } else if (sourceType === 'markdown' || sourceType === 'text') {
       const result = await convertHtml(html || source, format, scale);
       generated = result.output;
@@ -1186,6 +1365,7 @@ function menuTemplate() {
           submenu: [
             { label: 'TikZ (.tikz)', click: () => sendToRenderer('new-tikz') },
             { label: 'LaTeX (.tex)', click: () => sendToRenderer('new-latex') },
+            { label: 'MetaFont (.mf)', click: () => sendToRenderer('new-metafont') },
             { label: 'SVG (.svg)', click: () => sendToRenderer('new-svg') },
             { label: 'Mermaid (.mmd)', click: () => sendToRenderer('new-mermaid') },
             { label: 'Markdown (.md)', click: () => sendToRenderer('new-markdown') },
@@ -1217,10 +1397,11 @@ function menuTemplate() {
       submenu: [
         { label: 'TikZ Source', accelerator: 'CmdOrCtrl+1', click: () => sendToRenderer('select-tikz') },
         { label: 'LaTeX Source', accelerator: 'CmdOrCtrl+2', click: () => sendToRenderer('select-latex') },
-        { label: 'SVG Source', accelerator: 'CmdOrCtrl+3', click: () => sendToRenderer('select-svg') },
-        { label: 'Mermaid Source', accelerator: 'CmdOrCtrl+4', click: () => sendToRenderer('select-mermaid') },
-        { label: 'Markdown Source', accelerator: 'CmdOrCtrl+5', click: () => sendToRenderer('select-markdown') },
-        { label: 'Plain Text Source', accelerator: 'CmdOrCtrl+6', click: () => sendToRenderer('select-text') },
+        { label: 'MetaFont Source', accelerator: 'CmdOrCtrl+3', click: () => sendToRenderer('select-metafont') },
+        { label: 'SVG Source', accelerator: 'CmdOrCtrl+4', click: () => sendToRenderer('select-svg') },
+        { label: 'Mermaid Source', accelerator: 'CmdOrCtrl+5', click: () => sendToRenderer('select-mermaid') },
+        { label: 'Markdown Source', accelerator: 'CmdOrCtrl+6', click: () => sendToRenderer('select-markdown') },
+        { label: 'Plain Text Source', accelerator: 'CmdOrCtrl+7', click: () => sendToRenderer('select-text') },
         { type: 'separator' },
         { label: 'Render Preview', accelerator: 'CmdOrCtrl+Enter', click: () => sendToRenderer('render') },
       ],
@@ -1386,6 +1567,7 @@ ipcMain.handle('project:save-as', async (_event, suggestedName, content, type) =
 });
 ipcMain.handle('render:tikz', async (_event, source, name, engine) => renderTikz(source, name, engine));
 ipcMain.handle('render:latex', async (_event, source, name, mode, engine) => renderLatex(source, name, mode, engine));
+ipcMain.handle('render:metafont', async (_event, source, name) => renderMetafont(source, name));
 ipcMain.handle('render:export', async (_event, payload) => exportPayload(payload));
 ipcMain.handle('git:status', async (_event, root) => gitStatus(root));
 ipcMain.handle('git:diff', async (_event, root, relativePath, options) => gitDiff(root, relativePath, options));

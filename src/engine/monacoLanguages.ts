@@ -36,6 +36,19 @@ function configureFoundryLanguageBehavior(monaco: Monaco) {
     },
   });
 
+  monaco.languages.setLanguageConfiguration('foundry-metafont', {
+    comments: { lineComment: '%' },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }],
+    wordPattern: /[A-Za-z_][\w@.#]*|\b\d+(?:\.\d+)?\b/g,
+    indentationRules: {
+      increaseIndentPattern: /^\s*(?:beginchar\b|(?:var)?def\b)/,
+      decreaseIndentPattern: /^\s*(?:endchar|enddef)\b/,
+    },
+  });
+
   monaco.languages.setLanguageConfiguration('foundry-svg', {
     comments: { blockComment: ['<!--', '-->'] },
     brackets: [['<', '>'], ['{', '}'], ['(', ')']],
@@ -108,6 +121,22 @@ export function registerFoundryLanguages(monaco: Monaco) {
           [/\\[a-zA-Z@]+/, 'keyword'],
           [/\$\$?|\\\[|\\\]|\\\(|\\\)/, 'operator'],
           [/[+-]?(?:\d+\.?\d*|\.\d+)(?:pt|mm|cm|in|ex|em|deg)?\b/, 'number'],
+          [/[{}\[\]()]/, 'delimiter'],
+          [/"[^"\\]*(?:\\.[^"\\]*)*"/, 'string'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-metafont');
+    monaco.languages.setMonarchTokensProvider('foundry-metafont', {
+      tokenizer: {
+        root: [
+          [/%.*$/, 'comment'],
+          [/\b(?:beginchar|endchar|def|vardef|enddef|if|fi|for|forsuffixes|forever|endfor|exitif|input|endinput|bye|mode_setup|font_identifier|font_size|define_pixels|pickup|draw|fill|unfill|erase|shipout|special|message|show)\b/, 'keyword'],
+          [/\b(?:numeric|pair|path|pen|pencircle|picture|transform|string|boolean|suffix|expr|text|primary|secondary|tertiary|of|until|step|downto|thru|fullcircle|cycle|scaled|xscaled|yscaled|shifted|rotated|slanted)\b/, 'type'],
+          [/:=|<=|>=|<>|\.\.|--|\+\+/, 'operator'],
+          [/[+\-*/=&]/, 'operator'],
+          [/[+-]?(?:\d+\.?\d*|\.\d+)(?:pt|mm|cm|in|bp|dd|cc|pc|em|ex)?#?\b/, 'number'],
           [/[{}\[\]()]/, 'delimiter'],
           [/"[^"\\]*(?:\\.[^"\\]*)*"/, 'string'],
         ],

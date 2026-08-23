@@ -34,6 +34,7 @@ export type PreviewViewportProps = {
 const SOURCE_LABELS: Record<SourceType, { label: string; short: string }> = {
   tikz: { label: 'TikZ', short: 'TZ' },
   latex: { label: 'LaTeX', short: 'TEX' },
+  metafont: { label: 'MetaFont', short: 'MF' },
   svg: { label: 'SVG', short: 'SV' },
   mermaid: { label: 'Mermaid', short: 'MM' },
   markdown: { label: 'Markdown', short: 'MD' },

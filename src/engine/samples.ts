@@ -57,6 +57,29 @@ For a concise display equation, use the math environment:
 \end{document}
 `,
   },
+  metafont: {
+    name: 'Foundry Mini.mf',
+    source: String.raw`% A tiny MetaFont starter. Render it in proof mode to inspect each glyph.
+mode_setup;
+font_identifier := "FoundryMini";
+font_size 10pt#;
+
+u# := 1/8pt#;
+define_pixels(u);
+
+beginchar("A", 8u#, 10u#, 0);
+  fill (1u, 0) -- (3u, 0) -- (4u, 3u) -- (5u, 0) -- (7u, 0) -- (4u, 9u) -- cycle;
+  unfill (3u, 4u) -- (4u, 6u) -- (5u, 4u) -- cycle;
+endchar;
+
+beginchar("O", 8u#, 10u#, 0);
+  fill fullcircle xscaled 8u yscaled 10u shifted (4u, 5u);
+  unfill fullcircle xscaled 4u yscaled 6u shifted (4u, 5u);
+endchar;
+
+bye
+`,
+  },
   svg: {
     name: 'Untitled Graphic.svg',
     source: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" role="img" aria-labelledby="title desc">

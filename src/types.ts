@@ -1,4 +1,4 @@
-export type SourceType = 'tikz' | 'latex' | 'svg' | 'mermaid' | 'markdown' | 'text';
+export type SourceType = 'tikz' | 'latex' | 'metafont' | 'svg' | 'mermaid' | 'markdown' | 'text';
 
 /** Monaco language identifiers owned by Diagram Foundry. */
 export type FoundryLanguageId = `foundry-${SourceType}`;
@@ -95,7 +95,7 @@ export type PreviewState = {
   message?: string;
 };
 
-export type ExportFormat = 'png' | 'pdf' | 'dvi' | 'svg' | 'html';
+export type ExportFormat = 'png' | 'pdf' | 'dvi' | 'svg' | 'html' | 'ttf';
 export type TexPdfEngine = 'pdflatex' | 'xelatex' | 'lualatex';
 
 export type ProjectWatchUpdate = {
@@ -162,6 +162,10 @@ declare global {
           | { ok: true; format: 'dvi'; dviPath: string; directory: string; engine: 'latex'; previewKind: 'svg'; svg: string }
           | { ok: true; format: 'dvi'; dviPath: string; directory: string; engine: 'latex'; previewKind: 'none'; warning: string }
           | { ok: false; error: string }
+        >;
+        metafont: (source: string, name: string) => Promise<
+          | { ok: true; svg: string; directory: string; log?: string; artifacts?: { gfPath?: string; pkPath?: string; dviPath?: string } }
+          | { ok: false; error: string; log?: string }
         >;
         export: (payload: {
           sourceType: SourceType;

@@ -18,6 +18,7 @@ loader.config({ paths: { vs: './vs' } });
 const SOURCE_META: Record<SourceType, { label: string; short: string; color: string; language: string; extension: string }> = {
   tikz: { label: 'TikZ', short: 'TZ', color: 'amber', language: 'foundry-tikz', extension: 'tikz' },
   latex: { label: 'LaTeX', short: 'TEX', color: 'indigo', language: 'foundry-latex', extension: 'tex' },
+  metafont: { label: 'MetaFont', short: 'MF', color: 'mint', language: 'foundry-metafont', extension: 'mf' },
   svg: { label: 'SVG', short: 'SV', color: 'violet', language: 'foundry-svg', extension: 'svg' },
   mermaid: { label: 'Mermaid', short: 'MM', color: 'cyan', language: 'foundry-mermaid', extension: 'mmd' },
   markdown: { label: 'Markdown', short: 'MD', color: 'rose', language: 'foundry-markdown', extension: 'md' },
@@ -26,6 +27,7 @@ const SOURCE_META: Record<SourceType, { label: string; short: string; color: str
 const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
   tikz: 'LaTeX-quality diagrams',
   latex: 'Standalone TeX documents',
+  metafont: 'Programmatic font source',
   svg: 'Editable vector markup',
   mermaid: 'Text-first flow diagrams',
   markdown: 'Notes with rich preview',
@@ -53,7 +55,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   previewSplit: 54,
 };
 const EDITOR_FONTS = ['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono'];
-const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|svg|mmd|mermaid|md|markdown|txt)$/i;
+const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|markdown|txt)$/i;
 type PanelLayout = Pick<AppSettings, 'explorerOpen' | 'previewOpen' | 'referenceOpen' | 'explorerWidth' | 'inspectorWidth' | 'previewSplit'>;
 type PanelLayoutKey = keyof PanelLayout;
 type PanelResizeTarget = 'explorer' | 'inspector' | 'preview';
@@ -113,6 +115,7 @@ function sourceTypeForName(name: string): SourceType {
   const lower = name.toLowerCase();
   if (lower.endsWith('.tikz')) return 'tikz';
   if (lower.endsWith('.tex') || lower.endsWith('.latex') || lower.endsWith('.ltx')) return 'latex';
+  if (lower.endsWith('.mf')) return 'metafont';
   if (lower.endsWith('.svg')) return 'svg';
   if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'mermaid';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
@@ -257,7 +260,7 @@ const SHORTCUT_ACTIONS = [
   ['search', 'Find in project'],
   ['outline', 'Document outline'],
   ['zen', 'Zen mode'],
-  ['build', 'Run active TeX build'],
+  ['build', 'Run active source build'],
 ] as const;
 type ShortcutActionId = (typeof SHORTCUT_ACTIONS)[number][0];
 type ShortcutBindings = Record<ShortcutActionId, string>;
@@ -582,6 +585,17 @@ function App() {
         return;
       }
 
+      if (document.sourceType === 'metafont') {
+        const result = await window.diagramApi.render.metafont(document.value, document.name);
+        if (token !== renderTokenRef.current) return;
+        if (!result.ok) {
+          setPreview({ status: 'error', revision: document.revision, message: result.error });
+          return;
+        }
+        setPreview({ status: 'ready', revision: document.revision, kind: 'svg', content: result.svg, message: 'MetaFont GF glyph proof · first generated glyph.' });
+        return;
+      }
+
       if (document.sourceType === 'markdown') {
         const html = await renderMarkdownSource(document.value, (source) => renderMermaidSource(source, effectiveAppearance));
         if (token !== renderTokenRef.current) return;
@@ -613,7 +627,7 @@ function App() {
 
   useEffect(() => {
     if (!activeDocument || !settings.previewAutoRender) return undefined;
-    const delay = activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'latex' ? 850 : 380;
+    const delay = activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'latex' || activeDocument.sourceType === 'metafont' ? 850 : 380;
     const mode: LatexRenderMode = activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf';
     const timer = window.setTimeout(() => renderDocument(activeDocument, mode), delay);
     return () => window.clearTimeout(timer);
@@ -1227,7 +1241,7 @@ function App() {
       ? `Current renderer error to resolve:\n\n${preview.message.slice(-5000)}`
       : '';
     return [
-      `You are an expert ${meta.label} ${activeDocument.sourceType === 'text' ? 'editor' : activeDocument.sourceType === 'latex' ? 'document author' : 'diagram engineer'}.`,
+      `You are an expert ${meta.label} ${activeDocument.sourceType === 'text' ? 'editor' : activeDocument.sourceType === 'latex' ? 'document author' : activeDocument.sourceType === 'metafont' ? 'font engineer' : 'diagram engineer'}.`,
       `Create ${meta.label} source for this request: ${promptSpec.goal || '[describe the diagram here]'}.`,
       promptSpec.audience ? `Audience / purpose: ${promptSpec.audience}.` : '',
       promptSpec.style ? `Visual direction: ${promptSpec.style}.` : '',
@@ -1236,7 +1250,9 @@ function App() {
         ? `Return a complete, compilable LaTeX document using TikZ. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, only local/common TikZ libraries, no shell escape, and keep labels readable.`
         : activeDocument.sourceType === 'latex'
           ? `Return a complete, compilable standalone LaTeX document. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, do not use shell escape, and keep the document structure clear.`
-        : activeDocument.sourceType === 'svg'
+          : activeDocument.sourceType === 'metafont'
+            ? 'Return complete, compilable MetaFont source only. Include mode_setup, define at least one beginchar glyph, use clear design units, and finish with bye. When TTF conversion is requested, favor closed fill/unfill outlines compatible with mf2pt1 rather than raster-only effects.'
+          : activeDocument.sourceType === 'svg'
           ? 'Return a complete, valid, self-contained SVG with a responsive viewBox. Do not reference remote assets or scripts.'
           : activeDocument.sourceType === 'mermaid'
             ? 'Return valid Mermaid source only. Use strict-compatible syntax and set no HTML labels.'
@@ -1362,23 +1378,28 @@ function App() {
     engine: TexPdfEngine = texPdfEngine,
   ) => {
     if (!project || !activeDocument?.relativePath) {
-      showToast('Save the active TikZ or LaTeX source into a project before running a build profile.', 'info');
+      showToast('Save the active TikZ, LaTeX, or MetaFont source into a project before running a build profile.', 'info');
       return;
     }
     const isTikz = activeDocument.sourceType === 'tikz';
     const isLatex = activeDocument.sourceType === 'latex';
-    if (!isTikz && !isLatex) {
-      showToast('Local build profiles are available for TikZ and LaTeX source.', 'info');
+    const isMetafont = activeDocument.sourceType === 'metafont';
+    if (!isTikz && !isLatex && !isMetafont) {
+      showToast('Local build profiles are available for TikZ, LaTeX, and MetaFont source.', 'info');
       return;
     }
-    const output = isLatex ? latexMode.toUpperCase() : 'PDF';
+    const output = isMetafont ? 'TTF' : isLatex ? latexMode.toUpperCase() : 'PDF';
     const compilerLabel = texPdfEngineLabel(engine);
-    const buildLabel = isLatex
+    const buildLabel = isMetafont
+      ? 'Convert MetaFont to TTF with mf2pt1 + FontForge'
+      : isLatex
       ? latexMode === 'dvi'
         ? 'Compile LaTeX to DVI with classic LaTeX'
         : `Compile LaTeX to PDF with ${compilerLabel}`
       : `Compile TikZ to PDF with ${compilerLabel}`;
-    const profileId = isLatex
+    const profileId = isMetafont
+      ? 'metafont-ttf'
+      : isLatex
       ? latexMode === 'dvi'
         ? 'latex-dvi'
         : engine === 'pdflatex' ? 'latex-pdf' : `latex-${engine}-pdf`
@@ -1398,7 +1419,9 @@ function App() {
         return;
       }
       setTaskOutput(`✓ ${buildLabel} succeeded\n\n${result.outputRelativePath || result.outputPath || `${output} created in the project build folder.`}`);
-      showToast(`${isLatex ? 'LaTeX' : 'TikZ'} ${output} build completed${isLatex && latexMode === 'dvi' ? ' with classic LaTeX.' : ` with ${compilerLabel}.`}`, 'success');
+      showToast(isMetafont
+        ? 'MetaFont TTF build completed.'
+        : `${isLatex ? 'LaTeX' : 'TikZ'} ${output} build completed${isLatex && latexMode === 'dvi' ? ' with classic LaTeX.' : ` with ${compilerLabel}.`}`, 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not run the local build profile.';
       setTaskOutput(message);
@@ -1412,7 +1435,7 @@ function App() {
     { id: 'new-project', label: 'New project', hint: '⌘⇧N', group: 'File', run: newProject },
     { id: 'open-project', label: 'Open project…', hint: '⌘O', group: 'File', run: openProject },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
-    ...(['tikz', 'latex', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type) => ({
+    ...(['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type) => ({
       id: `new-${type}`,
       label: `New ${SOURCE_META[type].label} source…`,
       hint: '',
@@ -1450,7 +1473,7 @@ function App() {
       },
     })) : []),
     { id: 'export', label: 'Export diagram…', hint: '⌘E', group: 'Diagram', run: () => setExportOpen(true) },
-    { id: 'build', label: activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active TeX build profile', hint: '⌘⇧B', group: 'Diagram', run: () => void runActiveBuild() },
+    { id: 'build', label: activeDocument?.sourceType === 'metafont' ? 'Convert MetaFont to TTF build profile' : activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active source build profile', hint: '⌘⇧B', group: 'Diagram', run: () => void runActiveBuild() },
     ...(activeDocument?.sourceType === 'latex' ? [
       ...TEX_PDF_ENGINES.map((engine) => ({
         id: `build-latex-${engine.id}-pdf`,
@@ -1491,7 +1514,7 @@ function App() {
     { id: 'reset-layout', label: 'Reset panel layout', hint: '', group: 'View', run: resetPanelLayout },
     { id: 'prompt-studio', label: 'Open Prompt Studio', hint: '⌘⇧L', group: 'View', run: () => setPromptOpen(true) },
     { id: 'settings', label: 'Open settings', hint: '⌘,', group: 'View', run: () => setSettingsOpen(true) },
-    ...(['tikz', 'latex', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type, index) => ({
+    ...(['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type, index) => ({
       id: `select-${type}`,
       label: `New ${SOURCE_META[type].label} source`,
       hint: `⌘${index + 1}`,
@@ -1618,6 +1641,8 @@ function App() {
     ? ['png', 'pdf', 'html']
     : activeDocument?.sourceType === 'latex'
       ? ['png', 'svg', 'pdf', 'dvi']
+      : activeDocument?.sourceType === 'metafont'
+        ? ['ttf', 'svg', 'png', 'pdf']
       : ['png', 'svg', 'pdf'];
   // A transformed, compensating shell lets the full workbench scale without
   // clipping at the window edge. It is intentionally separate from the source
@@ -1641,7 +1666,7 @@ function App() {
     setDragActive(false);
     const file = Array.from(event.dataTransfer.files).find((candidate) => SOURCE_FILENAME_PATTERN.test(candidate.name));
     if (!file) {
-      showToast('Drop a TikZ, LaTeX, SVG, Mermaid, Markdown, or plain-text source file to open it as a tab.', 'info');
+      showToast('Drop a TikZ, LaTeX, MetaFont, SVG, Mermaid, Markdown, or plain-text source file to open it as a tab.', 'info');
       return;
     }
     try {
@@ -1693,10 +1718,12 @@ function App() {
                 ? 'notes/review.txt'
                 : newSourceType === 'latex'
                   ? 'documents/report.tex'
+                  : newSourceType === 'metafont'
+                    ? 'fonts/my-font.mf'
                   : 'diagrams/architecture.mmd'
               : `untitled.${SOURCE_META[newSourceType].extension}`} />
           </label>
-          <p className="new-source-hint">The selected format controls the extension. Pick <code>TikZ</code>, <code>LaTeX</code>, <code>SVG</code>, <code>Mermaid</code>, <code>Markdown</code>, or <code>Plain Text</code>, then name the source.</p>
+          <p className="new-source-hint">The selected format controls the extension. Pick <code>TikZ</code>, <code>LaTeX</code>, <code>MetaFont</code>, <code>SVG</code>, <code>Mermaid</code>, <code>Markdown</code>, or <code>Plain Text</code>.</p>
           <footer className="new-source-footer"><button type="button" className="outline-button" onClick={() => setNewSourceOpen(false)} disabled={isCreatingSource}>Cancel</button><button type="submit" className="accent-button" disabled={isCreatingSource}>{isCreatingSource ? 'Creating…' : project ? 'Create file' : 'Open tab'}</button></footer>
         </form>
       </section>
@@ -1887,14 +1914,14 @@ function App() {
             <div className="empty-project">
               <div className="empty-icon">⌘</div>
               <p>Keep diagram source together in ordinary folders.</p>
-              <span>Your files remain portable: <code>.tikz</code>, <code>.tex</code>, <code>.latex</code>, <code>.ltx</code>, <code>.svg</code>, <code>.mmd</code>, <code>.md</code>, and <code>.txt</code>.</span>
+              <span>Your files remain portable: <code>.tikz</code>, <code>.tex</code>, <code>.latex</code>, <code>.ltx</code>, <code>.mf</code>, <code>.svg</code>, <code>.mmd</code>, <code>.md</code>, and <code>.txt</code>.</span>
             </div>
           )}
           <div className="explorer-footer">
             <button onClick={() => openNewSource()}>＋ New source</button>
             <button onClick={() => setPromptOpen(true)}>✦ Draft with LLM</button>
             {recentProjects.length > 0 && <button onClick={openLatestRecentProject}>↺ Reopen latest</button>}
-            <button onClick={() => void runActiveBuild()} title={activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active TeX build'}>▶ {activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
+            <button onClick={() => void runActiveBuild()} title={activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
           </div>
           <div className="panel-resizer explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" onPointerDown={(event) => startPanelResize('explorer', event)} />
         </aside>
@@ -2055,7 +2082,7 @@ function App() {
         <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
         <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
         <span>{settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
-        <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
+        <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
         <span className="status-spacer"></span>
         <button onClick={() => setProjectSearchOpen(true)}>Find</button>
         <button onClick={openGitPanel}>Git</button>
@@ -2088,7 +2115,9 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setExportOpen(false)}>
           <section className="export-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><p className="eyebrow">Export active {SOURCE_META[activeDocument.sourceType].label} source</p><h2>Choose an output</h2></div><button className="icon-button" onClick={() => setExportOpen(false)}>×</button></div>
-            <p className="modal-copy">A fresh local render is produced before export, so the saved file always matches the active source. Vector exports stay crisp; PNG uses the scale below.</p>
+            <p className="modal-copy">{activeDocument.sourceType === 'metafont'
+              ? 'A fresh local GF proof is produced for image/PDF exports. TTF export converts mf2pt1-compatible outlines through FontForge; this stays entirely on your Mac.'
+              : 'A fresh local render is produced before export, so the saved file always matches the active source. Vector exports stay crisp; PNG uses the scale below.'}</p>
             <div className="export-preset-row" role="group" aria-label="PNG export scale">
               <span>PNG scale</span>
               {([1, 2, 4] as const).map((scale) => <button key={scale} className={exportScale === scale ? 'selected' : ''} onClick={() => setExportScale(scale)} aria-pressed={exportScale === scale}>{scale}×</button>)}
@@ -2096,9 +2125,9 @@ function App() {
             </div>
             <div className={`export-grid ${exportFormats.length === 2 ? 'two' : ''}`}>
               {exportFormats.map((format) => <button key={format} className={`export-option ${format}`} onClick={() => exportActive(format)} disabled={isExporting}>
-                <span className="export-icon">{format === 'png' ? '▧' : format === 'svg' ? '◇' : format === 'html' ? '‹/›' : format === 'dvi' ? '⇲' : '▤'}</span>
+                <span className="export-icon">{format === 'png' ? '▧' : format === 'svg' ? '◇' : format === 'html' ? '‹/›' : format === 'dvi' ? '⇲' : format === 'ttf' ? 'Aa' : '▤'}</span>
                 <strong>{format.toUpperCase()}</strong>
-                <small>{format === 'png' ? `${exportScale}× raster image` : format === 'svg' ? 'Editable vector image' : format === 'html' ? 'Portable rendered document' : format === 'dvi' ? 'TeX device-independent output' : 'Portable document'}</small>
+                <small>{format === 'png' ? `${exportScale}× raster image` : format === 'svg' ? 'Editable vector image' : format === 'html' ? 'Portable rendered document' : format === 'dvi' ? 'TeX device-independent output' : format === 'ttf' ? 'OpenType font via mf2pt1 + FontForge' : 'Portable document'}</small>
               </button>)}
             </div>
             {isExporting && <div className="export-progress"><span></span>Preparing export…</div>}
@@ -2275,7 +2304,7 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setTaskConsoleOpen(false)}>
           <section className="workbench-modal task-console-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Task Console">
             <div className="modal-title"><div><p className="eyebrow">Local build and inspection output</p><h2>Task Console</h2></div><button className="icon-button" onClick={() => setTaskConsoleOpen(false)}>×</button></div>
-            <div className="task-console-actions"><button className="accent-button" onClick={() => void runActiveBuild()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active TeX build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
+            <div className="task-console-actions"><button className="accent-button" onClick={() => void runActiveBuild()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont to TTF' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active source build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
             <pre className="task-console-output">{taskOutput}</pre>
           </section>
         </div>
@@ -2285,7 +2314,7 @@ function App() {
         <div className="modal-backdrop prompt-backdrop" onMouseDown={() => setPromptOpen(false)}>
           <section className="prompt-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><p className="eyebrow">LLM handoff, without an API lock-in</p><h2>Prompt Studio</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)}>×</button></div>
-            <p className="modal-copy">Describe the diagram, copy the prompt to any LLM, then paste its source response directly into this editor.</p>
+            <p className="modal-copy">Describe the source artifact, copy the prompt to any LLM, then paste its source response directly into this editor.</p>
             <div className="prompt-layout">
               <form className="prompt-form" onSubmit={(event) => event.preventDefault()}>
                 <label>Target source<span className={`source-label ${SOURCE_META[activeDocument.sourceType].color}`}>{SOURCE_META[activeDocument.sourceType].label}</span></label>

@@ -14,6 +14,7 @@ import { references } from './references';
 export const FOUNDRY_LANGUAGE_IDS: Record<SourceType, FoundryLanguageId> = {
   tikz: 'foundry-tikz',
   latex: 'foundry-latex',
+  metafont: 'foundry-metafont',
   svg: 'foundry-svg',
   mermaid: 'foundry-mermaid',
   markdown: 'foundry-markdown',
@@ -25,6 +26,7 @@ export const FOUNDRY_MARKER_OWNER = 'diagram-foundry';
 const LANGUAGE_TO_SOURCE_TYPE: Record<FoundryLanguageId, SourceType> = {
   'foundry-tikz': 'tikz',
   'foundry-latex': 'latex',
+  'foundry-metafont': 'metafont',
   'foundry-svg': 'svg',
   'foundry-mermaid': 'mermaid',
   'foundry-markdown': 'markdown',
@@ -166,6 +168,64 @@ const coreCatalog: Record<SourceType, CatalogItem[]> = {
       insertText: '\\begin{itemize}\n  \\item ${1:First point}\n  \\item ${2:Second point}\n\\end{itemize}${0}',
       kind: 'snippet',
       aliases: ['itemize', 'item', 'list', 'bullet'],
+    },
+  ],
+  metafont: [
+    {
+      label: 'beginchar',
+      detail: 'MetaFont glyph program',
+      description: 'Starts a single glyph at a character code with its width, height, and depth in design units.',
+      insertText: 'beginchar("${1:A}", ${2:8u#}, ${3:10u#}, ${4:0});\n  ${0}\nendchar;',
+      kind: 'snippet',
+      aliases: ['beginchar', 'glyph', 'character', 'codepoint'],
+    },
+    {
+      label: 'draw',
+      detail: 'MetaFont path stroke',
+      description: 'Strokes a straight or curved path with the current pen.',
+      insertText: 'draw (${1:0}, ${2:0}) -- (${3:4u}, ${4:9u}) -- (${5:8u}, ${6:0});${0}',
+      kind: 'snippet',
+      aliases: ['draw', 'path', 'stroke', 'curve'],
+    },
+    {
+      label: 'fill closed path',
+      detail: 'MetaFont glyph outline',
+      description: 'Creates a closed filled outline, which is a practical starting point for MetaFont-to-TTF conversion.',
+      insertText: 'fill (${1:1u}, ${2:0}) -- (${3:4u}, ${4:9u}) -- (${5:7u}, ${6:0}) -- cycle;${0}',
+      kind: 'snippet',
+      aliases: ['fill', 'unfill', 'outline', 'closed-path', 'ttf'],
+    },
+    {
+      label: 'pickup pencircle',
+      detail: 'Select a circular pen',
+      description: 'Sets the pen used by following draw operations.',
+      insertText: 'pickup pencircle scaled ${1:1u};${0}',
+      kind: 'snippet',
+      aliases: ['pickup', 'pencircle', 'pen', 'stroke'],
+    },
+    {
+      label: 'u# design unit',
+      detail: 'MetaFont design unit',
+      description: 'Defines a reusable sharp unit and makes its pixel value available to the glyph program.',
+      insertText: 'u# := ${1:1/8pt#};\ndefine_pixels(u);${0}',
+      kind: 'snippet',
+      aliases: ['u', 'unit', 'define_pixels', 'dimension'],
+    },
+    {
+      label: 'def',
+      detail: 'Reusable MetaFont definition',
+      description: 'Defines a named reusable operation. Use vardef for definitions that need local variables or parameters.',
+      insertText: 'def ${1:name} =\n  ${0}\nenddef;',
+      kind: 'snippet',
+      aliases: ['def', 'vardef', 'enddef', 'macro', 'definition'],
+    },
+    {
+      label: 'mode_setup',
+      detail: 'MetaFont mode setup',
+      description: 'Initialises the selected output mode before font dimensions and glyph programs are declared.',
+      insertText: 'mode_setup;${0}',
+      kind: 'keyword',
+      aliases: ['mode_setup', 'mode', 'proof'],
     },
   ],
   svg: [
@@ -375,7 +435,9 @@ export function lintSource(sourceType: SourceType, source: string): EditorDiagno
     ? lintTikz(source)
     : sourceType === 'latex'
       ? lintLatex(source)
-    : sourceType === 'svg'
+      : sourceType === 'metafont'
+        ? lintMetafont(source)
+      : sourceType === 'svg'
       ? lintSvg(source)
       : sourceType === 'mermaid'
         ? lintMermaid(source)
@@ -552,6 +614,7 @@ export function installFoundryEditorIntelligence(monaco: Monaco): FoundryEditorI
 function completionTriggerCharacters(sourceType: SourceType): string[] {
   if (sourceType === 'tikz') return ['\\', '[', ','];
   if (sourceType === 'latex') return ['\\', '[', '{'];
+  if (sourceType === 'metafont') return [':', '(', ';'];
   if (sourceType === 'svg') return ['<', ' ', '='];
   if (sourceType === 'mermaid') return [' ', '-'];
   if (sourceType === 'text') return [];
@@ -779,6 +842,60 @@ function lintLatex(source: string): EditorDiagnostic[] {
     ));
   }
 
+  return diagnostics;
+}
+
+/**
+ * MetaFont's structural blocks are deliberately small and local: glyphs use
+ * beginchar/endchar while reusable operations use def or vardef/enddef.
+ * This is not a full parser, but it catches the mistakes that make an edit
+ * impossible to render before handing source to the local MetaFont toolchain.
+ */
+function lintMetafont(source: string): EditorDiagnostic[] {
+  const clean = stripMetafontComments(source);
+  const diagnostics = lintBalancedDelimiters(source, clean, 'metafont', [['{', '}'], ['[', ']'], ['(', ')']]);
+  const scopes: Array<{ kind: 'glyph' | 'definition'; offset: number; label: string }> = [];
+  const scopePattern = /\b(beginchar|endchar|vardef|def|enddef)\b/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = scopePattern.exec(clean))) {
+    const command = match[1].toLowerCase();
+    if (command === 'beginchar') {
+      scopes.push({ kind: 'glyph', offset: match.index, label: 'beginchar' });
+      continue;
+    }
+    if (command === 'def' || command === 'vardef') {
+      scopes.push({ kind: 'definition', offset: match.index, label: command });
+      continue;
+    }
+
+    const expectedKind = command === 'endchar' ? 'glyph' : 'definition';
+    const top = scopes.at(-1);
+    if (!top) {
+      diagnostics.push(diagnosticAt(source, match.index, command.length, 'error', `metafont-unexpected-${command}`, `Unexpected ${command}; no MetaFont block is open.`));
+      continue;
+    }
+    if (top.kind === expectedKind) {
+      scopes.pop();
+      continue;
+    }
+
+    diagnostics.push(diagnosticAt(
+      source,
+      match.index,
+      command.length,
+      'error',
+      `metafont-mismatched-${command}`,
+      `Expected ${top.kind === 'glyph' ? 'endchar' : 'enddef'} before ${command}.`,
+    ));
+    const matchingIndex = scopes.map((scope) => scope.kind).lastIndexOf(expectedKind);
+    if (matchingIndex >= 0) scopes.splice(matchingIndex);
+  }
+
+  for (const scope of scopes) {
+    const close = scope.kind === 'glyph' ? 'endchar' : 'enddef';
+    diagnostics.push(diagnosticAt(source, scope.offset, scope.label.length, 'error', `metafont-unclosed-${scope.kind}`, `Missing ${close}; for this ${scope.label} block.`));
+  }
   return diagnostics;
 }
 
@@ -1025,6 +1142,11 @@ function stripTikzComments(source: string): string {
   return stripped;
 }
 
+/** MetaFont uses the same percent-led line comments as TeX. */
+function stripMetafontComments(source: string): string {
+  return stripTikzComments(source);
+}
+
 function maskSvgComments(source: string): string {
   return source
     .replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '))
@@ -1106,13 +1228,15 @@ function buildFoldingRanges(sourceType: SourceType, lines: string[]): MonacoEdit
     ? foldTikz(lines)
     : sourceType === 'latex'
       ? foldTikz(lines)
-    : sourceType === 'svg'
-      ? foldSvg(lines)
-      : sourceType === 'mermaid'
-        ? foldMermaid(lines)
-        : sourceType === 'markdown'
-          ? foldMarkdown(lines)
-          : [];
+      : sourceType === 'metafont'
+        ? foldMetafont(lines)
+        : sourceType === 'svg'
+          ? foldSvg(lines)
+          : sourceType === 'mermaid'
+            ? foldMermaid(lines)
+            : sourceType === 'markdown'
+              ? foldMarkdown(lines)
+              : [];
   return ranges.filter((range) => range.end > range.start);
 }
 
@@ -1133,6 +1257,35 @@ function foldTikz(lines: string[]): MonacoEditor.languages.FoldingRange[] {
           scopes.splice(matchingIndex);
         }
       }
+    }
+  });
+  return ranges;
+}
+
+function foldMetafont(lines: string[]): MonacoEditor.languages.FoldingRange[] {
+  const ranges: MonacoEditor.languages.FoldingRange[] = [];
+  const scopes: Array<{ kind: 'glyph' | 'definition'; lineNumber: number }> = [];
+  lines.forEach((line, index) => {
+    const lineNumber = index + 1;
+    const clean = stripMetafontComments(line);
+    const pattern = /\b(beginchar|endchar|vardef|def|enddef)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(clean))) {
+      const command = match[1].toLowerCase();
+      if (command === 'beginchar') {
+        scopes.push({ kind: 'glyph', lineNumber });
+        continue;
+      }
+      if (command === 'def' || command === 'vardef') {
+        scopes.push({ kind: 'definition', lineNumber });
+        continue;
+      }
+      const kind = command === 'endchar' ? 'glyph' : 'definition';
+      const matchingIndex = scopes.map((scope) => scope.kind).lastIndexOf(kind);
+      if (matchingIndex < 0) continue;
+      const scope = scopes[matchingIndex];
+      ranges.push({ start: scope.lineNumber, end: lineNumber });
+      scopes.splice(matchingIndex);
     }
   });
   return ranges;
@@ -1218,6 +1371,7 @@ function buildDocumentSymbols(monaco: Monaco, sourceType: SourceType, lines: str
   if (sourceType === 'markdown') return markdownSymbols(monaco, lines);
   if (sourceType === 'tikz') return tikzSymbols(monaco, lines);
   if (sourceType === 'latex') return latexSymbols(monaco, lines);
+  if (sourceType === 'metafont') return metafontSymbols(monaco, lines);
   if (sourceType === 'svg') return svgSymbols(monaco, lines);
   if (sourceType === 'mermaid') return mermaidSymbols(monaco, lines);
   return textSymbols(monaco, lines);
@@ -1262,6 +1416,22 @@ function latexSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.D
       symbols.push(symbolForLine(monaco, line, index + 1, section[2], `LaTeX ${section[1]}`, monaco.languages.SymbolKind.String));
     } else if (environment) {
       symbols.push(symbolForLine(monaco, line, index + 1, environment[1], 'LaTeX environment', monaco.languages.SymbolKind.Module));
+    }
+  });
+  return symbols;
+}
+
+function metafontSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const clean = stripMetafontComments(line);
+    const glyph = /^\s*beginchar\s*\(\s*(?:"([^"]+)"|'([^']+)'|([^,\s)]+))/.exec(clean);
+    const definition = /^\s*(?:vardef|def)\s+([A-Za-z_][\w@]*(?:#)?)/.exec(clean);
+    if (glyph) {
+      const name = glyph[1] ?? glyph[2] ?? glyph[3] ?? 'glyph';
+      symbols.push(symbolForLine(monaco, line, index + 1, name, 'MetaFont glyph', monaco.languages.SymbolKind.Field));
+    } else if (definition) {
+      symbols.push(symbolForLine(monaco, line, index + 1, definition[1], 'MetaFont definition', monaco.languages.SymbolKind.Function));
     }
   });
   return symbols;
