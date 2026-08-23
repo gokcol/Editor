@@ -13,7 +13,7 @@ import { readSnapshots, rememberSnapshot, type LocalSnapshot } from './engine/lo
 import { formatJson, inferJsonSchema, inspectJson, minifyJson } from './engine/jsonTools';
 import { compactPath, documentOutline, findInSource, sourceFromAssistantReply } from './engine/workbench';
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
-import type { AppSettings, DocumentModel, ExportFormat, FileNode, PreviewState, Project, PythonRunResult, ReferenceEntry, SourceType, TexPdfEngine } from './types';
+import type { AppSettings, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
 // into `file:///vs` inside a packaged Electron worker, which makes Monaco fall
@@ -456,7 +456,8 @@ type ProjectSearchHit = { node: FileNode; line: number; column: number; excerpt:
 type GitFileStatus = { path: string; index?: string; workingTree?: string; status?: string };
 type GitInfo = { branch?: string; files?: GitFileStatus[]; commits?: { hash: string; subject: string; author?: string; date?: string }[]; available?: boolean; message?: string };
 
-const RECENT_PROJECTS_KEY = 'diagram-foundry:recent-projects';
+const LEGACY_RECENT_PROJECTS_KEY = 'diagram-foundry:recent-projects';
+const LEGACY_RECENT_PROJECTS_MIGRATION_KEY = 'yedit:recents-native-migration-v1';
 const PALETTE_HISTORY_KEY = 'diagram-foundry:palette-history';
 const SHORTCUTS_KEY = 'diagram-foundry:shortcuts';
 const SHORTCUT_ACTIONS = [
@@ -484,6 +485,18 @@ function historyScope(project: Project | null, document: DocumentModel) {
 
 function displayTime(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' }).format(timestamp);
+}
+
+function legacyRecentProjects() {
+  try {
+    const loaded: unknown = JSON.parse(window.localStorage.getItem(LEGACY_RECENT_PROJECTS_KEY) || '[]');
+    if (!Array.isArray(loaded)) return [];
+    return loaded.filter((item): item is Pick<Project, 'root' | 'name'> => (
+      Boolean(item) && typeof item === 'object' && typeof (item as Project).root === 'string' && typeof (item as Project).name === 'string'
+    )).slice(0, 12);
+  } catch {
+    return [];
+  }
 }
 
 function sourceFilenameForDrop(name: string, type: SourceType) {
@@ -568,7 +581,7 @@ function App() {
   const [pythonInspectorView, setPythonInspectorView] = useState<'output' | 'source'>('output');
   const [outputViewerOpen, setOutputViewerOpen] = useState(false);
   const [outputViewerFullscreen, setOutputViewerFullscreen] = useState(false);
-  const [recentProjects, setRecentProjects] = useState<Array<Pick<Project, 'root' | 'name'>>>([]);
+  const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
   const [recentProjectsOpen, setRecentProjectsOpen] = useState(false);
   const [paletteHistory, setPaletteHistory] = useState<string[]>(() => {
     try { return JSON.parse(window.localStorage.getItem(PALETTE_HISTORY_KEY) || '[]'); } catch { return []; }
@@ -627,6 +640,12 @@ function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToast({ text, tone });
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3800);
+  }, []);
+
+  const refreshRecentProjects = useCallback(async () => {
+    const entries = await window.diagramApi.recents.list();
+    setRecentProjects(entries);
+    return entries;
   }, []);
 
   const openOutputViewer = useCallback(() => {
@@ -862,16 +881,33 @@ function App() {
   }, []);
 
   useEffect(() => {
-    try {
-      const loaded = JSON.parse(window.localStorage.getItem(RECENT_PROJECTS_KEY) || '[]');
-      if (Array.isArray(loaded)) {
-        setRecentProjects(loaded.filter((item): item is Pick<Project, 'root' | 'name'> => (
-          item && typeof item.root === 'string' && typeof item.name === 'string'
-        )).slice(0, 7));
-      }
-    } catch {
-      setRecentProjects([]);
-    }
+    let mounted = true;
+    // Older renderer builds in this profile kept folder history in local
+    // storage. Import it once into the native, durable list; modern entries
+    // are written by Electron so standalone files can be reopened safely after
+    // a relaunch too. The marker prevents a cleared native list from being
+    // repopulated from this legacy cache on the next launch.
+    let shouldMigrateLegacy = true;
+    try { shouldMigrateLegacy = window.localStorage.getItem(LEGACY_RECENT_PROJECTS_MIGRATION_KEY) !== 'done'; } catch { /* no readable legacy storage */ }
+    const loadRecents = shouldMigrateLegacy
+      ? window.diagramApi.recents.migrateLegacyProjects(legacyRecentProjects())
+      : window.diagramApi.recents.list();
+    void loadRecents
+      .then((entries) => {
+        if (shouldMigrateLegacy) {
+          try {
+            window.localStorage.setItem(LEGACY_RECENT_PROJECTS_MIGRATION_KEY, 'done');
+            window.localStorage.removeItem(LEGACY_RECENT_PROJECTS_KEY);
+          } catch { /* A blocked browser storage area cannot contain a usable legacy list. */ }
+        }
+        if (mounted) setRecentProjects(entries);
+      })
+      .catch(() => {
+        void window.diagramApi.recents.list()
+          .then((entries) => { if (mounted) setRecentProjects(entries); })
+          .catch(() => { if (mounted) setRecentProjects([]); });
+      });
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -1092,21 +1128,13 @@ function App() {
     setSelectedFolderPath((current) => resetLocation || !directories.has(current) ? '' : current);
   }, []);
 
-  const rememberRecentProject = useCallback((openedProject: Project) => {
-    setRecentProjects((current) => {
-      const next = [{ root: openedProject.root, name: openedProject.name }, ...current.filter((item) => item.root !== openedProject.root)].slice(0, 7);
-      try { window.localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(next)); } catch { /* ignored */ }
-      return next;
-    });
-  }, []);
-
   const hydrateProject = useCallback(async (openedProject: Project) => {
     const sourceFiles = flattenFiles(openedProject.tree).filter((item) => item.supported);
     // Folder names are often reused across projects (for example, `notes`).
     // Always start an opened folder at its real root instead of carrying old
     // collapsed/selected paths into the new workspace.
     syncProjectTree(openedProject, true);
-    rememberRecentProject(openedProject);
+    void refreshRecentProjects();
     if (!sourceFiles.length) {
       const blank = makeBlankDocument(defaultCreationSourceType);
       setDocuments([blank]);
@@ -1129,7 +1157,7 @@ function App() {
     setActiveId(document.id);
     setPreview(EMPTY_PREVIEW);
     showToast(`Opened ${openedProject.name}.`, 'success');
-  }, [defaultCreationSourceType, rememberRecentProject, showToast, syncProjectTree]);
+  }, [defaultCreationSourceType, refreshRecentProjects, showToast, syncProjectTree]);
 
   const openProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Opening a project will close the current scratchpad tabs. Continue without saving those edits?')) return;
@@ -1142,43 +1170,48 @@ function App() {
     }
   }, [documents, hydrateProject, showToast]);
 
+  const activateOpenedSource = useCallback((opened: OpenedSourceFile) => {
+    const isProjectFile = 'relativePath' in opened;
+    const existing = isProjectFile
+      ? documents.find((document) => document.relativePath === opened.relativePath)
+      : documents.find((document) => document.fileHandle === opened.fileHandle);
+    if (existing) {
+      setActiveId(existing.id);
+      return;
+    }
+    const document: DocumentModel = {
+      id: `file-${crypto.randomUUID()}`,
+      name: opened.name,
+      sourceType: opened.sourceType,
+      value: opened.content,
+      ...(isProjectFile ? { relativePath: opened.relativePath } : { fileHandle: opened.fileHandle }),
+      dirty: false,
+      revision: 0,
+    };
+    if (isProjectFile) {
+      setSelectedFolderPath(parentFolderPath(opened.relativePath));
+      setCollapsedPaths((current) => {
+        const next = new Set(current);
+        for (const ancestor of ancestorFolderPaths(opened.relativePath)) next.delete(ancestor);
+        return next;
+      });
+    }
+    setDocuments((current) => [...current, document]);
+    setActiveId(document.id);
+    setPreview(EMPTY_PREVIEW);
+  }, [documents]);
+
   const openStandaloneFile = useCallback(async () => {
     try {
       const opened = await window.diagramApi.project.openFile(project?.root);
       if ('canceled' in opened) return;
-      const isProjectFile = 'relativePath' in opened;
-      const existing = isProjectFile
-        ? documents.find((document) => document.relativePath === opened.relativePath)
-        : documents.find((document) => document.fileHandle === opened.fileHandle);
-      if (existing) {
-        setActiveId(existing.id);
-        return;
-      }
-      const document: DocumentModel = {
-        id: `file-${crypto.randomUUID()}`,
-        name: opened.name,
-        sourceType: opened.sourceType,
-        value: opened.content,
-        ...(isProjectFile ? { relativePath: opened.relativePath } : { fileHandle: opened.fileHandle }),
-        dirty: false,
-        revision: 0,
-      };
-      if (isProjectFile) {
-        setSelectedFolderPath(parentFolderPath(opened.relativePath));
-        setCollapsedPaths((current) => {
-          const next = new Set(current);
-          for (const ancestor of ancestorFolderPaths(opened.relativePath)) next.delete(ancestor);
-          return next;
-        });
-      }
-      setDocuments((current) => [...current, document]);
-      setActiveId(document.id);
-      setPreview(EMPTY_PREVIEW);
+      activateOpenedSource(opened);
+      void refreshRecentProjects();
       showToast(`Opened ${opened.name}.`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not open that source file.', 'error');
     }
-  }, [documents, project?.root, showToast]);
+  }, [activateOpenedSource, project?.root, refreshRecentProjects, showToast]);
 
   const newProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Creating a new project will close the current scratchpad tabs. Continue without saving those edits?')) return;
@@ -1203,21 +1236,56 @@ function App() {
     }
   }, [project, showToast, syncProjectTree]);
 
-  const openRecentProject = useCallback(async (recent: Pick<Project, 'root' | 'name'>) => {
-    if (documents.some((document) => document.dirty) && !window.confirm('Opening a recent project will close the current scratchpad tabs. Continue without saving those edits?')) return;
+  const openRecentEntry = useCallback(async (recent: RecentEntry) => {
+    if (recent.kind === 'project' && documents.some((document) => document.dirty) && !window.confirm('Opening a recent folder will close the current scratchpad tabs. Continue without saving those edits?')) return false;
     try {
-      const opened = await window.diagramApi.project.openRecent(recent.root);
-      await hydrateProject(opened);
+      const opened = await window.diagramApi.recents.open(recent.id, project?.root);
+      if (opened.kind === 'project') await hydrateProject(opened.project);
+      else {
+        activateOpenedSource(opened.file);
+        showToast(`Opened ${recent.name}.`, 'success');
+      }
+      await refreshRecentProjects();
+      return true;
     } catch (error) {
-      setRecentProjects((current) => current.filter((item) => item.root !== recent.root));
-      showToast(error instanceof Error ? error.message : `Could not reopen ${recent.name}.`, 'error');
+      const message = error instanceof Error ? error.message : `Could not reopen ${recent.name}.`;
+      if (/(?:ENOENT|no such file|no longer available|unavailable)/i.test(message)) {
+        try {
+          const entries = await window.diagramApi.recents.remove(recent.id);
+          setRecentProjects(entries);
+        } catch { /* The original unavailable-item error is still useful. */ }
+        showToast(`${recent.name} is no longer available and was removed from Recents.`, 'error');
+        return false;
+      }
+      showToast(message, 'error');
+      return false;
     }
-  }, [documents, hydrateProject, showToast]);
+  }, [activateOpenedSource, documents, hydrateProject, project?.root, refreshRecentProjects, showToast]);
 
-  const openLatestRecentProject = useCallback(() => {
+  const openLatestRecentEntry = useCallback(() => {
     const latest = recentProjects[0];
-    if (latest) void openRecentProject(latest);
-  }, [openRecentProject, recentProjects]);
+    if (latest) void openRecentEntry(latest);
+  }, [openRecentEntry, recentProjects]);
+
+  const removeRecentEntry = useCallback(async (recent: RecentEntry) => {
+    try {
+      const entries = await window.diagramApi.recents.remove(recent.id);
+      setRecentProjects(entries);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not remove that recent item.', 'error');
+    }
+  }, [showToast]);
+
+  const clearRecentEntries = useCallback(async () => {
+    if (!recentProjects.length || !window.confirm('Clear all remembered folders and files from Recents?')) return;
+    try {
+      const entries = await window.diagramApi.recents.clear();
+      setRecentProjects(entries);
+      showToast('Recent items cleared.', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not clear recent items.', 'error');
+    }
+  }, [recentProjects.length, showToast]);
 
   const renameActiveProjectFile = useCallback(async () => {
     if (!project || !activeDocument?.relativePath) {
@@ -2237,6 +2305,7 @@ function App() {
     { id: 'new-project', label: 'New project', hint: '⌘⇧N', group: 'File', run: newProject },
     { id: 'open-file', label: 'Open file…', hint: '⌘O', group: 'File', run: openStandaloneFile },
     { id: 'open-project', label: 'Open folder…', hint: '⌘⇧O', group: 'File', run: openProject },
+    { id: 'open-recents', label: 'Open recent…', hint: '', group: 'File', run: () => setRecentProjectsOpen(true) },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
     ...enabledSourceTypes.map((type) => ({
       id: `new-${type}`,
@@ -2650,6 +2719,44 @@ function App() {
     </div>
   );
 
+  const recentProjectsDialog = recentProjectsOpen && (
+    <div className="modal-backdrop" onMouseDown={() => setRecentProjectsOpen(false)}>
+      <section className="workbench-modal recent-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Recent folders and files">
+        <div className="modal-title">
+          <div><p className="eyebrow">Local workspace memory</p><h2>Recents</h2></div>
+          <div className="recent-modal-actions">
+            {recentProjects.length > 0 && <button className="compact-button" onClick={() => void clearRecentEntries()}>Clear all</button>}
+            <button className="icon-button" onClick={() => setRecentProjectsOpen(false)} title="Close Recents" aria-label="Close Recents">×</button>
+          </div>
+        </div>
+        <p className="modal-copy">Folders reopen as projects. Files reopen as ordinary editable tabs, with a fresh local save permission.</p>
+        <div className="workbench-list recent-list">
+          {(['project', 'file'] as const).map((kind) => {
+            const entries = recentProjects.filter((recent) => recent.kind === kind);
+            if (!entries.length) return null;
+            return <section className="recent-section" key={kind} aria-label={kind === 'project' ? 'Recent folders' : 'Recent files'}>
+              <p>{kind === 'project' ? 'Folders' : 'Files'}</p>
+              {entries.map((recent) => <article className="recent-entry" key={recent.id}>
+                <button className="recent-open-button" onClick={() => {
+                  void openRecentEntry(recent).then((didOpen) => { if (didOpen) setRecentProjectsOpen(false); });
+                }}>
+                  <span>
+                    <em>{kind === 'project' ? 'Folder' : 'File'}</em>
+                    <strong>{recent.name}</strong>
+                    <code>{compactPath(recent.path, 70)}</code>
+                  </span>
+                  <small>Open</small>
+                </button>
+                <button className="recent-remove-button" onClick={() => void removeRecentEntry(recent)} title={`Remove ${recent.name} from Recents`} aria-label={`Remove ${recent.name} from Recents`}>×</button>
+              </article>)}
+            </section>;
+          })}
+          {!recentProjects.length && <div className="empty-workbench-state">Open a folder or a supported source file and it will appear here for quick reuse.</div>}
+        </div>
+      </section>
+    </div>
+  );
+
   if (!activeDocument) {
     return (
       <main className={`app-shell empty-workspace-shell${dragActive ? ' drag-active' : ''}`} data-theme={effectiveAppearance} style={appShellStyle}>
@@ -2689,6 +2796,7 @@ function App() {
               <button className="outline-button" onClick={() => void openStandaloneFile()}>Open file</button>
               <button className="outline-button" onClick={() => void openProject()}>Open folder</button>
               <button className="outline-button" onClick={() => void newProject()}>New project</button>
+              <button className="outline-button" onClick={() => setRecentProjectsOpen(true)}>↺ Recents{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
             </div>
             <small>{enabledSourceTypes.length} source type{enabledSourceTypes.length === 1 ? '' : 's'} enabled · Manage availability in Settings</small>
           </section>
@@ -2730,6 +2838,7 @@ function App() {
         </footer>
         {toast && <div className={`toast ${toast.tone}`} role="status"><span>{toast.tone === 'success' ? '✓' : toast.tone === 'error' ? '!' : 'i'}</span>{toast.text}</div>}
         {newSourceDialog}
+        {recentProjectsDialog}
         {aboutDialog}
       </main>
     );
@@ -2791,7 +2900,7 @@ function App() {
             <button onClick={openGitPanel} title="Git status and history">⌘ Git</button>
             <button onClick={() => setTaskConsoleOpen(true)} title="Local build output">›_ Tasks</button>
             <button onClick={() => setTemplateGalleryOpen(true)} disabled={!availableTemplateSourceTypes.length} title={availableTemplateSourceTypes.length ? 'Starter templates' : 'Enable a template-capable source type in Settings'}>▦ Templates</button>
-            <button onClick={() => setRecentProjectsOpen(true)} disabled={!recentProjects.length} title="Recently opened projects">↺ Recents</button>
+            <button onClick={() => setRecentProjectsOpen(true)} title="Recently opened folders and files">↺ Recents{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
           </div>
           {project ? (
             <>
@@ -2838,7 +2947,7 @@ function App() {
           <div className="explorer-footer">
             <button onClick={() => openNewSource()}>＋ New source</button>
             <button onClick={() => setPromptOpen(true)}>✦ Draft with LLM</button>
-            {recentProjects.length > 0 && <button onClick={openLatestRecentProject}>↺ Reopen latest</button>}
+            {recentProjects.length > 0 && <button onClick={openLatestRecentEntry}>↺ Reopen latest</button>}
             <button onClick={() => void runPrimaryTask()} title={activeDocument.sourceType === 'python' ? 'Run the current Python editor buffer' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'python' ? 'Run Python' : activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
           </div>
           <div className="panel-resizer explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" onPointerDown={(event) => startPanelResize('explorer', event)} />
@@ -3095,6 +3204,8 @@ function App() {
 
       {aboutDialog}
 
+      {recentProjectsDialog}
+
       {settingsOpen && (
         <div className="modal-backdrop settings-backdrop" onMouseDown={() => setSettingsOpen(false)}>
           <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Settings">
@@ -3264,18 +3375,6 @@ function App() {
             <div className="template-grid">
               {availableTemplateSourceTypes.map((type) => <button key={type} type="button" className={`template-card ${SOURCE_META[type].color}`} aria-label={`Open ${SOURCE_META[type].label} starter template (${samples[type].name})`} onClick={() => { createUnsavedStarterDocument(type); setTemplateGalleryOpen(false); }}><span className="template-badge">{SOURCE_META[type].short}</span><span className="template-card-copy"><strong>{SOURCE_META[type].label} starter</strong><small>{SOURCE_DESCRIPTIONS[type]} <code>{samples[type].name}</code></small></span><span className="template-card-open" aria-hidden="true">→</span></button>)}
               {!availableTemplateSourceTypes.length && <div className="empty-workbench-state template-empty-state">No templates are currently available.</div>}
-            </div>
-          </section>
-        </div>
-      )}
-
-      {recentProjectsOpen && (
-        <div className="modal-backdrop" onMouseDown={() => setRecentProjectsOpen(false)}>
-          <section className="workbench-modal recent-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Recent projects">
-            <div className="modal-title"><div><p className="eyebrow">Local workspace memory</p><h2>Recent projects</h2></div><button className="icon-button" onClick={() => setRecentProjectsOpen(false)}>×</button></div>
-            <div className="workbench-list recent-list">
-              {recentProjects.map((recent) => <button key={recent.root} onClick={() => { void openRecentProject(recent); setRecentProjectsOpen(false); }}><span><strong>{recent.name}</strong><code>{compactPath(recent.root, 70)}</code></span><small>Open</small></button>)}
-              {!recentProjects.length && <div className="empty-workbench-state">Projects you open will appear here for quick reuse.</div>}
             </div>
           </section>
         </div>

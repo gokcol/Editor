@@ -20,6 +20,7 @@ const maxProjectWatchers = 12;
 const maxProjectWatchDirectories = 256;
 const maxProjectWatchEntries = 4000;
 const projectWatchPollInterval = 450;
+const maxRecentEntries = 12;
 // Keep ordinary project hierarchies navigable without recursively walking an
 // unbounded filesystem tree when a very large folder is opened.
 const maxProjectTreeDepth = 32;
@@ -671,6 +672,164 @@ async function saveSettings(candidate) {
   return settings;
 }
 
+function recentEntriesPath() {
+  return path.join(app.getPath('userData'), 'recent-items.json');
+}
+
+function legacyRecentEntriesPath() {
+  return path.join(app.getPath('appData'), 'Diagram Foundry', 'recent-items.json');
+}
+
+function normalizeRecentEntry(candidate) {
+  const kind = candidate?.kind;
+  if (kind !== 'project' && kind !== 'file') return undefined;
+  const rawTarget = typeof candidate?.target === 'string' ? candidate.target : candidate?.path;
+  if (typeof rawTarget !== 'string' || !rawTarget.trim()) return undefined;
+  const target = path.resolve(rawTarget);
+  const suppliedName = typeof candidate?.name === 'string' ? candidate.name.trim() : '';
+  const name = (suppliedName || path.basename(target)).slice(0, 180);
+  const id = typeof candidate?.id === 'string' && /^recent-[a-zA-Z0-9-]{8,}$/.test(candidate.id)
+    ? candidate.id
+    : `recent-${randomUUID()}`;
+  const suppliedOpenedAt = Number(candidate?.openedAt);
+  const openedAt = Number.isFinite(suppliedOpenedAt) && suppliedOpenedAt > 0
+    ? Math.min(suppliedOpenedAt, Date.now())
+    : Date.now();
+  return { id, kind, target, name, openedAt };
+}
+
+function normalizeRecentEntries(candidate) {
+  const source = Array.isArray(candidate) ? candidate : Array.isArray(candidate?.entries) ? candidate.entries : [];
+  const seen = new Set();
+  return source
+    .map(normalizeRecentEntry)
+    .filter(Boolean)
+    .sort((left, right) => right.openedAt - left.openedAt)
+    .filter((entry) => {
+      const key = `${entry.kind}:${entry.target}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maxRecentEntries);
+}
+
+function publicRecentEntries(entries) {
+  return entries.map(({ id, kind, name, target, openedAt }) => ({ id, kind, name, path: target, openedAt }));
+}
+
+async function readRecentEntries() {
+  try {
+    const raw = await fs.readFile(recentEntriesPath(), 'utf8');
+    return normalizeRecentEntries(JSON.parse(raw));
+  } catch {
+    // A previous branded build did not write this file, but keep a native
+    // migration path available for any early/local builds that did.
+    try {
+      const raw = await fs.readFile(legacyRecentEntriesPath(), 'utf8');
+      return normalizeRecentEntries(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function writeRecentEntries(entries) {
+  const target = recentEntriesPath();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`, 'utf8');
+  await fs.rename(temporary, target);
+}
+
+// Serialize edits so an Open File and an Open Folder action arriving close
+// together cannot overwrite each other's recent entry.
+let recentEntriesMutation = Promise.resolve();
+
+function mutateRecentEntries(mutator) {
+  const operation = recentEntriesMutation.then(async () => {
+    const current = await readRecentEntries();
+    const next = normalizeRecentEntries(await mutator(current));
+    await writeRecentEntries(next);
+    return next;
+  });
+  recentEntriesMutation = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
+async function loadRecentEntries() {
+  await recentEntriesMutation;
+  return readRecentEntries();
+}
+
+async function rememberRecentEntry(candidate) {
+  const normalized = normalizeRecentEntry(candidate);
+  if (!normalized) throw new Error('That recent item is invalid.');
+  const next = await mutateRecentEntries((current) => {
+    const existing = current.find((entry) => entry.kind === normalized.kind && entry.target === normalized.target);
+    const fresh = {
+      ...normalized,
+      id: existing?.id || normalized.id,
+      openedAt: Date.now(),
+    };
+    return [fresh, ...current.filter((entry) => !(entry.kind === fresh.kind && entry.target === fresh.target))];
+  });
+  return publicRecentEntries(next);
+}
+
+async function rememberRecentEntryBestEffort(candidate) {
+  try {
+    await rememberRecentEntry(candidate);
+  } catch (error) {
+    // Opening or saving a user source must still work if macOS temporarily
+    // refuses access to Yedit's preference directory.
+    console.warn('Could not update Yedit Recents:', error instanceof Error ? error.message : error);
+  }
+}
+
+async function migrateLegacyRecentProjects(candidates) {
+  const requested = Array.isArray(candidates) ? candidates.slice(0, maxRecentEntries) : [];
+  const discovered = [];
+  for (const candidate of requested) {
+    if (!candidate || typeof candidate.root !== 'string' || !candidate.root.trim()) continue;
+    try {
+      const workspace = await projectWorkspace(candidate.root);
+      discovered.push({
+        kind: 'project',
+        target: workspace.root,
+        name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : path.basename(workspace.root),
+      });
+    } catch {
+      // A moved legacy folder should not stop the rest of the migration.
+    }
+  }
+  const next = await mutateRecentEntries((current) => {
+    const known = new Set(current.map((entry) => `${entry.kind}:${entry.target}`));
+    const now = Date.now();
+    const migrated = discovered
+      .filter((entry) => {
+        const key = `${entry.kind}:${entry.target}`;
+        if (known.has(key)) return false;
+        known.add(key);
+        return true;
+      })
+      .map((entry, index) => ({ ...entry, id: `recent-${randomUUID()}`, openedAt: now - maxRecentEntries - index }));
+    return [...current, ...migrated];
+  });
+  return publicRecentEntries(next);
+}
+
+async function removeRecentEntry(id) {
+  if (typeof id !== 'string' || !id.trim()) throw new Error('That recent item is invalid.');
+  const next = await mutateRecentEntries((current) => current.filter((entry) => entry.id !== id));
+  return publicRecentEntries(next);
+}
+
+async function clearRecentEntries() {
+  const next = await mutateRecentEntries(() => []);
+  return publicRecentEntries(next);
+}
+
 function assertInside(root, relativePath) {
   const rootPath = path.resolve(root);
   const targetPath = path.resolve(rootPath, relativePath);
@@ -749,11 +908,18 @@ async function openedStandaloneFile(sender, fileHandle) {
 
 async function projectRelativeSourcePath(projectRoot, target) {
   if (typeof projectRoot !== 'string' || !projectRoot.trim()) return undefined;
-  const workspace = await projectWorkspace(projectRoot);
-  const realTarget = await fs.realpath(target);
-  if (!isInside(workspace.realRoot, realTarget)) return undefined;
-  const relativePath = relativePathFor(workspace.realRoot, realTarget);
-  return (await projectFile(workspace, relativePath)).relativePath;
+  try {
+    const workspace = await projectWorkspace(projectRoot);
+    const realTarget = await fs.realpath(target);
+    if (!isInside(workspace.realRoot, realTarget)) return undefined;
+    const relativePath = relativePathFor(workspace.realRoot, realTarget);
+    return (await projectFile(workspace, relativePath)).relativePath;
+  } catch {
+    // A folder can disappear after it is opened. A still-valid standalone
+    // source should remain openable rather than inheriting that stale folder's
+    // failure.
+    return undefined;
+  }
 }
 
 async function sourceLocation(sender, target, projectRoot) {
@@ -886,6 +1052,12 @@ async function projectPayload(root) {
     name: path.basename(workspace.root),
     tree: await buildTree(workspace.root),
   };
+}
+
+async function rememberedProjectPayload(root) {
+  const project = await projectPayload(root);
+  await rememberRecentEntryBestEffort({ kind: 'project', target: project.root, name: project.name });
+  return project;
 }
 
 function stopProjectWatcher(watchId) {
@@ -1975,6 +2147,7 @@ function menuTemplate(settings = defaultSettings) {
         { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: () => sendToRenderer('new-project') },
         { label: 'Open File…', accelerator: 'CmdOrCtrl+O', click: () => sendToRenderer('open-file') },
         { label: 'Open Folder…', accelerator: 'CmdOrCtrl+Shift+O', click: () => sendToRenderer('open-project') },
+        { label: 'Open Recent…', click: () => sendToRenderer('open-recents') },
         { type: 'separator' },
         { label: 'New Source File…', accelerator: 'CmdOrCtrl+N', click: () => sendToRenderer('new-file') },
         {
@@ -2110,7 +2283,7 @@ ipcMain.handle('project:open', async () => {
     properties: ['openDirectory', 'createDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
-  return projectPayload(picked.filePaths[0]);
+  return rememberedProjectPayload(picked.filePaths[0]);
 });
 
 ipcMain.handle('project:open-file', async (event, projectRoot) => {
@@ -2120,7 +2293,9 @@ ipcMain.handle('project:open-file', async (event, projectRoot) => {
     filters: [{ name: 'Yedit source files', extensions: [...sourceExtensions].map((extension) => extension.slice(1)).sort() }],
   });
   if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
-  return standaloneSourcePayload(event.sender, picked.filePaths[0], projectRoot);
+  const source = await standaloneSourcePayload(event.sender, picked.filePaths[0], projectRoot);
+  if ('fileHandle' in source) await rememberRecentEntryBestEffort({ kind: 'file', target: picked.filePaths[0], name: source.name });
+  return source;
 });
 
 ipcMain.handle('project:create', async (_event, name) => {
@@ -2138,11 +2313,23 @@ ipcMain.handle('project:create', async (_event, name) => {
   // A project supplies only an empty, predictable folder structure.  Complete
   // source examples are available from the explicit Template Gallery; creating
   // a project must not silently add boilerplate in any format.
-  return projectPayload(root);
+  return rememberedProjectPayload(root);
 });
 
 ipcMain.handle('project:refresh', async (_event, root) => projectPayload(root));
-ipcMain.handle('project:open-recent', async (_event, root) => projectPayload(root));
+ipcMain.handle('recents:list', async () => publicRecentEntries(await loadRecentEntries()));
+ipcMain.handle('recents:migrate-legacy-projects', async (_event, projects) => migrateLegacyRecentProjects(projects));
+ipcMain.handle('recents:open', async (event, id, projectRoot) => {
+  if (typeof id !== 'string' || !id.trim()) throw new Error('That recent item is invalid.');
+  const entry = (await loadRecentEntries()).find((candidate) => candidate.id === id);
+  if (!entry) throw new Error('That recent item is no longer available.');
+  if (entry.kind === 'project') return { kind: 'project', project: await rememberedProjectPayload(entry.target) };
+  const file = await standaloneSourcePayload(event.sender, entry.target, projectRoot);
+  await rememberRecentEntryBestEffort({ kind: 'file', target: entry.target, name: file.name });
+  return { kind: 'file', file };
+});
+ipcMain.handle('recents:remove', async (_event, id) => removeRecentEntry(id));
+ipcMain.handle('recents:clear', async () => clearRecentEntries());
 ipcMain.handle('project:read-file', async (_event, root, relativePath) => {
   const workspace = await projectWorkspace(root);
   const source = await projectFile(workspace, relativePath);
@@ -2210,7 +2397,9 @@ ipcMain.handle('project:save-as', async (event, suggestedName, content, type, pr
   if (result.canceled || !result.filePath) return { canceled: true };
   const target = path.resolve(result.filePath);
   await saveStandaloneSource(target, content);
-  return { name: path.basename(target), ...await sourceLocation(event.sender, target, projectRoot) };
+  const location = await sourceLocation(event.sender, target, projectRoot);
+  if ('fileHandle' in location) await rememberRecentEntryBestEffort({ kind: 'file', target, name: path.basename(target) });
+  return { name: path.basename(target), ...location };
 });
 ipcMain.handle('render:tikz', async (_event, source, name, engine) => renderTikz(source, name, engine));
 ipcMain.handle('render:latex', async (_event, source, name, mode, engine) => renderLatex(source, name, mode, engine));

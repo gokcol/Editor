@@ -124,6 +124,21 @@ export type OpenedStandaloneSourceFile = {
 
 export type OpenedSourceFile = OpenedProjectSourceFile | OpenedStandaloneSourceFile;
 
+/** A locally remembered folder or standalone source file. */
+export type RecentEntry = {
+  id: string;
+  kind: 'project' | 'file';
+  name: string;
+  /** Display path. The native process validates it again before reopening. */
+  path: string;
+  openedAt: number;
+};
+
+/** Result of reopening a native recent entry. */
+export type OpenRecentResult =
+  | { kind: 'project'; project: Project }
+  | { kind: 'file'; file: OpenedSourceFile };
+
 export type ReferenceEntry = {
   id: string;
   title: string;
@@ -208,7 +223,6 @@ declare global {
       project: {
         open: () => Promise<Project | { canceled: true }>;
         openFile: (projectRoot?: string) => Promise<OpenedSourceFile | { canceled: true }>;
-        openRecent: (root: string) => Promise<Project>;
         create: (name: string) => Promise<Project | { canceled: true }>;
         refresh: (root: string) => Promise<Project>;
         readFile: (root: string, relativePath: string) => Promise<string>;
@@ -226,6 +240,14 @@ declare global {
         runPython?: (source: string, name: string, options?: PythonRunOptions) => Promise<PythonRunResult>;
         writeOpenedFile: (fileHandle: string, content: string) => Promise<{ name: string }>;
         saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; canceled?: boolean }>;
+      };
+      recents: {
+        list: () => Promise<RecentEntry[]>;
+        /** Imports folders remembered by pre-Yedit renderer builds once. */
+        migrateLegacyProjects: (projects: Array<{ root: string; name: string }>) => Promise<RecentEntry[]>;
+        open: (id: string, projectRoot?: string) => Promise<OpenRecentResult>;
+        remove: (id: string) => Promise<RecentEntry[]>;
+        clear: () => Promise<RecentEntry[]>;
       };
       render: {
         tikz: (source: string, name: string, engine?: TexPdfEngine) => Promise<

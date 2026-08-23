@@ -4,7 +4,6 @@ contextBridge.exposeInMainWorld('diagramApi', {
   project: {
     open: () => ipcRenderer.invoke('project:open'),
     openFile: (projectRoot) => ipcRenderer.invoke('project:open-file', projectRoot),
-    openRecent: (root) => ipcRenderer.invoke('project:open-recent', root),
     create: (name) => ipcRenderer.invoke('project:create', name),
     refresh: (root) => ipcRenderer.invoke('project:refresh', root),
     readFile: (root, relativePath) => ipcRenderer.invoke('project:read-file', root, relativePath),
@@ -25,6 +24,13 @@ contextBridge.exposeInMainWorld('diagramApi', {
     runPython: (source, name, options) => ipcRenderer.invoke('project:run-python', source, name, options),
     writeOpenedFile: (fileHandle, content) => ipcRenderer.invoke('project:write-open-file', fileHandle, content),
     saveAs: (suggestedName, content, type, projectRoot) => ipcRenderer.invoke('project:save-as', suggestedName, content, type, projectRoot),
+  },
+  recents: {
+    list: () => ipcRenderer.invoke('recents:list'),
+    migrateLegacyProjects: (projects) => ipcRenderer.invoke('recents:migrate-legacy-projects', projects),
+    open: (id, projectRoot) => ipcRenderer.invoke('recents:open', id, projectRoot),
+    remove: (id) => ipcRenderer.invoke('recents:remove', id),
+    clear: () => ipcRenderer.invoke('recents:clear'),
   },
   render: {
     tikz: (source, name, engine) => ipcRenderer.invoke('render:tikz', source, name, engine),
