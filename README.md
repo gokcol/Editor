@@ -1,12 +1,12 @@
-# Diagram Foundry
+# Yedit
 
-Diagram Foundry is a local, source-first macOS workbench for **TikZ**, **LaTeX**, **MetaFont**, **SVG**, **Mermaid**, **Markdown**, and **plain text**. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets.
+Yedit is a local, source-first macOS workbench for diagrams, documents, structured data, and everyday programming. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets.
 
 ## What is included
 
-- Independent TikZ, LaTeX, MetaFont, SVG, Mermaid, Markdown, and plain-text source modes, each with samples, syntax coloring, references, and a local formatter.
+- Independent TikZ, LaTeX, MetaFont, SVG, Mermaid, Markdown, and plain-text modes; data modes for YAML and JSON; and code modes for JavaScript, TypeScript, Python, Fortran, SQL, HTML, and CSS. Each has syntax coloring, useful source assistance, and safe source preview.
 - Monaco editor capabilities: multi-cursor editing, find/replace, copy/paste, undo/redo, minimap, bracket guides, source tabs, and offline editor assets—no CDN dependency.
-- Project folders and a file tree; source stays in normal `.tikz`, `.tex`, `.latex`, `.ltx`, `.mf`, `.svg`, `.mmd`, `.mermaid`, `.md`, `.markdown`, or `.txt` files. File → New Source, the source submenu, and the `+` tab button open a compact source-format chooser before creating a file or scratch tab.
+- Project folders and a file tree; source stays in ordinary, portable files. File → New Source, the source submenu, and the `+` tab button open a compact source-format chooser before creating a file or scratch tab.
 - Local live previews:
   - TikZ → selectable `pdfLaTeX`, `XeLaTeX`, or `LuaLaTeX` PDF preview
   - LaTeX → selectable `pdfLaTeX`, `XeLaTeX`, or `LuaLaTeX` PDF preview; classic `latex` remains available for DVI builds, whose previews use `dvisvgm` when installed
@@ -15,10 +15,12 @@ Diagram Foundry is a local, source-first macOS workbench for **TikZ**, **LaTeX**
   - Mermaid → bundled local Mermaid renderer
 - Markdown → rendered GitHub-flavored Markdown preview, including locally rendered Mermaid fenced blocks.
 - Plain text → escaped, preformatted reading preview; its source is never interpreted as HTML.
-- Export to PNG, SVG, and PDF, plus DVI for LaTeX and TTF for MetaFont. TikZ and LaTeX use the selected local TeX PDF engine plus Poppler; MetaFont uses `mf2pt1` + FontForge for TTF; SVG/Mermaid use librsvg; Markdown and plain text export HTML, PNG, or PDF through the local Electron renderer.
-- Searchable, insertable command references for all seven formats.
+- JSON → strict local validation, lossless pretty/minify operations, schema inference, and copy/paste-only AI prompt modes for creating or analyzing JSON.
+- Python → Run and standard-library `unittest` Test run the current editor buffer locally without saving; stdout, stderr, status, and the executed command appear in the right-hand Output panel.
+- Export to PNG, SVG, and PDF, plus DVI for LaTeX and TTF for MetaFont. TikZ and LaTeX use the selected local TeX PDF engine plus Poppler; MetaFont uses `mf2pt1` + FontForge for TTF; SVG/Mermaid use librsvg; Markdown and plain text export HTML, PNG, or PDF through the local desktop renderer.
+- Searchable, insertable command references for the diagram and document formats, plus language-aware snippets, outline, formatting, and diagnostics for data and code.
 - A native-menu-backed command palette, formatting commands, keyboard shortcuts, and local source beautifiers.
-- Compact local settings for macOS System/Dark/Light appearance, editor font/size, independent Command deck helper-text size, persistent panel visibility, and panel sizes.
+- Compact local settings for macOS System/Dark/Light appearance, editor font/size, independent Command deck helper-text size, editor background color and pattern, enabled source types, persistent panel visibility, and panel sizes.
 - Fully toggleable Explorer, Live Preview, and Command deck panels, with draggable dividers and a layout reset control available from Settings, the command palette, and the View menu.
 - Prompt Studio: create a precise LLM prompt, copy it to any model, and paste its source-only response back into the editor. No API key or remote service is required.
 
@@ -29,7 +31,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` builds the renderer and opens the Electron app. For a production renderer build without opening the app:
+`npm run dev` builds the renderer and opens Yedit. For a production renderer build without opening the app:
 
 ```bash
 npm run build
@@ -67,6 +69,7 @@ PDF TeX compilation is run with `-no-shell-escape` in a temporary directory. Cho
 | `⌘⇧P` | Command palette |
 | `⌘S` / `⌘⇧S` | Save / Save as |
 | `⌘↵` | Render active source |
+| `⌘⇧B` | Run the active Python buffer (or the active source build profile) |
 | `⌥⇧F` | Format source |
 | `⌘E` | Export |
 | `⌘⇧R` | Toggle language reference deck |
@@ -76,4 +79,4 @@ PDF TeX compilation is run with `-no-shell-escape` in a temporary directory. Cho
 
 ## Project format
 
-Projects are plain folders. Creating a project adds only empty `diagrams/`, `documents/`, and `notes/` folders plus a tiny optional `.diagram-foundry.json` manifest. Use the explicit Template Gallery when you want starter content; nothing proprietary is required to reopen or edit a project elsewhere.
+Projects are plain folders. Creating a project adds only empty `diagrams/`, `documents/`, and `notes/` folders plus a tiny optional `.yedit.json` manifest. Use the explicit Template Gallery when you want starter content; nothing proprietary is required to reopen or edit a project elsewhere.

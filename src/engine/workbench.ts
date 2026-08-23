@@ -61,6 +61,79 @@ export function documentOutline(type: SourceType, source: string): OutlineEntry[
       return;
     }
 
+    if (type === 'yaml' || type === 'json') {
+      const key = type === 'yaml'
+        ? /^\s*(?:-\s+)?([A-Za-z_][\w.-]*)\s*:/.exec(line)
+        : /^\s*"((?:[^"\\]|\\.)+)"\s*:/.exec(line);
+      if (key) {
+        const depth = Math.max(0, Math.floor((line.match(/^\s*/)?.[0].length ?? 0) / 2));
+        entries.push({ id: type + '-key-' + lineNumber, line: lineNumber, depth, label: cleanLabel(key[1]), kind: depth ? 'element' : 'section' });
+      }
+      return;
+    }
+
+    if (type === 'javascript' || type === 'typescript' || type === 'python') {
+      const declaration = type === 'python'
+        ? /^\s*(?:async\s+)?(def|class)\s+([A-Za-z_][\w]*)/.exec(line)
+        : /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(line);
+      if (declaration) {
+        const declarationKind = declaration[1].toLowerCase();
+        entries.push({
+          id: type + '-' + declarationKind + '-' + lineNumber,
+          line: lineNumber,
+          depth: /^\s+/.test(line) ? 1 : 0,
+          label: cleanLabel(declaration[2]),
+          kind: declarationKind === 'class' || declarationKind === 'interface' ? 'group' : 'node',
+        });
+      }
+      return;
+    }
+
+    if (type === 'fortran') {
+      const declaration = /^\s*(program|module|subroutine|function|type)\s+([A-Za-z_][\w]*)/i.exec(line.replace(/!.*/, ''));
+      if (declaration) {
+        const declarationKind = declaration[1].toLowerCase();
+        entries.push({
+          id: 'fortran-' + declarationKind + '-' + lineNumber,
+          line: lineNumber,
+          depth: declarationKind === 'program' || declarationKind === 'module' ? 0 : 1,
+          label: cleanLabel(declaration[2]),
+          kind: declarationKind === 'module' || declarationKind === 'type' ? 'group' : 'node',
+        });
+      }
+      return;
+    }
+
+    if (type === 'sql') {
+      const cte = /^\s*with\s+([A-Za-z_][\w$]*)\s+as\s*\(/i.exec(line);
+      const relation = /^\s*create\s+(?:table|view)\s+([A-Za-z_][\w$]*)/i.exec(line);
+      const name = cte?.[1] ?? relation?.[1];
+      if (name) entries.push({ id: 'sql-' + lineNumber, line: lineNumber, depth: 0, label: cleanLabel(name), kind: cte ? 'node' : 'group' });
+      return;
+    }
+
+    if (type === 'html') {
+      const heading = /<h([1-6])\b[^>]*>(.*?)<\/h\1>/i.exec(line);
+      const id = /\bid\s*=\s*(["'])([^"']+)\1/.exec(line);
+      if (heading) {
+        entries.push({ id: 'html-heading-' + lineNumber, line: lineNumber, depth: Number(heading[1]) - 1, label: cleanLabel(heading[2].replace(/<[^>]+>/g, '')), kind: 'section' });
+      } else if (id) {
+        entries.push({ id: 'html-id-' + lineNumber, line: lineNumber, depth: 1, label: cleanLabel(id[2]), kind: 'element' });
+      }
+      return;
+    }
+
+    if (type === 'css') {
+      const variable = /^\s*(--[A-Za-z_][\w-]*)\s*:/.exec(line);
+      const selector = /^\s*([^@][^{]+?)\s*\{\s*$/.exec(line);
+      if (variable) {
+        entries.push({ id: 'css-var-' + lineNumber, line: lineNumber, depth: 1, label: cleanLabel(variable[1]), kind: 'element' });
+      } else if (selector) {
+        entries.push({ id: 'css-selector-' + lineNumber, line: lineNumber, depth: 0, label: cleanLabel(selector[1]), kind: 'group' });
+      }
+      return;
+    }
+
     if (type === 'text') {
       const next = lines[index + 1] ?? '';
       const heading = line.trim() && /^\s*[=-]{3,}\s*$/.test(next);
@@ -112,7 +185,25 @@ export function sourceFromAssistantReply(reply: string, type: SourceType): strin
         ? '(?:markdown|md)?'
         : type === 'text'
           ? '(?:text|txt)?'
-          : '(?:svg|xml)?';
+          : type === 'yaml'
+            ? '(?:yaml|yml)?'
+            : type === 'json'
+              ? '(?:json|json-schema|jsonschema)?'
+              : type === 'javascript'
+                ? '(?:js|javascript|cjs|mjs|jsx)?'
+                : type === 'typescript'
+                  ? '(?:ts|typescript|tsx|mts|cts)?'
+                  : type === 'python'
+                    ? '(?:py|python)?'
+                    : type === 'fortran'
+                      ? '(?:fortran|f90|f95|f03|f08)?'
+                      : type === 'sql'
+                        ? '(?:sql|postgres|mysql)?'
+                        : type === 'html'
+                          ? '(?:html|htm|xhtml)?'
+                          : type === 'css'
+                            ? '(?:css|scss)?'
+                            : '(?:svg|xml)?';
   const fenced = new RegExp(`^\\s*\`\`\`${preferred}\\s*\\n([\\s\\S]*?)\\n?\`\`\`\\s*$`, 'i').exec(trimmed);
   return (fenced?.[1] ?? trimmed).trimEnd() + '\n';
 }

@@ -19,9 +19,18 @@ export const FOUNDRY_LANGUAGE_IDS: Record<SourceType, FoundryLanguageId> = {
   mermaid: 'foundry-mermaid',
   markdown: 'foundry-markdown',
   text: 'foundry-text',
+  yaml: 'foundry-yaml',
+  json: 'foundry-json',
+  javascript: 'foundry-javascript',
+  typescript: 'foundry-typescript',
+  python: 'foundry-python',
+  fortran: 'foundry-fortran',
+  sql: 'foundry-sql',
+  html: 'foundry-html',
+  css: 'foundry-css',
 };
 
-export const FOUNDRY_MARKER_OWNER = 'diagram-foundry';
+export const FOUNDRY_MARKER_OWNER = 'yedit';
 
 const LANGUAGE_TO_SOURCE_TYPE: Record<FoundryLanguageId, SourceType> = {
   'foundry-tikz': 'tikz',
@@ -31,6 +40,15 @@ const LANGUAGE_TO_SOURCE_TYPE: Record<FoundryLanguageId, SourceType> = {
   'foundry-mermaid': 'mermaid',
   'foundry-markdown': 'markdown',
   'foundry-text': 'text',
+  'foundry-yaml': 'yaml',
+  'foundry-json': 'json',
+  'foundry-javascript': 'javascript',
+  'foundry-typescript': 'typescript',
+  'foundry-python': 'python',
+  'foundry-fortran': 'fortran',
+  'foundry-sql': 'sql',
+  'foundry-html': 'html',
+  'foundry-css': 'css',
 };
 
 type CatalogItem = {
@@ -41,6 +59,61 @@ type CatalogItem = {
   kind: 'snippet' | 'keyword' | 'reference';
   aliases: string[];
   example?: string;
+};
+
+type DeveloperSourceType = 'yaml' | 'json' | 'javascript' | 'typescript' | 'python' | 'fortran' | 'sql' | 'html' | 'css';
+
+/**
+ * Compact completion catalogs for the general-purpose language modes. These
+ * focus on high-signal, portable constructs; project-specific engines remain
+ * free to provide their own LSP or formatter outside Yedit.
+ */
+const developerCoreCatalog: Record<DeveloperSourceType, CatalogItem[]> = {
+  yaml: [
+    { label: 'Mapping', detail: 'YAML key/value mapping', description: 'Adds a named scalar or nested mapping. Indent with spaces.', insertText: 'key: value', kind: 'snippet', aliases: ['mapping', 'key', 'value', 'yaml'] },
+    { label: 'Sequence', detail: 'YAML list', description: 'Adds an ordered list with consistently indented dashes.', insertText: 'items:\n  - first item\n  - second item', kind: 'snippet', aliases: ['sequence', 'list', 'array', 'dash'] },
+    { label: 'Anchor & alias', detail: 'YAML reuse', description: 'Names a reusable node and references it by alias.', insertText: 'defaults: &defaults\n  preview: true\nlocal: *defaults', kind: 'snippet', aliases: ['anchor', 'alias', 'reuse'] },
+  ],
+  json: [
+    { label: 'Object property', detail: 'JSON key/value', description: 'Adds a strict JSON property with a double-quoted key.', insertText: '"key": "value"', kind: 'snippet', aliases: ['object', 'property', 'key', 'value'] },
+    { label: 'Array', detail: 'JSON list', description: 'Adds an ordered JSON array without trailing commas.', insertText: '"items": [\n  "first item",\n  "second item"\n]', kind: 'snippet', aliases: ['array', 'list', 'sequence'] },
+    { label: 'JSON Schema', detail: 'Validation metadata', description: 'Links the document to a JSON Schema compatible with many editors and validators.', insertText: '"$schema": "https://json-schema.org/draft/2020-12/schema"', kind: 'snippet', aliases: ['schema', 'validation', 'contract'] },
+  ],
+  javascript: [
+    { label: 'Exported function', detail: 'ES module function', description: 'Defines a named function that can be imported by another module.', insertText: 'export function name(input) {\n  return input;\n}', kind: 'snippet', aliases: ['function', 'export', 'module'] },
+    { label: 'Async function', detail: 'Promise-based function', description: 'Defines an asynchronous operation with explicit await points.', insertText: 'async function load() {\n  const result = await work();\n  return result;\n}', kind: 'snippet', aliases: ['async', 'await', 'promise'] },
+    { label: 'Import', detail: 'ES module import', description: 'Imports a named binding from a local ES module.', insertText: 'import { name } from "./module.js";', kind: 'snippet', aliases: ['import', 'esm', 'module'] },
+  ],
+  typescript: [
+    { label: 'Interface', detail: 'Object contract', description: 'Describes an object shape without emitting JavaScript at runtime.', insertText: 'interface Name {\n  field: string;\n}', kind: 'snippet', aliases: ['interface', 'type', 'object', 'contract'] },
+    { label: 'String union', detail: 'Literal type', description: 'Limits a value to a small set of valid string literals.', insertText: 'type Name = "first" | "second";', kind: 'snippet', aliases: ['union', 'literal', 'type'] },
+    { label: 'Generic function', detail: 'Typed reusable function', description: 'Preserves the input element type in the function result.', insertText: 'function first<T>(items: readonly T[]): T | undefined {\n  return items[0];\n}', kind: 'snippet', aliases: ['generic', 'function', 'type parameter'] },
+  ],
+  python: [
+    { label: 'Typed function', detail: 'Python function', description: 'Defines a function with readable input and output annotations.', insertText: 'def name(value: str) -> str:\n    return value\n', kind: 'snippet', aliases: ['def', 'function', 'type hints'] },
+    { label: 'Dataclass', detail: 'Data model', description: 'Creates a lightweight data model with generated initializer and representation.', insertText: '@dataclass(frozen=True)\nclass Name:\n    value: str\n', kind: 'snippet', aliases: ['dataclass', 'class', 'model'] },
+    { label: 'Main guard', detail: 'Script entry point', description: 'Runs script-only setup while keeping a module importable.', insertText: 'if __name__ == "__main__":\n    main()\n', kind: 'snippet', aliases: ['main', 'script', 'entrypoint'] },
+  ],
+  fortran: [
+    { label: 'Program', detail: 'Fortran program unit', description: 'Starts a standalone modern Fortran program with implicit variables disabled.', insertText: 'program name\n  implicit none\n\nend program name\n', kind: 'snippet', aliases: ['program', 'implicit none', 'main'] },
+    { label: 'Module', detail: 'Reusable Fortran module', description: 'Groups declarations and procedures behind a module interface.', insertText: 'module name\n  implicit none\ncontains\n\nend module name\n', kind: 'snippet', aliases: ['module', 'contains', 'library'] },
+    { label: 'Subroutine', detail: 'Fortran procedure', description: 'Defines a procedure with explicit argument intent.', insertText: 'subroutine name(value)\n  implicit none\n  real, intent(inout) :: value\n\nend subroutine name\n', kind: 'snippet', aliases: ['subroutine', 'procedure', 'intent'] },
+  ],
+  sql: [
+    { label: 'SELECT query', detail: 'Read rows', description: 'Reads explicit columns from a relation with a clear predicate.', insertText: 'SELECT\n  id,\n  name\nFROM projects\nWHERE archived_at IS NULL;\n', kind: 'snippet', aliases: ['select', 'from', 'where', 'query'] },
+    { label: 'CTE', detail: 'Named intermediate query', description: 'Uses WITH to make a multi-stage query easier to review.', insertText: 'WITH named_result AS (\n  SELECT id FROM source_table\n)\nSELECT *\nFROM named_result;\n', kind: 'snippet', aliases: ['with', 'cte', 'subquery'] },
+    { label: 'JOIN', detail: 'Relational join', description: 'Combines related rows through an explicit relationship condition.', insertText: 'FROM orders\nJOIN customers ON customers.id = orders.customer_id', kind: 'snippet', aliases: ['join', 'on', 'foreign key'] },
+  ],
+  html: [
+    { label: 'HTML document', detail: 'Standards-mode page', description: 'Creates a complete document with language, character, and title metadata.', insertText: '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="utf-8" />\n    <title>Document</title>\n  </head>\n  <body>\n\n  </body>\n</html>\n', kind: 'snippet', aliases: ['doctype', 'html', 'head', 'body'] },
+    { label: 'Main landmark', detail: 'Semantic page structure', description: 'Marks the unique primary content region of a document.', insertText: '<main>\n  <h1>Page title</h1>\n</main>', kind: 'snippet', aliases: ['main', 'section', 'semantic', 'landmark'] },
+    { label: 'Accessible image', detail: 'Image with alt text', description: 'Adds an image with useful alternative text for assistive technology.', insertText: '<img src="image.svg" alt="Describe the image" />', kind: 'snippet', aliases: ['img', 'image', 'alt', 'accessibility'] },
+  ],
+  css: [
+    { label: 'Custom property', detail: 'Reusable CSS token', description: 'Defines a themeable custom property for reuse with var().', insertText: ':root {\n  --accent: #119e9b;\n}', kind: 'snippet', aliases: ['variable', 'custom property', 'var', 'token'] },
+    { label: 'Grid layout', detail: 'Responsive layout primitive', description: 'Creates a two-column grid with safe shrinking tracks.', insertText: 'display: grid;\ngrid-template-columns: repeat(2, minmax(0, 1fr));\ngap: 1rem;', kind: 'snippet', aliases: ['grid', 'columns', 'layout'] },
+    { label: 'Media query', detail: 'Responsive override', description: 'Applies a focused change once the container is narrow enough.', insertText: '@media (width < 42rem) {\n  .selector {\n\n  }\n}', kind: 'snippet', aliases: ['media', 'responsive', 'breakpoint'] },
+  ],
 };
 
 type LineWithOffset = {
@@ -404,11 +477,12 @@ const coreCatalog: Record<SourceType, CatalogItem[]> = {
       aliases: ['key', 'value', 'metadata', 'status'],
     },
   ],
+  ...developerCoreCatalog,
 };
 
 const installations = new WeakMap<object, FoundryEditorIntelligence>();
 
-/** Returns a source type only for Diagram Foundry's Monaco language IDs. */
+/** Returns a source type only for Yedit's Monaco language IDs. */
 export function sourceTypeForFoundryLanguage(languageId: string): SourceType | undefined {
   return Object.hasOwn(LANGUAGE_TO_SOURCE_TYPE, languageId)
     ? LANGUAGE_TO_SOURCE_TYPE[languageId as FoundryLanguageId]
@@ -443,6 +517,10 @@ export function lintSource(sourceType: SourceType, source: string): EditorDiagno
         ? lintMermaid(source)
         : sourceType === 'markdown'
           ? lintMarkdown(source)
+          : sourceType === 'json'
+            ? lintJson(source)
+            : sourceType === 'yaml'
+              ? lintYaml(source)
           : [];
 
   return dedupeDiagnostics(diagnostics);
@@ -463,7 +541,7 @@ export function applyFoundryDiagnostics(monaco: Monaco, model: MonacoEditor.edit
   const diagnostics = lintSource(sourceType, model.getValue());
   monaco.editor.setModelMarkers(model, FOUNDRY_MARKER_OWNER, diagnostics.map((diagnostic) => ({
     code: diagnostic.code,
-    source: 'Diagram Foundry',
+    source: 'Yedit',
     message: diagnostic.message,
     severity: markerSeverity(monaco, diagnostic.severity),
     startLineNumber: diagnostic.startLineNumber,
@@ -554,7 +632,7 @@ export function installFoundryEditorIntelligence(monaco: Monaco): FoundryEditorI
         },
       }),
       monaco.languages.registerDocumentFormattingEditProvider(languageId, {
-        displayName: 'Diagram Foundry formatter',
+        displayName: 'Yedit formatter',
         provideDocumentFormattingEdits(model) {
           const source = model.getValue();
           const formatted = formatFoundrySource(sourceType, source);
@@ -562,7 +640,7 @@ export function installFoundryEditorIntelligence(monaco: Monaco): FoundryEditorI
         },
       }),
       monaco.languages.registerDocumentRangeFormattingEditProvider(languageId, {
-        displayName: 'Diagram Foundry formatter',
+        displayName: 'Yedit formatter',
         provideDocumentRangeFormattingEdits(model) {
           // These languages are structurally sensitive, so formatting the full
           // model is safer than trying to re-indent a pasted fragment in
@@ -579,7 +657,7 @@ export function installFoundryEditorIntelligence(monaco: Monaco): FoundryEditorI
         },
       }),
       monaco.languages.registerDocumentSymbolProvider(languageId, {
-        displayName: 'Diagram Foundry outline',
+        displayName: 'Yedit outline',
         provideDocumentSymbols(model) {
           return buildDocumentSymbols(monaco, sourceType, model.getLinesContent());
         },
@@ -617,6 +695,14 @@ function completionTriggerCharacters(sourceType: SourceType): string[] {
   if (sourceType === 'metafont') return [':', '(', ';'];
   if (sourceType === 'svg') return ['<', ' ', '='];
   if (sourceType === 'mermaid') return [' ', '-'];
+  if (sourceType === 'yaml') return [':', '-', '&'];
+  if (sourceType === 'json') return ['"', ':', '{', '['];
+  if (sourceType === 'javascript' || sourceType === 'typescript') return ['.', '(', '{'];
+  if (sourceType === 'python') return ['.', ':', '@'];
+  if (sourceType === 'fortran') return ['(', '%'];
+  if (sourceType === 'sql') return [' ', '.'];
+  if (sourceType === 'html') return ['<', ' ', '='];
+  if (sourceType === 'css') return ['.', ':', '@'];
   if (sourceType === 'text') return [];
   return ['#', '`', '[', '!'];
 }
@@ -647,7 +733,7 @@ function completionRange(
 ): MonacoEditor.IRange {
   const line = model.getLineContent(position.lineNumber);
   let startOffset = Math.min(line.length, Math.max(0, position.column - 1));
-  while (startOffset > 0 && /[\w@.:-]/.test(line[startOffset - 1])) startOffset -= 1;
+  while (startOffset > 0 && /[\w@.$:-]/.test(line[startOffset - 1])) startOffset -= 1;
   if ((sourceType === 'tikz' || sourceType === 'latex') && startOffset > 0 && line[startOffset - 1] === '\\') startOffset -= 1;
   return new monaco.Range(position.lineNumber, startOffset + 1, position.lineNumber, position.column);
 }
@@ -663,10 +749,10 @@ function tokenAtPosition(
   let start = cursorOffset;
   let end = cursorOffset;
 
-  if (start === line.length || !/[\w@.:-]/.test(line[start])) start -= 1;
-  if (start < 0 || !/[\w@.:-]/.test(line[start])) return undefined;
-  while (start > 0 && /[\w@.:-]/.test(line[start - 1])) start -= 1;
-  while (end < line.length && /[\w@.:-]/.test(line[end])) end += 1;
+  if (start === line.length || !/[\w@.$:-]/.test(line[start])) start -= 1;
+  if (start < 0 || !/[\w@.$:-]/.test(line[start])) return undefined;
+  while (start > 0 && /[\w@.$:-]/.test(line[start - 1])) start -= 1;
+  while (end < line.length && /[\w@.$:-]/.test(line[end])) end += 1;
   if ((sourceType === 'tikz' || sourceType === 'latex') && start > 0 && line[start - 1] === '\\') start -= 1;
 
   return { value: line.slice(start, end), startColumn: start + 1, endColumn: end + 1 };
@@ -711,7 +797,15 @@ function findHoverItem(sourceType: SourceType, value: string, line: string): Cat
 }
 
 function hoverMarkdown(sourceType: SourceType, item: CatalogItem): string {
-  const language = sourceType === 'tikz' || sourceType === 'latex' ? 'tex' : sourceType === 'mermaid' ? 'mermaid' : sourceType;
+  const language = sourceType === 'tikz' || sourceType === 'latex'
+    ? 'tex'
+    : sourceType === 'javascript'
+      ? 'js'
+      : sourceType === 'typescript'
+        ? 'ts'
+        : sourceType === 'yaml'
+          ? 'yaml'
+          : sourceType;
   const sample = item.example || item.insertText.replace(/\$\{\d+(?::[^}]*)?\}/g, '…').replace(/\$0/g, '');
   return [
     `**${item.label}** — ${item.detail}`,
@@ -1088,6 +1182,48 @@ function lintMarkdown(source: string): EditorDiagnostic[] {
   return diagnostics;
 }
 
+/**
+ * JSON.parse gives us a reliable syntax check without needing a bundled schema
+ * engine. Its error position is converted into a normal Monaco marker when
+ * available; unfinished input receives one focused error rather than a noisy
+ * cascade of delimiter diagnostics.
+ */
+function lintJson(source: string): EditorDiagnostic[] {
+  if (!source.trim()) return [];
+  try {
+    JSON.parse(source);
+    return [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid JSON.';
+    const position = /position\s+(\d+)/i.exec(message);
+    const offset = position ? Number(position[1]) : 0;
+    return [diagnosticAt(source, Number.isFinite(offset) ? offset : 0, 1, 'error', 'json-invalid', message)];
+  }
+}
+
+/**
+ * YAML supports a large number of valid scalar forms, so this intentionally
+ * catches only the portable structural issue that is unambiguously invalid:
+ * tab characters used for indentation.
+ */
+function lintYaml(source: string): EditorDiagnostic[] {
+  const diagnostics: EditorDiagnostic[] = [];
+  for (const line of linesWithOffsets(source)) {
+    const tab = /^ *\t/.exec(line.text);
+    if (tab) {
+      diagnostics.push(diagnosticAt(
+        source,
+        line.offset + tab[0].length - 1,
+        1,
+        'warning',
+        'yaml-tab-indentation',
+        'Use spaces instead of tabs for YAML indentation.',
+      ));
+    }
+  }
+  return diagnostics;
+}
+
 function lintBalancedDelimiters(
   source: string,
   scanned: string,
@@ -1236,6 +1372,14 @@ function buildFoldingRanges(sourceType: SourceType, lines: string[]): MonacoEdit
             ? foldMermaid(lines)
             : sourceType === 'markdown'
               ? foldMarkdown(lines)
+              : sourceType === 'html'
+                ? foldSvg(lines)
+                : sourceType === 'yaml' || sourceType === 'python'
+                  ? foldIndentation(lines)
+                  : sourceType === 'fortran'
+                    ? foldFortran(lines)
+                    : sourceType === 'json' || sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'css'
+                      ? foldBraces(lines)
               : [];
   return ranges.filter((range) => range.end > range.start);
 }
@@ -1367,6 +1511,81 @@ function foldMarkdown(lines: string[]): MonacoEditor.languages.FoldingRange[] {
   return ranges;
 }
 
+/** Lightweight brace folding for JSON, JS/TS, and CSS. Quoted literals are
+ * masked first so braces inside labels or string values do not create ranges. */
+function foldBraces(lines: string[]): MonacoEditor.languages.FoldingRange[] {
+  const ranges: MonacoEditor.languages.FoldingRange[] = [];
+  const scopes: number[] = [];
+  lines.forEach((line, index) => {
+    const lineNumber = index + 1;
+    const code = line
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      .replace(/\/\/.*$/, '')
+      .replace(/\/\*.*?\*\//g, '');
+    for (const character of code) {
+      if (character === '{') scopes.push(lineNumber);
+      else if (character === '}') {
+        const start = scopes.pop();
+        if (start && lineNumber > start) ranges.push({ start, end: lineNumber });
+      }
+    }
+  });
+  return ranges;
+}
+
+/**
+ * Indentation is structure in YAML and Python. The next non-empty line
+ * determines whether the current line begins a foldable nested block.
+ */
+function foldIndentation(lines: string[]): MonacoEditor.languages.FoldingRange[] {
+  const ranges: MonacoEditor.languages.FoldingRange[] = [];
+  lines.forEach((line, index) => {
+    if (!line.trim() || /^\s*#/.test(line)) return;
+    const indent = line.match(/^\s*/)?.[0].length ?? 0;
+    let next = index + 1;
+    while (next < lines.length && (!lines[next].trim() || /^\s*#/.test(lines[next]))) next += 1;
+    if (next >= lines.length) return;
+    const nextIndent = lines[next].match(/^\s*/)?.[0].length ?? 0;
+    if (nextIndent <= indent) return;
+    let end = next;
+    for (let candidate = next + 1; candidate < lines.length; candidate += 1) {
+      if (!lines[candidate].trim()) {
+        end = candidate;
+        continue;
+      }
+      const candidateIndent = lines[candidate].match(/^\s*/)?.[0].length ?? 0;
+      if (candidateIndent <= indent) break;
+      end = candidate;
+    }
+    if (end + 1 > index + 1) ranges.push({ start: index + 1, end: end + 1 });
+  });
+  return ranges;
+}
+
+function foldFortran(lines: string[]): MonacoEditor.languages.FoldingRange[] {
+  const ranges: MonacoEditor.languages.FoldingRange[] = [];
+  const scopes: Array<{ kind: string; lineNumber: number }> = [];
+  lines.forEach((line, index) => {
+    const text = line.replace(/!.*/, '').trim().toLowerCase();
+    if (!text) return;
+    const start = /^(program|module|subroutine|function|interface|type|do|if|select|where|associate|block)\b/.exec(text);
+    const end = /^end(?:\s+(program|module|subroutine|function|interface|type|do|if|select|where|associate|block))?\b/.exec(text);
+    if (end) {
+      const kind = end[1];
+      const indexToClose = kind ? scopes.map((scope) => scope.kind).lastIndexOf(kind) : scopes.length - 1;
+      if (indexToClose >= 0) {
+        const scope = scopes[indexToClose];
+        if (index + 1 > scope.lineNumber) ranges.push({ start: scope.lineNumber, end: index + 1 });
+        scopes.splice(indexToClose);
+      }
+    } else if (start && !/^end\b/.test(text)) {
+      scopes.push({ kind: start[1], lineNumber: index + 1 });
+    }
+  });
+  return ranges;
+}
+
 function buildDocumentSymbols(monaco: Monaco, sourceType: SourceType, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
   if (sourceType === 'markdown') return markdownSymbols(monaco, lines);
   if (sourceType === 'tikz') return tikzSymbols(monaco, lines);
@@ -1374,6 +1593,12 @@ function buildDocumentSymbols(monaco: Monaco, sourceType: SourceType, lines: str
   if (sourceType === 'metafont') return metafontSymbols(monaco, lines);
   if (sourceType === 'svg') return svgSymbols(monaco, lines);
   if (sourceType === 'mermaid') return mermaidSymbols(monaco, lines);
+  if (sourceType === 'yaml' || sourceType === 'json') return dataSymbols(monaco, sourceType, lines);
+  if (sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'python') return codeSymbols(monaco, sourceType, lines);
+  if (sourceType === 'fortran') return fortranSymbols(monaco, lines);
+  if (sourceType === 'sql') return sqlSymbols(monaco, lines);
+  if (sourceType === 'html') return htmlSymbols(monaco, lines);
+  if (sourceType === 'css') return cssSymbols(monaco, lines);
   return textSymbols(monaco, lines);
 }
 
@@ -1453,6 +1678,110 @@ function mermaidSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages
     if (declaration) symbols.push(symbolForLine(monaco, line, index + 1, declaration[1], 'Mermaid diagram', monaco.languages.SymbolKind.Namespace));
     const subgraph = /^\s*subgraph\s+(.+)$/i.exec(line);
     if (subgraph) symbols.push(symbolForLine(monaco, line, index + 1, subgraph[1], 'Mermaid subgraph', monaco.languages.SymbolKind.Module));
+  });
+  return symbols;
+}
+
+function dataSymbols(monaco: Monaco, sourceType: 'yaml' | 'json', lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const match = sourceType === 'yaml'
+      ? /^\s*(?:-\s+)?([A-Za-z_][\w.-]*)\s*:/.exec(line)
+      : /^\s*"((?:[^"\\]|\\.)+)"\s*:/.exec(line);
+    if (!match) return;
+    const indent = line.match(/^\s*/)?.[0].length ?? 0;
+    symbols.push(symbolForLine(
+      monaco,
+      line,
+      index + 1,
+      match[1],
+      sourceType === 'yaml' ? 'YAML mapping key' : 'JSON property',
+      indent ? monaco.languages.SymbolKind.Property : monaco.languages.SymbolKind.Namespace,
+    ));
+  });
+  return symbols;
+}
+
+function codeSymbols(
+  monaco: Monaco,
+  sourceType: 'javascript' | 'typescript' | 'python',
+  lines: string[],
+): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const match = sourceType === 'python'
+      ? /^\s*(?:async\s+)?(def|class)\s+([A-Za-z_][\w]*)/.exec(line)
+      : /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(line);
+    if (!match) return;
+    const kind = match[1].toLowerCase();
+    const symbolKind = kind === 'class'
+      ? monaco.languages.SymbolKind.Class
+      : kind === 'interface' || kind === 'type'
+        ? monaco.languages.SymbolKind.Interface
+        : kind === 'enum'
+          ? monaco.languages.SymbolKind.Enum
+          : monaco.languages.SymbolKind.Function;
+    symbols.push(symbolForLine(monaco, line, index + 1, match[2], sourceType + ' ' + kind, symbolKind));
+  });
+  return symbols;
+}
+
+function fortranSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const match = /^\s*(program|module|subroutine|function|type)\s+([A-Za-z_][\w]*)/i.exec(line.replace(/!.*/, ''));
+    if (!match) return;
+    const kind = match[1].toLowerCase();
+    const symbolKind = kind === 'module'
+      ? monaco.languages.SymbolKind.Module
+      : kind === 'type'
+        ? monaco.languages.SymbolKind.Struct
+        : kind === 'program'
+          ? monaco.languages.SymbolKind.Namespace
+          : monaco.languages.SymbolKind.Function;
+    symbols.push(symbolForLine(monaco, line, index + 1, match[2], 'Fortran ' + kind, symbolKind));
+  });
+  return symbols;
+}
+
+function sqlSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const clean = line.replace(/--.*$/, '');
+    const cte = /^\s*with\s+([A-Za-z_][\w$]*)\s+as\s*\(/i.exec(clean);
+    const relation = /^\s*create\s+(?:table|view)\s+([A-Za-z_][\w$]*)/i.exec(clean);
+    const name = cte?.[1] ?? relation?.[1];
+    if (name) symbols.push(symbolForLine(monaco, line, index + 1, name, cte ? 'SQL common table expression' : 'SQL relation', cte ? monaco.languages.SymbolKind.Variable : monaco.languages.SymbolKind.Struct));
+  });
+  return symbols;
+}
+
+function htmlSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const id = /\bid\s*=\s*(["'])([^"']+)\1/.exec(line);
+    const heading = /<h([1-6])\b[^>]*>(.*?)<\/h\1>/i.exec(line);
+    if (heading) {
+      const label = heading[2].replace(/<[^>]+>/g, '').trim() || 'Heading ' + heading[1];
+      symbols.push(symbolForLine(monaco, line, index + 1, label, 'HTML heading h' + heading[1], monaco.languages.SymbolKind.String));
+    } else if (id) {
+      symbols.push(symbolForLine(monaco, line, index + 1, id[2], 'HTML id', monaco.languages.SymbolKind.Field));
+    }
+  });
+  return symbols;
+}
+
+function cssSymbols(monaco: Monaco, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
+  lines.forEach((line, index) => {
+    const property = /^\s*(--[A-Za-z_][\w-]*)\s*:/.exec(line);
+    const selector = /^\s*([^@][^{]+?)\s*\{\s*$/.exec(line);
+    if (property) {
+      symbols.push(symbolForLine(monaco, line, index + 1, property[1], 'CSS custom property', monaco.languages.SymbolKind.Property));
+    } else if (selector) {
+      const label = selector[1].trim();
+      symbols.push(symbolForLine(monaco, line, index + 1, label, 'CSS selector', monaco.languages.SymbolKind.Class));
+    }
   });
   return symbols;
 }

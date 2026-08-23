@@ -6,6 +6,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 
+app.setName('Yedit');
+
 let mainWindow;
 let rendererReady = false;
 let pendingRendererActions = [];
@@ -49,7 +51,13 @@ function safelySend(webContents, channel, payload) {
 
 // Keep ordinary LaTeX documents separate from focused TikZ sources.  `.tex`
 // is intentionally LaTeX; `.tikz` is the explicit TikZ-only extension.
-const sourceExtensions = new Set(['.tex', '.latex', '.ltx', '.tikz', '.mf', '.svg', '.mmd', '.mermaid', '.md', '.markdown', '.txt']);
+const sourceExtensions = new Set([
+  '.tex', '.latex', '.ltx', '.tikz', '.mf', '.svg', '.mmd', '.mermaid', '.md', '.markdown', '.txt',
+  '.yaml', '.yml', '.json',
+  '.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx',
+  '.py', '.pyw', '.f', '.for', '.f90', '.f95', '.f03', '.f08', '.f18', '.sql', '.ddl',
+  '.html', '.htm', '.xhtml', '.css',
+]);
 // PDF-producing LaTeX engines intentionally remain explicit.  The classic
 // `latex` command produces DVI and is handled separately below.
 const latexPdfEngines = Object.freeze({
@@ -58,11 +66,16 @@ const latexPdfEngines = Object.freeze({
   lualatex: { compiler: 'lualatex', label: 'LuaLaTeX' },
 });
 const ignoredDirectories = new Set(['.git', 'node_modules', '.DS_Store', 'dist', 'build']);
+const projectManifestNames = new Set(['.yedit.json', '.diagram-foundry.json']);
+const sourceTypeIds = Object.freeze(['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css']);
 const defaultSettings = {
   appearance: 'system',
   uiScale: 110,
   editorFontFamily: 'SF Mono',
   editorFontSize: 14,
+  editorBackgroundColor: 'theme',
+  editorBackgroundPattern: 'none',
+  enabledSourceTypes: [...sourceTypeIds],
   referenceFontSize: 10,
   explorerOpen: true,
   previewOpen: true,
@@ -83,6 +96,16 @@ const defaultToolOutputLimitBytes = 8 * 1024 * 1024;
 const metafontProofTimeoutMs = 45_000;
 const metafontConversionTimeoutMs = 120_000;
 const maxMetafontProofSvgBytes = 6 * 1024 * 1024;
+// Python runs are deliberately much shorter and smaller than document
+// compiles: their result is shown inline in the editor rather than saved as a
+// build artifact. These are hard limits, not renderer-controlled defaults.
+const defaultPythonRunTimeoutMs = 15_000;
+const minPythonRunTimeoutMs = 1_000;
+const maxPythonRunTimeoutMs = 30_000;
+const maxPythonRunOutputBytes = 2 * 1024 * 1024;
+const maxPythonSourceBytes = 2 * 1024 * 1024;
+const pythonDiscoveryTimeoutMs = 4_000;
+let discoveredPythonCommand;
 
 function toolPath() {
   return [
@@ -106,12 +129,12 @@ async function recordMainProcessFailure(kind, reason) {
 }
 
 process.on('uncaughtException', (error) => {
-  console.error('Diagram Foundry main-process exception:', error);
+  console.error('Yedit main-process exception:', error);
   void recordMainProcessFailure('uncaughtException', error);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('Diagram Foundry main-process rejection:', reason);
+  console.error('Yedit main-process rejection:', reason);
   void recordMainProcessFailure('unhandledRejection', reason);
 });
 
@@ -199,10 +222,299 @@ function run(command, args, cwd, extraEnv = {}, options = {}) {
   });
 }
 
+function pythonScratchFileName(suggestedName) {
+  const rawBaseName = path.basename(typeof suggestedName === 'string' ? suggestedName : 'script.py')
+    .replace(/\.pyw?$/i, '');
+  let stem = rawBaseName
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 72);
+  if (!stem) stem = 'script';
+  if (!/^[A-Za-z_]/.test(stem)) stem = `script_${stem}`;
+  return `${stem}.py`;
+}
+
+function normalizePythonRunOptions(candidate) {
+  const mode = candidate?.mode === undefined || candidate?.mode === null || candidate?.mode === ''
+    ? 'run'
+    : String(candidate.mode).toLowerCase();
+  if (mode !== 'run' && mode !== 'test') throw new Error('Choose Run or Test for Python source.');
+
+  const requestedTimeout = Number(candidate?.timeoutMs);
+  const timeoutMs = Number.isFinite(requestedTimeout)
+    ? Math.min(maxPythonRunTimeoutMs, Math.max(minPythonRunTimeoutMs, Math.round(requestedTimeout)))
+    : defaultPythonRunTimeoutMs;
+  return { mode, timeoutMs };
+}
+
+/**
+ * Resolve an optional project context without trusting a renderer-provided
+ * path. A project root is useful for normal local imports. A clean saved
+ * project file may run in place; dirty buffers and scratchpads run from a
+ * temporary file, so unsaved text is never written into the project.
+ */
+async function pythonProjectContext(candidate) {
+  const requestedRoot = candidate?.projectRoot;
+  if (requestedRoot === undefined || requestedRoot === null || requestedRoot === '') return undefined;
+  if (typeof requestedRoot !== 'string') throw new Error('The Python project folder is invalid.');
+
+  const workspace = await projectWorkspace(requestedRoot);
+  let sourcePath;
+  if (candidate?.relativePath !== undefined && candidate?.relativePath !== null && candidate.relativePath !== '') {
+    const source = await projectFile(workspace, candidate.relativePath);
+    if (typeForPath(source.target) !== 'python') throw new Error('The selected project file is not Python source.');
+    sourcePath = source.target;
+  }
+  return { root: workspace.realRoot, sourcePath };
+}
+
+/**
+ * Provide Python a narrow, predictable environment rather than inheriting
+ * virtualenv activation, user site packages, or an existing PYTHONPATH. This
+ * runner intentionally does not invoke a shell or any network service. The
+ * user source is still arbitrary local Python and therefore runs with the
+ * normal permissions of the desktop app.
+ */
+function pythonExecutionEnvironment(tempDirectory, projectRoot) {
+  const locale = process.env.LC_CTYPE || process.env.LANG || 'en_US.UTF-8';
+  const environment = {
+    PATH: toolPath(),
+    HOME: tempDirectory,
+    TMPDIR: tempDirectory,
+    TMP: tempDirectory,
+    TEMP: tempDirectory,
+    LANG: locale,
+    LC_CTYPE: locale,
+    PYTHONNOUSERSITE: '1',
+    PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONUNBUFFERED: '1',
+    PYTHONSAFEPATH: '1',
+    PIP_NO_INPUT: '1',
+    PIP_DISABLE_PIP_VERSION_CHECK: '1',
+    PIP_NO_INDEX: '1',
+  };
+  // Do not inherit PYTHONPATH from the GUI process. When a project was
+  // deliberately supplied, make that validated root the first (and only)
+  // import location beyond Python's normal standard/site packages.
+  if (projectRoot) environment.PYTHONPATH = projectRoot;
+  return environment;
+}
+
+async function discoverPython() {
+  if (discoveredPythonCommand) return discoveredPythonCommand;
+  const probeDirectory = app.getPath('temp');
+  for (const command of ['python3', 'python']) {
+    try {
+      const result = await run(command, ['--version'], probeDirectory, {
+        PYTHONNOUSERSITE: '1',
+        PYTHONDONTWRITEBYTECODE: '1',
+      }, {
+        timeoutMs: pythonDiscoveryTimeoutMs,
+        maxOutputBytes: 8 * 1024,
+      });
+      const version = `${result.stdout}\n${result.stderr}`;
+      if (!/^Python\s+3(?:\.|\s|$)/mi.test(version)) continue;
+      discoveredPythonCommand = command;
+      return command;
+    } catch {
+      // Try the next conventional command name. The final user-facing message
+      // deliberately avoids leaking platform-specific spawn errors.
+    }
+  }
+  throw new Error('Python 3 is unavailable. Install Python 3 so `python3` or `python` is on PATH, then restart Yedit.');
+}
+
+function runPythonProcess(command, args, cwd, env, options) {
+  const timeoutMs = options.timeoutMs;
+  const maxOutputBytes = options.maxOutputBytes;
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let outputBytes = 0;
+    let timeout;
+    let forceKillTimeout;
+    let terminatedFor;
+    let settled = false;
+    let child;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (forceKillTimeout) clearTimeout(forceKillTimeout);
+      resolve(result);
+    };
+
+    const terminate = (reason) => {
+      if (settled || terminatedFor || !child) return;
+      terminatedFor = reason;
+      const kill = (signal) => {
+        try {
+          // A detached POSIX child starts a separate process group, so a
+          // timeout also stops subprocesses created by the Python script.
+          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+          else child.kill(signal);
+          return true;
+        } catch {
+          try { child.kill(signal); return true; } catch { return false; }
+        }
+      };
+      kill('SIGTERM');
+      forceKillTimeout = setTimeout(() => {
+        if (!settled) kill('SIGKILL');
+      }, 1_500);
+    };
+
+    const appendOutput = (field, chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const remaining = Math.max(0, maxOutputBytes - outputBytes);
+      if (remaining > 0) {
+        const safeText = buffer.subarray(0, remaining).toString('utf8');
+        if (field === 'stdout') stdout += safeText;
+        else stderr += safeText;
+      }
+      outputBytes += buffer.length;
+      if (outputBytes > maxOutputBytes) terminate('output limit');
+    };
+
+    try {
+      child = spawn(command, args, {
+        cwd,
+        env,
+        shell: false,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      finish({
+        ok: false,
+        output: stdout,
+        stderr,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    child.stdout?.on('data', (chunk) => appendOutput('stdout', chunk));
+    child.stderr?.on('data', (chunk) => appendOutput('stderr', chunk));
+    child.on('error', (error) => {
+      finish({
+        ok: false,
+        output: stdout,
+        stderr,
+        error: error?.code === 'ENOENT'
+          ? 'Python 3 is unavailable. Install Python 3 so `python3` or `python` is on PATH, then restart Yedit.'
+          : (error instanceof Error ? error.message : String(error)),
+      });
+    });
+    child.on('close', (code, signal) => {
+      const exitCode = typeof code === 'number' ? code : undefined;
+      if (terminatedFor === 'timeout') {
+        finish({
+          ok: false,
+          output: stdout,
+          stderr,
+          exitCode,
+          timedOut: true,
+          error: `Python stopped after ${Math.ceil(timeoutMs / 1000)} seconds.`,
+        });
+        return;
+      }
+      if (terminatedFor === 'output limit') {
+        finish({
+          ok: false,
+          output: stdout,
+          stderr,
+          exitCode,
+          error: `Python produced more than ${Math.floor(maxOutputBytes / (1024 * 1024))} MB of output and was stopped.`,
+        });
+        return;
+      }
+      if (code === 0) {
+        finish({ ok: true, output: stdout, stderr, exitCode: 0 });
+        return;
+      }
+      finish({
+        ok: false,
+        output: stdout,
+        stderr,
+        exitCode,
+        // Keep a traceback in one field so the output screen does not repeat
+        // it below a second generic error line.
+        error: stderr.trim() ? undefined : `Python exited with ${code ?? signal ?? 'an unknown status'}.`,
+      });
+    });
+    timeout = setTimeout(() => terminate('timeout'), timeoutMs);
+  });
+}
+
+async function runPythonSource(source, suggestedName, candidateOptions = {}) {
+  if (typeof source !== 'string') {
+    return { ok: false, output: '', error: 'Python source must be text.' };
+  }
+  if (Buffer.byteLength(source, 'utf8') > maxPythonSourceBytes) {
+    return { ok: false, output: '', error: `Python source is limited to ${Math.floor(maxPythonSourceBytes / (1024 * 1024))} MB per run.` };
+  }
+
+  let directory;
+  let command;
+  let scratchFileName;
+  let normalized;
+  try {
+    normalized = normalizePythonRunOptions(candidateOptions);
+    const project = await pythonProjectContext(candidateOptions);
+    command = await discoverPython();
+    scratchFileName = pythonScratchFileName(suggestedName);
+    directory = await makeRenderDirectory('python-run');
+    let sourcePath;
+    // A clean project file may run in place, preserving __file__ and adjacent
+    // resource paths. Dirty buffers and scratchpads always run from the
+    // private temporary directory; this never writes editor text to disk.
+    if (project?.sourcePath) {
+      const savedSource = await fs.readFile(project.sourcePath, 'utf8');
+      if (savedSource === source) sourcePath = project.sourcePath;
+    }
+    if (!sourcePath) {
+      sourcePath = path.join(directory, scratchFileName);
+      await fs.writeFile(sourcePath, source, { encoding: 'utf8', mode: 0o600 });
+    }
+
+    const args = normalized.mode === 'test'
+      ? ['-u', '-B', '-s', '-m', 'unittest', 'discover', '-s', path.dirname(sourcePath), '-p', path.basename(sourcePath)]
+      : ['-u', '-B', '-s', sourcePath];
+    const displayCommand = normalized.mode === 'test'
+      ? `${path.basename(command)} -u -B -s -m unittest discover -p ${path.basename(sourcePath)}`
+      : `${path.basename(command)} -u -B -s ${path.basename(sourcePath)}`;
+    const result = await runPythonProcess(
+      command,
+      args,
+      project?.root || directory,
+      pythonExecutionEnvironment(directory, project?.root),
+      { timeoutMs: normalized.timeoutMs, maxOutputBytes: maxPythonRunOutputBytes },
+    );
+    return { ...result, command: displayCommand };
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      output: '',
+      error: details || 'Python could not start.',
+      ...(command && scratchFileName && normalized ? {
+        command: normalized.mode === 'test'
+          ? `${path.basename(command)} -u -B -s -m unittest discover -p ${scratchFileName}`
+          : `${path.basename(command)} -u -B -s ${scratchFileName}`,
+      } : {}),
+    };
+  } finally {
+    if (directory) await removeRenderDirectory(directory);
+  }
+}
+
 async function runTexCompiler(command, args, cwd) {
   // LuaLaTeX's font loader needs a writable TeX cache.  A packaged macOS app
   // can inherit a restricted environment (or be launched without a usable
-  // shell HOME), so keep that cache in Diagram Foundry's own user-data area.
+  // shell HOME), so keep that cache in Yedit's own user-data area.
   // Other TeX engines retain their normal environment and behavior.
   if (command !== 'lualatex') return run(command, args, cwd);
   const texmfVar = path.join(app.getPath('userData'), 'texmf-var');
@@ -228,6 +540,15 @@ function typeForPath(filePath) {
   if (ext === '.mmd' || ext === '.mermaid') return 'mermaid';
   if (ext === '.md' || ext === '.markdown') return 'markdown';
   if (ext === '.txt') return 'text';
+  if (ext === '.yaml' || ext === '.yml') return 'yaml';
+  if (ext === '.json') return 'json';
+  if (ext === '.js' || ext === '.cjs' || ext === '.mjs' || ext === '.jsx') return 'javascript';
+  if (ext === '.ts' || ext === '.cts' || ext === '.mts' || ext === '.tsx') return 'typescript';
+  if (ext === '.py' || ext === '.pyw') return 'python';
+  if (ext === '.f' || ext === '.for' || ext === '.f90' || ext === '.f95' || ext === '.f03' || ext === '.f08' || ext === '.f18') return 'fortran';
+  if (ext === '.sql' || ext === '.ddl') return 'sql';
+  if (ext === '.html' || ext === '.htm' || ext === '.xhtml') return 'html';
+  if (ext === '.css') return 'css';
   return 'tikz';
 }
 
@@ -239,6 +560,15 @@ function extensionForType(type) {
   if (type === 'mermaid') return 'mmd';
   if (type === 'markdown') return 'md';
   if (type === 'text') return 'txt';
+  if (type === 'yaml') return 'yaml';
+  if (type === 'json') return 'json';
+  if (type === 'javascript') return 'js';
+  if (type === 'typescript') return 'ts';
+  if (type === 'python') return 'py';
+  if (type === 'fortran') return 'f90';
+  if (type === 'sql') return 'sql';
+  if (type === 'html') return 'html';
+  if (type === 'css') return 'css';
   return 'tex';
 }
 
@@ -249,6 +579,18 @@ function normalizeSettings(candidate) {
   const editorFontFamily = supportedFontFamilies.has(candidate?.editorFontFamily) ? candidate.editorFontFamily : defaultSettings.editorFontFamily;
   const parsedSize = Number(candidate?.editorFontSize);
   const editorFontSize = Number.isFinite(parsedSize) ? Math.min(24, Math.max(11, Math.round(parsedSize))) : defaultSettings.editorFontSize;
+  const editorBackgroundColor = candidate?.editorBackgroundColor === 'theme' || /^#[0-9a-f]{6}$/i.test(String(candidate?.editorBackgroundColor ?? ''))
+    ? candidate.editorBackgroundColor
+    : defaultSettings.editorBackgroundColor;
+  const editorBackgroundPattern = ['none', 'grid', 'dots', 'lines'].includes(candidate?.editorBackgroundPattern)
+    ? candidate.editorBackgroundPattern
+    : defaultSettings.editorBackgroundPattern;
+  const requestedSourceTypes = Array.isArray(candidate?.enabledSourceTypes) ? candidate.enabledSourceTypes : defaultSettings.enabledSourceTypes;
+  const enabledSourceTypes = sourceTypeIds.filter((type) => requestedSourceTypes.includes(type));
+  // Preferences can be hand-edited, but the workbench must always have a
+  // usable creation format. Its UI also prevents the last enabled type from
+  // being switched off in the first place.
+  if (!enabledSourceTypes.length) enabledSourceTypes.push('text');
   const parsedReferenceSize = Number(candidate?.referenceFontSize);
   const referenceFontSize = Number.isFinite(parsedReferenceSize) ? Math.min(18, Math.max(9, Math.round(parsedReferenceSize))) : defaultSettings.referenceFontSize;
   const explorerOpen = typeof candidate?.explorerOpen === 'boolean' ? candidate.explorerOpen : defaultSettings.explorerOpen;
@@ -272,6 +614,9 @@ function normalizeSettings(candidate) {
     uiScale,
     editorFontFamily,
     editorFontSize,
+    editorBackgroundColor,
+    editorBackgroundPattern,
+    enabledSourceTypes,
     referenceFontSize,
     explorerOpen,
     previewOpen,
@@ -292,12 +637,22 @@ function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+function legacySettingsPath() {
+  return path.join(app.getPath('appData'), 'Diagram Foundry', 'settings.json');
+}
+
 async function loadSettings() {
   try {
     const raw = await fs.readFile(settingsPath(), 'utf8');
     return normalizeSettings(JSON.parse(raw));
   } catch {
-    return { ...defaultSettings };
+    // Keep existing preferences when upgrading from the former app name.
+    try {
+      const raw = await fs.readFile(legacySettingsPath(), 'utf8');
+      return normalizeSettings(JSON.parse(raw));
+    } catch {
+      return { ...defaultSettings };
+    }
   }
 }
 
@@ -309,6 +664,7 @@ async function saveSettings(candidate) {
   await fs.writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
   await fs.rename(temporary, target);
   nativeTheme.themeSource = settings.appearance;
+  if (app.isReady()) Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate(settings)));
   return settings;
 }
 
@@ -395,7 +751,7 @@ async function projectCreateDestination(workspace, relativePath) {
 
 function visibleProjectPath(relativePath) {
   const parts = String(relativePath || '').split(/[\\/]/).filter(Boolean);
-  return parts.every((part) => (!part.startsWith('.') || part === '.diagram-foundry.json') && !ignoredDirectories.has(part));
+  return parts.every((part) => (!part.startsWith('.') || projectManifestNames.has(part)) && !ignoredDirectories.has(part));
 }
 
 async function buildTree(root, relativePath = '', depth = 0) {
@@ -942,7 +1298,7 @@ async function runBuildProfile(root, relativePath, profileId) {
   }
 
   const sourceDirectory = path.dirname(source.target);
-  const outputDirectory = path.join(workspace.root, '.diagram-foundry-build', path.dirname(source.relativePath));
+  const outputDirectory = path.join(workspace.root, '.yedit-build', path.dirname(source.relativePath));
   const baseName = path.parse(source.target).name;
   const outputPath = path.join(outputDirectory, `${baseName}.${profile.outputExtension}`);
   await fs.mkdir(outputDirectory, { recursive: true });
@@ -999,7 +1355,7 @@ async function runBuildProfile(root, relativePath, profileId) {
 }
 
 async function makeRenderDirectory(prefix = 'render') {
-  const directory = path.join(app.getPath('temp'), 'diagram-foundry', `${prefix}-${randomUUID()}`);
+  const directory = path.join(app.getPath('temp'), 'yedit', `${prefix}-${randomUUID()}`);
   await fs.mkdir(directory, { recursive: true });
   return directory;
 }
@@ -1027,7 +1383,7 @@ function compilerLabel(command) {
 
 function missingCompilerMessage(error, command) {
   if (!isMissingCommand(error, command)) return '';
-  return `${compilerLabel(command)} is unavailable. Install a TeX distribution that provides ${command}, then restart Diagram Foundry.`;
+  return `${compilerLabel(command)} is unavailable. Install a TeX distribution that provides ${command}, then restart Yedit.`;
 }
 
 async function compilerErrorMessage(directory, baseName, error, compiler) {
@@ -1211,7 +1567,7 @@ async function metafontGfPath(directory, baseName) {
 function missingMetafontToolMessage(error, command) {
   if (!isMissingCommand(error, command)) return '';
   if (command === 'fontforge') {
-    return 'TTF export needs FontForge. Install the FontForge command-line tool (for example, `brew install fontforge`) and restart Diagram Foundry.';
+    return 'TTF export needs FontForge. Install the FontForge command-line tool (for example, `brew install fontforge`) and restart Yedit.';
   }
   if (command === 'mf2pt1') {
     return 'TTF export needs mf2pt1, which is included with a full TeX Live or MacTeX installation.';
@@ -1371,6 +1727,29 @@ async function convertHtml(html, format, scale = 1) {
   }
 }
 
+function escapeHtmlText(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * A defensive export fallback for code/data modes. The renderer normally
+ * sends a complete preview document, but source must never be interpreted as
+ * HTML merely because a preview has not arrived yet.
+ */
+function sourceTextPreviewHtml(source, label) {
+  const escapedLabel = escapeHtmlText(label || 'Source');
+  const escapedSource = escapeHtmlText(source || '');
+  return '<!doctype html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />'
+    + '<title>' + escapedLabel + '</title>'
+    + '<style>body{margin:0;padding:32px;background:#111622;color:#d9e3f8;font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}h1{margin:0 0 18px;font:700 18px/1.2 system-ui,sans-serif}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}</style>'
+    + '</head><body><h1>' + escapedLabel + '</h1><pre>' + escapedSource + '</pre></body></html>';
+}
+
 async function exportPayload(payload) {
   const { sourceType, source, svg, html, format, suggestedName = 'diagram', engine, texEngine } = payload;
   // `engine` is the public payload field.  Keep the former internal spelling
@@ -1419,8 +1798,9 @@ async function exportPayload(payload) {
         const result = await convertSvg(proof.svg, format, scale);
         generated = result.output;
       }
-    } else if (sourceType === 'markdown' || sourceType === 'text') {
-      const result = await convertHtml(html || source, format, scale);
+    } else if (['markdown', 'text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css'].includes(sourceType)) {
+      const documentForExport = html || (sourceType === 'html' ? source : sourceTextPreviewHtml(source, sourceType));
+      const result = await convertHtml(documentForExport, format, scale);
       generated = result.output;
     } else {
       const renderedSvg = svg || source;
@@ -1454,8 +1834,63 @@ function sendToRenderer(action) {
   }
 }
 
-function menuTemplate() {
+function menuTemplate(settings = defaultSettings) {
   const isMac = process.platform === 'darwin';
+  const enabledSourceTypes = new Set(
+    Array.isArray(settings?.enabledSourceTypes)
+      ? settings.enabledSourceTypes.filter((type) => sourceTypeIds.includes(type))
+      : defaultSettings.enabledSourceTypes,
+  );
+  const sourceItem = (type, label, action, accelerator) => {
+    if (!enabledSourceTypes.has(type)) return undefined;
+    return {
+      label,
+      ...(accelerator ? { accelerator } : {}),
+      click: () => sendToRenderer(action),
+    };
+  };
+  const sourceGroup = (label, items) => {
+    const submenu = items.filter(Boolean);
+    return submenu.length ? { label, submenu } : undefined;
+  };
+  const sourceCreationSubmenu = [
+    sourceGroup('Diagram & Documents', [
+      sourceItem('tikz', 'TikZ (.tikz)', 'new-tikz'),
+      sourceItem('latex', 'LaTeX (.tex)', 'new-latex'),
+      sourceItem('metafont', 'MetaFont (.mf)', 'new-metafont'),
+      sourceItem('svg', 'SVG (.svg)', 'new-svg'),
+      sourceItem('mermaid', 'Mermaid (.mmd)', 'new-mermaid'),
+      sourceItem('markdown', 'Markdown (.md)', 'new-markdown'),
+      sourceItem('text', 'Plain Text (.txt)', 'new-text'),
+    ]),
+    sourceGroup('Data', [
+      sourceItem('yaml', 'YAML (.yaml)', 'new-yaml'),
+      sourceItem('json', 'JSON (.json)', 'new-json'),
+    ]),
+    sourceGroup('Code & Web', [
+      sourceItem('javascript', 'JavaScript (.js)', 'new-javascript'),
+      sourceItem('typescript', 'TypeScript (.ts)', 'new-typescript'),
+      sourceItem('python', 'Python (.py)', 'new-python'),
+      sourceItem('fortran', 'Fortran (.f90)', 'new-fortran'),
+      sourceItem('sql', 'SQL (.sql)', 'new-sql'),
+      sourceItem('html', 'HTML (.html)', 'new-html'),
+      sourceItem('css', 'CSS (.css)', 'new-css'),
+    ]),
+  ].filter(Boolean);
+  const diagramSourceItems = [
+    sourceItem('tikz', 'TikZ Source', 'select-tikz', 'CmdOrCtrl+1'),
+    sourceItem('latex', 'LaTeX Source', 'select-latex', 'CmdOrCtrl+2'),
+    sourceItem('metafont', 'MetaFont Source', 'select-metafont', 'CmdOrCtrl+3'),
+    sourceItem('svg', 'SVG Source', 'select-svg', 'CmdOrCtrl+4'),
+    sourceItem('mermaid', 'Mermaid Source', 'select-mermaid', 'CmdOrCtrl+5'),
+    sourceItem('markdown', 'Markdown Source', 'select-markdown', 'CmdOrCtrl+6'),
+    sourceItem('text', 'Plain Text Source', 'select-text', 'CmdOrCtrl+7'),
+  ].filter(Boolean);
+  const diagramSubmenu = [
+    ...diagramSourceItems,
+    { type: 'separator' },
+    { label: 'Render Preview', accelerator: 'CmdOrCtrl+Enter', click: () => sendToRenderer('render') },
+  ];
   return [
     ...(isMac ? [{ role: 'appMenu' }] : []),
     {
@@ -1467,15 +1902,7 @@ function menuTemplate() {
         { label: 'New Source File…', accelerator: 'CmdOrCtrl+N', click: () => sendToRenderer('new-file') },
         {
           label: 'New Source As',
-          submenu: [
-            { label: 'TikZ (.tikz)', click: () => sendToRenderer('new-tikz') },
-            { label: 'LaTeX (.tex)', click: () => sendToRenderer('new-latex') },
-            { label: 'MetaFont (.mf)', click: () => sendToRenderer('new-metafont') },
-            { label: 'SVG (.svg)', click: () => sendToRenderer('new-svg') },
-            { label: 'Mermaid (.mmd)', click: () => sendToRenderer('new-mermaid') },
-            { label: 'Markdown (.md)', click: () => sendToRenderer('new-markdown') },
-            { label: 'Plain Text (.txt)', click: () => sendToRenderer('new-text') },
-          ],
+          submenu: sourceCreationSubmenu,
         },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => sendToRenderer('save') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendToRenderer('save-as') },
@@ -1498,18 +1925,30 @@ function menuTemplate() {
       ],
     },
     {
-      label: 'Diagram',
+      label: 'JSON',
       submenu: [
-        { label: 'TikZ Source', accelerator: 'CmdOrCtrl+1', click: () => sendToRenderer('select-tikz') },
-        { label: 'LaTeX Source', accelerator: 'CmdOrCtrl+2', click: () => sendToRenderer('select-latex') },
-        { label: 'MetaFont Source', accelerator: 'CmdOrCtrl+3', click: () => sendToRenderer('select-metafont') },
-        { label: 'SVG Source', accelerator: 'CmdOrCtrl+4', click: () => sendToRenderer('select-svg') },
-        { label: 'Mermaid Source', accelerator: 'CmdOrCtrl+5', click: () => sendToRenderer('select-mermaid') },
-        { label: 'Markdown Source', accelerator: 'CmdOrCtrl+6', click: () => sendToRenderer('select-markdown') },
-        { label: 'Plain Text Source', accelerator: 'CmdOrCtrl+7', click: () => sendToRenderer('select-text') },
+        { label: 'Validate JSON', click: () => sendToRenderer('json-validate') },
+        { label: 'Pretty print JSON', accelerator: 'Shift+Alt+J', click: () => sendToRenderer('json-pretty') },
+        { label: 'Minify JSON', click: () => sendToRenderer('json-minify') },
         { type: 'separator' },
-        { label: 'Render Preview', accelerator: 'CmdOrCtrl+Enter', click: () => sendToRenderer('render') },
+        { label: 'Generate JSON Schema', click: () => sendToRenderer('json-schema') },
+        { type: 'separator' },
+        { label: 'Create JSON with AI prompt…', click: () => sendToRenderer('json-prompt-create') },
+        { label: 'Analyze JSON with AI prompt…', click: () => sendToRenderer('json-prompt-analyze') },
       ],
+    },
+    {
+      label: 'Python',
+      submenu: [
+        { label: 'Run Active Python Source', accelerator: 'CmdOrCtrl+Shift+B', click: () => sendToRenderer('build') },
+        { label: 'Test Active Python Source', click: () => sendToRenderer('python-test') },
+        { type: 'separator' },
+        { label: 'Show Python Output', click: () => sendToRenderer('python-output') },
+      ],
+    },
+    {
+      label: 'Diagram',
+      submenu: diagramSubmenu,
     },
     {
       label: 'View',
@@ -1522,6 +1961,12 @@ function menuTemplate() {
         { type: 'separator' },
         { label: 'Prompt Studio…', accelerator: 'CmdOrCtrl+Shift+L', click: () => sendToRenderer('prompt-studio') },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => sendToRenderer('settings') },
+      ],
+    },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'About Yedit', click: () => sendToRenderer('about') },
       ],
     },
   ];
@@ -1570,8 +2015,9 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  nativeTheme.themeSource = (await loadSettings()).appearance;
-  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate()));
+  const settings = await loadSettings();
+  nativeTheme.themeSource = settings.appearance;
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate(settings)));
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -1583,7 +2029,7 @@ app.on('before-quit', () => {
 
 ipcMain.handle('project:open', async () => {
   const picked = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open a diagram project',
+    title: 'Open a Yedit project',
     properties: ['openDirectory', 'createDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
@@ -1601,7 +2047,7 @@ ipcMain.handle('project:create', async (_event, name) => {
   await fs.mkdir(path.join(root, 'diagrams'), { recursive: true });
   await fs.mkdir(path.join(root, 'documents'), { recursive: true });
   await fs.mkdir(path.join(root, 'notes'), { recursive: true });
-  await fs.writeFile(path.join(root, '.diagram-foundry.json'), JSON.stringify({ name: safeName(name), version: 1 }, null, 2));
+  await fs.writeFile(path.join(root, '.yedit.json'), JSON.stringify({ name: safeName(name), version: 1 }, null, 2));
   // A project supplies only an empty, predictable folder structure.  Complete
   // source examples are available from the explicit Template Gallery; creating
   // a project must not silently add boilerplate in any format.
@@ -1659,6 +2105,7 @@ ipcMain.handle('project:unwatch', async (event, watchId) => {
 });
 ipcMain.handle('project:build-profiles', async () => buildProfiles.map((profile) => ({ ...profile, sourceTypes: [...profile.sourceTypes] })));
 ipcMain.handle('project:run-build', async (_event, root, relativePath, profileId) => runBuildProfile(root, relativePath, profileId));
+ipcMain.handle('project:run-python', async (_event, source, name, options) => runPythonSource(source, name, options));
 ipcMain.handle('project:save-as', async (_event, suggestedName, content, type) => {
   const extension = extensionForType(type);
   const result = await dialog.showSaveDialog(mainWindow, {

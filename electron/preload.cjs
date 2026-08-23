@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('diagramApi', {
     },
     buildProfiles: () => ipcRenderer.invoke('project:build-profiles'),
     runBuild: (root, relativePath, profileId) => ipcRenderer.invoke('project:run-build', root, relativePath, profileId),
+    runPython: (source, name, options) => ipcRenderer.invoke('project:run-python', source, name, options),
     saveAs: (suggestedName, content, type) => ipcRenderer.invoke('project:save-as', suggestedName, content, type),
   },
   render: {

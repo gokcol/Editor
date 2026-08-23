@@ -5,3 +5,4 @@ public/vs/
 *.dmg
 *.zip
 .DS_Store
+build/Yedit.iconset/

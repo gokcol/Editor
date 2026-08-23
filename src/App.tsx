@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { loader, type Monaco, type OnMount } from '@monaco-editor/react';
 import type * as MonacoEditor from 'monaco-editor';
 import mermaid from 'mermaid';
+import packageMetadata from '../package.json';
 import { samples } from './engine/samples';
 import { formatSource } from './engine/formatters';
 import { markdownPreviewDocument, renderMarkdownSource, type PreviewAppearance } from './engine/markdown';
 import { registerFoundryLanguages } from './engine/monacoLanguages';
 import { references } from './engine/references';
 import { readSnapshots, rememberSnapshot, type LocalSnapshot } from './engine/localHistory';
+import { formatJson, inferJsonSchema, inspectJson, minifyJson } from './engine/jsonTools';
 import { compactPath, documentOutline, findInSource, sourceFromAssistantReply } from './engine/workbench';
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
-import type { AppSettings, DocumentModel, ExportFormat, FileNode, PreviewState, Project, ReferenceEntry, SourceType, TexPdfEngine } from './types';
+import type { AppSettings, DocumentModel, ExportFormat, FileNode, PreviewState, Project, PythonRunResult, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
 // into `file:///vs` inside a packaged Electron worker, which makes Monaco fall
@@ -26,6 +28,15 @@ const SOURCE_META: Record<SourceType, { label: string; short: string; color: str
   mermaid: { label: 'Mermaid', short: 'MM', color: 'cyan', language: 'foundry-mermaid', extension: 'mmd' },
   markdown: { label: 'Markdown', short: 'MD', color: 'rose', language: 'foundry-markdown', extension: 'md' },
   text: { label: 'Plain Text', short: 'TXT', color: 'slate', language: 'foundry-text', extension: 'txt' },
+  yaml: { label: 'YAML', short: 'YML', color: 'mint', language: 'foundry-yaml', extension: 'yaml' },
+  json: { label: 'JSON', short: 'JSN', color: 'indigo', language: 'foundry-json', extension: 'json' },
+  javascript: { label: 'JavaScript', short: 'JS', color: 'amber', language: 'foundry-javascript', extension: 'js' },
+  typescript: { label: 'TypeScript', short: 'TS', color: 'indigo', language: 'foundry-typescript', extension: 'ts' },
+  python: { label: 'Python', short: 'PY', color: 'cyan', language: 'foundry-python', extension: 'py' },
+  fortran: { label: 'Fortran', short: 'F90', color: 'violet', language: 'foundry-fortran', extension: 'f90' },
+  sql: { label: 'SQL', short: 'SQL', color: 'mint', language: 'foundry-sql', extension: 'sql' },
+  html: { label: 'HTML', short: 'HTML', color: 'rose', language: 'foundry-html', extension: 'html' },
+  css: { label: 'CSS', short: 'CSS', color: 'violet', language: 'foundry-css', extension: 'css' },
 };
 const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
   tikz: 'LaTeX-quality diagrams',
@@ -35,7 +46,40 @@ const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
   mermaid: 'Text-first flow diagrams',
   markdown: 'Notes with rich preview',
   text: 'Portable notes and raw text',
+  yaml: 'Readable configuration data',
+  json: 'Strict structured data',
+  javascript: 'Modern JavaScript source',
+  typescript: 'Typed JavaScript source',
+  python: 'Python source and scripts',
+  fortran: 'Free-form scientific source',
+  sql: 'Queries and migrations',
+  html: 'Semantic web documents',
+  css: 'Stylesheets and design tokens',
 };
+const SOURCE_TYPES = Object.keys(SOURCE_META) as SourceType[];
+const DEFAULT_ENABLED_SOURCE_TYPES = [...SOURCE_TYPES];
+// Templates are complete starting points. Keep this gallery focused on the
+// source formats where a starter carries meaningful structure; all formats
+// remain available as empty files from New Source.
+const TEMPLATE_SOURCE_TYPES: SourceType[] = ['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'yaml', 'json', 'html'];
+const SOURCE_PREVIEW_TYPES = new Set<SourceType>(['text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'css']);
+
+// The package manifest is bundled with the renderer at build time. Keep a
+// guarded display value so a malformed development manifest cannot make the
+// About panel misleading or render an arbitrary value.
+const APP_VERSION = typeof packageMetadata.version === 'string'
+  && /^\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?$/.test(packageMetadata.version)
+  ? packageMetadata.version
+  : 'development';
+const COPYRIGHT_YEAR = new Date().getFullYear();
+const ABOUT_DEPENDENCIES = [
+  { name: 'React and React DOM', license: 'MIT', purpose: 'interface runtime' },
+  { name: 'Monaco Editor', license: 'MIT', purpose: 'code editing' },
+  { name: 'Mermaid', license: 'MIT', purpose: 'diagram rendering' },
+  { name: 'Marked', license: 'MIT', purpose: 'Markdown parsing' },
+  { name: 'DOMPurify', license: 'MPL-2.0 or Apache-2.0', purpose: 'HTML sanitization' },
+  { name: 'TypeScript and Vite', license: 'Apache-2.0 / MIT', purpose: 'build tooling' },
+] as const;
 
 const EMPTY_PREVIEW: PreviewState = { status: 'idle', revision: -1 };
 const DEFAULT_SETTINGS: AppSettings = {
@@ -43,6 +87,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 110,
   editorFontFamily: 'SF Mono',
   editorFontSize: 14,
+  editorBackgroundColor: 'theme',
+  editorBackgroundPattern: 'none',
   referenceFontSize: 10,
   autoSave: true,
   formatOnSave: false,
@@ -56,9 +102,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   explorerWidth: 245,
   inspectorWidth: 390,
   previewSplit: 54,
+  enabledSourceTypes: DEFAULT_ENABLED_SOURCE_TYPES,
 };
 const EDITOR_FONTS = ['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono'];
-const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|markdown|txt)$/i;
+const EDITOR_BACKGROUND_PATTERNS: Array<{ value: AppSettings['editorBackgroundPattern']; label: string; description: string }> = [
+  { value: 'none', label: 'Plain', description: 'Solid canvas' },
+  { value: 'grid', label: 'Grid', description: 'Fine square grid' },
+  { value: 'dots', label: 'Dots', description: 'Subtle dot field' },
+  { value: 'lines', label: 'Lines', description: 'Writing lines' },
+];
+const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|markdown|txt|ya?ml|json|(?:c|m)?js|jsx|(?:c|m)?ts|tsx|pyw?|f(?:or|90|95|03|08|18)?|sql|ddl|x?html?|css)$/i;
 type PanelLayout = Pick<AppSettings, 'explorerOpen' | 'previewOpen' | 'referenceOpen' | 'explorerWidth' | 'inspectorWidth' | 'previewSplit'>;
 type PanelLayoutKey = keyof PanelLayout;
 type PanelResizeTarget = 'explorer' | 'inspector' | 'preview';
@@ -90,6 +143,27 @@ function panelLayoutFromSettings(settings: AppSettings): PanelLayout {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/**
+ * Settings are local and user-editable, so keep the UI safe even if an older
+ * build, a hand-edited preference file, or a future source type leaves the
+ * list malformed.  The fallback keeps one ordinary source mode available
+ * rather than trapping the user in a New Source dialog with no choices.
+ */
+function normalizedEnabledSourceTypes(value: readonly SourceType[] | undefined): SourceType[] {
+  const requested = Array.isArray(value) ? value : DEFAULT_ENABLED_SOURCE_TYPES;
+  const enabled = SOURCE_TYPES.filter((type) => requested.includes(type));
+  return enabled.length ? enabled : ['text'];
+}
+
+function isKnownSourceType(value: string): value is SourceType {
+  return SOURCE_TYPES.includes(value as SourceType);
+}
+
+function editorCanvasColor(color: string, appearance: PreviewAppearance) {
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color;
+  return appearance === 'light' ? '#fbfcff' : '#111622';
 }
 
 /**
@@ -186,7 +260,16 @@ function sourceTypeForName(name: string): SourceType {
   if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'mermaid';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.txt')) return 'text';
-  return 'tikz';
+  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
+  if (lower.endsWith('.json')) return 'json';
+  if (/\.(?:js|mjs|cjs|jsx)$/i.test(lower)) return 'javascript';
+  if (/\.(?:ts|mts|cts|tsx)$/i.test(lower)) return 'typescript';
+  if (/\.pyw?$/i.test(lower)) return 'python';
+  if (/\.f(?:or|90|95|03|08|18)?$/i.test(lower)) return 'fortran';
+  if (lower.endsWith('.sql') || lower.endsWith('.ddl')) return 'sql';
+  if (/\.(?:html?|xhtml)$/i.test(lower)) return 'html';
+  if (lower.endsWith('.css')) return 'css';
+  return 'text';
 }
 
 function filenameWithoutExtension(name: string) {
@@ -248,8 +331,8 @@ function escapeHtml(value: string) {
   }[character] ?? character));
 }
 
-/** A safe, readable document view for raw .txt content; it never interprets source as markup. */
-function textPreviewDocument(source: string, appearance: PreviewAppearance) {
+/** A safe, readable document view; it never interprets source as markup. */
+function sourcePreviewDocument(source: string, label: string, appearance: PreviewAppearance, detail?: string) {
   const isLight = appearance === 'light';
   const page = isLight ? '#f8fbff' : '#111722';
   const card = isLight ? '#ffffff' : '#171f2d';
@@ -266,7 +349,17 @@ function textPreviewDocument(source: string, appearance: PreviewAppearance) {
     header { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid ${edge}; color: ${muted}; font-size: 12px; }
     header strong { color: ${ink}; font-size: 13px; }
     pre { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; tab-size: 2; color: ${ink}; font: 14px/1.7 "SF Mono", Menlo, Monaco, Consolas, monospace; }
-  </style></head><body><main><header><strong>Plain text</strong><span>${lineNumber} ${lineNumber === 1 ? 'line' : 'lines'}</span></header><pre>${escapeHtml(source)}</pre></main></body></html>`;
+  </style></head><body><main><header><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail ?? `${lineNumber} ${lineNumber === 1 ? 'line' : 'lines'}`)}</span></header><pre>${escapeHtml(source)}</pre></main></body></html>`;
+}
+
+/** A safe, readable document view for raw .txt content; it never interprets source as markup. */
+function textPreviewDocument(source: string, appearance: PreviewAppearance) {
+  return sourcePreviewDocument(source, 'Plain text', appearance);
+}
+
+function jsonPreviewDocument(source: string, appearance: PreviewAppearance) {
+  const result = inspectJson(source);
+  return sourcePreviewDocument(result.valid ? formatJson(source) ?? source : source, 'JSON', appearance, result.message);
 }
 
 let configuredMermaidAppearance: PreviewAppearance | undefined;
@@ -299,6 +392,26 @@ async function renderMermaidSource(source: string, appearance: PreviewAppearance
 type ToastTone = 'info' | 'success' | 'error';
 type Toast = { tone: ToastTone; text: string } | null;
 type LatexRenderMode = 'pdf' | 'dvi';
+type JsonPromptIntent = 'create' | 'analyze' | 'schema';
+type PythonTaskMode = 'run' | 'test';
+type PythonTaskStatus = 'idle' | 'running' | 'success' | 'error' | 'unavailable';
+type PythonTaskState = {
+  documentId?: string;
+  revision?: number;
+  name?: string;
+  mode?: PythonTaskMode;
+  status: PythonTaskStatus;
+  stdout: string;
+  stderr: string;
+  command?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+};
+const EMPTY_PYTHON_TASK: PythonTaskState = {
+  status: 'idle',
+  stdout: '',
+  stderr: '',
+};
 const TEX_PDF_ENGINES = [
   { id: 'pdflatex', label: 'pdfLaTeX', description: 'Fast, broadly compatible PDF output' },
   { id: 'xelatex', label: 'XeLaTeX', description: 'Unicode and system-font PDF output' },
@@ -311,6 +424,27 @@ const TEX_PDF_ENGINE_LABEL: Record<TexPdfEngine, string> = Object.fromEntries(
 
 function texPdfEngineLabel(engine: TexPdfEngine) {
   return TEX_PDF_ENGINE_LABEL[engine];
+}
+
+function pythonTaskStatusLabel(task: PythonTaskState) {
+  if (task.status === 'running') return task.mode === 'test' ? 'Testing…' : 'Running…';
+  if (task.status === 'success') return task.mode === 'test' ? 'Tests passed' : 'Finished';
+  if (task.status === 'unavailable') return 'Runner unavailable';
+  if (task.timedOut) return 'Timed out';
+  if (task.status === 'error') return task.mode === 'test' ? 'Tests failed' : 'Failed';
+  return 'Ready';
+}
+
+function pythonTaskConsoleText(task: PythonTaskState) {
+  if (task.status === 'idle') return 'No Python task has run for this source yet.';
+  const parts = [
+    `${task.mode === 'test' ? 'Python test' : 'Python run'} · ${pythonTaskStatusLabel(task)}`,
+    task.command ? `$ ${task.command}` : '',
+    task.stdout ? `stdout\n${task.stdout}` : '',
+    task.stderr ? `stderr\n${task.stderr}` : '',
+    typeof task.exitCode === 'number' ? `Exit code: ${task.exitCode}` : '',
+  ].filter(Boolean);
+  return parts.join('\n\n');
 }
 
 type ProjectSearchHit = { node: FileNode; line: number; column: number; excerpt: string };
@@ -399,6 +533,7 @@ function App() {
     audience: '',
     style: 'Clean technical diagram, restrained modern palette, clear hierarchy',
     constraints: '',
+    jsonIntent: 'create' as JsonPromptIntent,
     outputOnly: true,
     includeActiveFile: false,
     includeProjectContext: true,
@@ -417,12 +552,15 @@ function App() {
   const [projectSearchHits, setProjectSearchHits] = useState<ProjectSearchHit[]>([]);
   const [isProjectSearching, setIsProjectSearching] = useState(false);
   const [templateGalleryOpen, setTemplateGalleryOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [isGitLoading, setIsGitLoading] = useState(false);
   const [taskConsoleOpen, setTaskConsoleOpen] = useState(false);
   const [taskOutput, setTaskOutput] = useState('No local task has run in this session.');
   const [isTaskRunning, setIsTaskRunning] = useState(false);
+  const [pythonTask, setPythonTask] = useState<PythonTaskState>(EMPTY_PYTHON_TASK);
+  const [pythonInspectorView, setPythonInspectorView] = useState<'output' | 'source'>('output');
   const [recentProjects, setRecentProjects] = useState<Array<Pick<Project, 'root' | 'name'>>>([]);
   const [recentProjectsOpen, setRecentProjectsOpen] = useState(false);
   const [paletteHistory, setPaletteHistory] = useState<string[]>(() => {
@@ -482,6 +620,44 @@ function App() {
     setToast({ text, tone });
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3800);
   }, []);
+
+  const enabledSourceTypes = useMemo(
+    () => normalizedEnabledSourceTypes(settings.enabledSourceTypes),
+    [settings.enabledSourceTypes],
+  );
+  const availableTemplateSourceTypes = useMemo(
+    () => TEMPLATE_SOURCE_TYPES.filter((type) => enabledSourceTypes.includes(type)),
+    [enabledSourceTypes],
+  );
+  const isSourceTypeEnabled = useCallback(
+    (type: SourceType) => enabledSourceTypes.includes(type),
+    [enabledSourceTypes],
+  );
+  const defaultCreationSourceType = isSourceTypeEnabled('text') ? 'text' : enabledSourceTypes[0];
+
+  // A preference file from an older build (or one edited by hand) should not
+  // leave the workbench with zero creation formats. Persist the repaired value
+  // once the normal settings lifecycle has taken over.
+  useEffect(() => {
+    const normalized = normalizedEnabledSourceTypes(settings.enabledSourceTypes);
+    const current = Array.isArray(settings.enabledSourceTypes) ? settings.enabledSourceTypes : [];
+    if (current.length === normalized.length && current.every((type, index) => type === normalized[index])) return;
+    setSettings((existing) => ({ ...existing, enabledSourceTypes: normalized }));
+  }, [settings.enabledSourceTypes]);
+
+  const toggleSourceType = useCallback((type: SourceType) => {
+    if (isSourceTypeEnabled(type) && enabledSourceTypes.length === 1) {
+      showToast('Keep at least one source type enabled.', 'info');
+      return;
+    }
+    setSettings((current) => {
+      const currentEnabled = normalizedEnabledSourceTypes(current.enabledSourceTypes);
+      const nextEnabled = currentEnabled.includes(type)
+        ? currentEnabled.filter((candidate) => candidate !== type)
+        : SOURCE_TYPES.filter((candidate) => currentEnabled.includes(candidate) || candidate === type);
+      return { ...current, enabledSourceTypes: nextEnabled };
+    });
+  }, [enabledSourceTypes.length, isSourceTypeEnabled, showToast]);
 
   const commitPanelLayout = useCallback((next: PanelLayout) => {
     panelLayoutRef.current = next;
@@ -803,6 +979,33 @@ function App() {
         return;
       }
 
+      if (document.sourceType === 'json') {
+        if (token !== renderTokenRef.current) return;
+        const result = inspectJson(document.value);
+        if (!result.valid) {
+          const location = result.line ? ` (line ${result.line}, column ${result.column ?? 1})` : '';
+          setPreview({ status: 'error', revision: document.revision, message: `${result.message}${location}` });
+          return;
+        }
+        setPreview({ status: 'ready', revision: document.revision, kind: 'html', content: jsonPreviewDocument(document.value, effectiveAppearance), message: result.message });
+        return;
+      }
+
+      if (document.sourceType === 'html') {
+        if (token !== renderTokenRef.current) return;
+        // The preview viewport uses a fully sandboxed iframe. HTML stays
+        // useful as a visual check without granting its scripts any access to
+        // Electron, the local project, or the network-capable page context.
+        setPreview({ status: 'ready', revision: document.revision, kind: 'html', content: document.value || sourcePreviewDocument('', 'HTML', effectiveAppearance) });
+        return;
+      }
+
+      if (SOURCE_PREVIEW_TYPES.has(document.sourceType)) {
+        if (token !== renderTokenRef.current) return;
+        setPreview({ status: 'ready', revision: document.revision, kind: 'html', content: sourcePreviewDocument(document.value, SOURCE_META[document.sourceType].label, effectiveAppearance) });
+        return;
+      }
+
       let svg = document.value;
       if (document.sourceType === 'svg') {
         const parsed = new DOMParser().parseFromString(document.value, 'image/svg+xml');
@@ -846,12 +1049,21 @@ function App() {
   }, [documents]);
 
   const createUnsavedStarterDocument = useCallback((type: SourceType) => {
+    if (!isSourceTypeEnabled(type)) {
+      showToast(`${SOURCE_META[type].label} templates are disabled in Settings.`, 'info');
+      return;
+    }
     addScratchpadDocument(makeStarterDocument(type));
-  }, [addScratchpadDocument]);
+  }, [addScratchpadDocument, isSourceTypeEnabled, showToast]);
 
-  const createBlankScratchpad = useCallback((type: SourceType = 'text') => {
+  const createBlankScratchpad = useCallback((requestedType?: SourceType) => {
+    const type = requestedType ?? defaultCreationSourceType;
+    if (!isSourceTypeEnabled(type)) {
+      showToast(`${SOURCE_META[type].label} is disabled in Settings. Enable it to create a new source.`, 'info');
+      return;
+    }
     addScratchpadDocument(makeBlankDocument(type));
-  }, [addScratchpadDocument]);
+  }, [addScratchpadDocument, defaultCreationSourceType, isSourceTypeEnabled, showToast]);
 
   const syncProjectTree = useCallback((nextProject: Project, resetLocation = false) => {
     const directories = folderPaths(nextProject.tree);
@@ -878,7 +1090,7 @@ function App() {
     syncProjectTree(openedProject, true);
     rememberRecentProject(openedProject);
     if (!sourceFiles.length) {
-      const blank = makeBlankDocument();
+      const blank = makeBlankDocument(defaultCreationSourceType);
       setDocuments([blank]);
       setActiveId(blank.id);
       showToast('Project opened. Add a source file when you are ready.');
@@ -899,7 +1111,7 @@ function App() {
     setActiveId(document.id);
     setPreview(EMPTY_PREVIEW);
     showToast(`Opened ${openedProject.name}.`, 'success');
-  }, [rememberRecentProject, showToast, syncProjectTree]);
+  }, [defaultCreationSourceType, rememberRecentProject, showToast, syncProjectTree]);
 
   const openProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Opening a project will close the current scratchpad tabs. Continue without saving those edits?')) return;
@@ -1026,14 +1238,14 @@ function App() {
       showToast('Open a project file before deleting it.', 'info');
       return;
     }
-    if (!window.confirm(`Move “${activeDocument.relativePath}” out of this project permanently? This cannot be undone by Diagram Foundry.`)) return;
+    if (!window.confirm(`Move “${activeDocument.relativePath}” out of this project permanently? This cannot be undone by Yedit.`)) return;
     try {
       localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
       await window.diagramApi.project.deleteFile(project.root, activeDocument.relativePath);
       const index = documents.findIndex((document) => document.id === activeDocument.id);
       const next = documents.filter((document) => document.id !== activeDocument.id);
       if (!next.length) {
-        const fresh = makeBlankDocument();
+        const fresh = makeBlankDocument(defaultCreationSourceType);
         setDocuments([fresh]);
         setActiveId(fresh.id);
       } else {
@@ -1045,7 +1257,7 @@ function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not delete this file.', 'error');
     }
-  }, [activeDocument, documents, project, showToast, syncProjectTree]);
+  }, [activeDocument, defaultCreationSourceType, documents, project, showToast, syncProjectTree]);
 
   useEffect(() => {
     if (!project) return undefined;
@@ -1069,7 +1281,7 @@ function App() {
           })
           .catch(() => undefined);
       }
-      showToast(`Project changed outside Diagram Foundry (${externalChanges.length} update${externalChanges.length === 1 ? '' : 's'}).`);
+      showToast(`Project changed outside Yedit (${externalChanges.length} update${externalChanges.length === 1 ? '' : 's'}).`);
     });
     void window.diagramApi.project.watch(project.root).then((watch) => { watchId = watch.watchId; }).catch(() => undefined);
     return () => {
@@ -1137,7 +1349,12 @@ function App() {
     }
   }, [project, projectSearchQuery, showToast]);
 
-  const openNewSource = useCallback((type: SourceType = 'text') => {
+  const openNewSource = useCallback((requestedType?: SourceType) => {
+    const type = requestedType ?? defaultCreationSourceType;
+    if (!isSourceTypeEnabled(type)) {
+      showToast(`${SOURCE_META[type].label} is disabled in Settings. Enable it to create a new source.`, 'info');
+      return;
+    }
     const fallbackFolder = type === 'markdown' || type === 'text'
       ? 'notes'
       : type === 'latex'
@@ -1147,17 +1364,30 @@ function App() {
     setNewSourceType(type);
     setNewSourceName(`${folder}untitled.${SOURCE_META[type].extension}`);
     setNewSourceOpen(true);
-  }, [project, selectedFolderPath]);
+  }, [defaultCreationSourceType, isSourceTypeEnabled, project, selectedFolderPath, showToast]);
 
   const changeNewSourceType = useCallback((type: SourceType) => {
+    if (!isSourceTypeEnabled(type)) {
+      showToast(`${SOURCE_META[type].label} is disabled in Settings.`, 'info');
+      return;
+    }
     setNewSourceType(type);
     setNewSourceName((current) => {
       const base = current.replace(SOURCE_FILENAME_PATTERN, '') || 'untitled';
       return `${base}.${SOURCE_META[type].extension}`;
     });
-  }, []);
+  }, [isSourceTypeEnabled, showToast]);
+
+  useEffect(() => {
+    if (!newSourceOpen || isSourceTypeEnabled(newSourceType)) return;
+    changeNewSourceType(defaultCreationSourceType);
+  }, [changeNewSourceType, defaultCreationSourceType, isSourceTypeEnabled, newSourceOpen, newSourceType]);
 
   const createFile = useCallback(async () => {
+    if (!isSourceTypeEnabled(newSourceType)) {
+      showToast(`${SOURCE_META[newSourceType].label} is disabled in Settings. Choose an enabled source format.`, 'info');
+      return;
+    }
     const rawName = newSourceName.trim().replace(/^\/+/, '');
     if (!rawName) {
       showToast('Give the source file a name first.', 'error');
@@ -1222,7 +1452,7 @@ function App() {
     } finally {
       setIsCreatingSource(false);
     }
-  }, [documents, newSourceName, newSourceType, project, showToast, syncProjectTree]);
+  }, [documents, isSourceTypeEnabled, newSourceName, newSourceType, project, showToast, syncProjectTree]);
 
   const saveDocument = useCallback(async (saveAs = false) => {
     if (!activeDocument) return;
@@ -1299,7 +1529,14 @@ function App() {
 
   const formatActive = useCallback(() => {
     if (!activeDocument) return;
-    const formatted = formatSource(activeDocument.sourceType, activeDocument.value);
+    const jsonResult = activeDocument.sourceType === 'json' ? formatJson(activeDocument.value) : undefined;
+    if (activeDocument.sourceType === 'json' && !jsonResult) {
+      const inspection = inspectJson(activeDocument.value);
+      if (inspection.line) revealEditorLine(inspection.line, inspection.column);
+      showToast(`${inspection.message}${inspection.line ? ` (line ${inspection.line}, column ${inspection.column ?? 1})` : ''}`, 'error');
+      return;
+    }
+    const formatted = jsonResult ?? formatSource(activeDocument.sourceType, activeDocument.value);
     if (formatted === activeDocument.value) {
       showToast('Already formatted.');
       return;
@@ -1315,8 +1552,112 @@ function App() {
     } else {
       updateDocument(activeDocument.id, formatted);
     }
-    showToast('Formatted with the local source formatter.', 'success');
-  }, [activeDocument, showToast, updateDocument]);
+    showToast(activeDocument.sourceType === 'json' ? 'JSON pretty-printed locally.' : 'Formatted with the local source formatter.', 'success');
+  }, [activeDocument, revealEditorLine, showToast, updateDocument]);
+
+  const validateActiveJson = useCallback(() => {
+    if (!activeDocument || activeDocument.sourceType !== 'json') {
+      showToast('Open a JSON document to validate it.', 'info');
+      return;
+    }
+    const result = inspectJson(activeDocument.value);
+    if (result.valid) {
+      showToast(result.message, 'success');
+      return;
+    }
+    if (result.line) revealEditorLine(result.line, result.column);
+    showToast(`${result.message}${result.line ? ` (line ${result.line}, column ${result.column ?? 1})` : ''}`, 'error');
+  }, [activeDocument, revealEditorLine, showToast]);
+
+  const prettyPrintActiveJson = useCallback(() => {
+    if (!activeDocument || activeDocument.sourceType !== 'json') {
+      showToast('Open a JSON document to pretty-print it.', 'info');
+      return;
+    }
+    formatActive();
+  }, [activeDocument, formatActive, showToast]);
+
+  const minifyActiveJson = useCallback(() => {
+    if (!activeDocument || activeDocument.sourceType !== 'json') {
+      showToast('Open a JSON document to minify it.', 'info');
+      return;
+    }
+    const minified = minifyJson(activeDocument.value);
+    if (!minified) {
+      validateActiveJson();
+      return;
+    }
+    if (minified === activeDocument.value) {
+      showToast('JSON is already compact.');
+      return;
+    }
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (editor && model) {
+      editor.executeEdits('minify-json', [{ range: model.getFullModelRange(), text: minified, forceMoveMarkers: true }]);
+      editor.focus();
+    } else {
+      updateDocument(activeDocument.id, minified);
+    }
+    showToast('JSON compacted with the local formatter.', 'success');
+  }, [activeDocument, showToast, updateDocument, validateActiveJson]);
+
+  const inferActiveJsonSchema = useCallback(() => {
+    if (!activeDocument || activeDocument.sourceType !== 'json') {
+      showToast('Open a JSON document to infer a schema.', 'info');
+      return;
+    }
+    const result = inferJsonSchema(activeDocument.value);
+    if (!result.schema) {
+      if (result.error?.line) revealEditorLine(result.error.line, result.error.column);
+      showToast(result.error?.message || 'The JSON must be valid before a schema can be inferred.', 'error');
+      return;
+    }
+    const base = filenameWithoutExtension(activeDocument.name);
+    let name = `${base}.schema.json`;
+    let index = 2;
+    while (documents.some((document) => document.name === name)) {
+      name = `${base}.schema ${index}.json`;
+      index += 1;
+    }
+    const document: DocumentModel = {
+      id: `json-schema-${crypto.randomUUID()}`,
+      name,
+      sourceType: 'json',
+      value: `${JSON.stringify(result.schema, null, 2)}\n`,
+      dirty: true,
+      revision: 0,
+    };
+    setDocuments((current) => [...current, document]);
+    setActiveId(document.id);
+    showToast('Permissive JSON Schema draft opened in a new tab.', 'success');
+  }, [activeDocument, documents, revealEditorLine, showToast]);
+
+  const openJsonPrompt = useCallback((intent: JsonPromptIntent) => {
+    if (!activeDocument || activeDocument.sourceType !== 'json') {
+      showToast('Open a JSON document to use JSON Prompt Studio.', 'info');
+      return;
+    }
+    setPromptSpec((current) => ({
+      ...current,
+      jsonIntent: intent,
+      goal: intent === 'create'
+        ? current.goal || 'Create a strict JSON document for a clearly defined data model.'
+        : intent === 'analyze'
+          ? 'Explain the structure, semantics, likely schema, and data-quality risks in this JSON.'
+          : 'Create a practical JSON Schema Draft 2020-12 from this example.',
+      constraints: intent === 'create'
+        ? current.constraints || 'Strict JSON only: double-quoted keys and strings, no comments, no trailing commas.'
+        : intent === 'schema'
+          ? 'Keep the schema permissive unless the data demonstrates a strict constraint; do not mark inferred keys required without evidence.'
+          : 'Separate observed facts from assumptions and identify ambiguous or inconsistent fields.',
+      includeActiveFile: intent !== 'create' ? true : current.includeActiveFile,
+      outputOnly: intent !== 'analyze',
+    }));
+    setPromptApplyMode(intent === 'analyze' ? 'new' : 'replace');
+    setPromptReply('');
+    setPromptOpen(true);
+  }, [activeDocument, showToast]);
 
   const insertSnippet = useCallback((snippet: string) => {
     const editor = editorRef.current;
@@ -1341,6 +1682,11 @@ function App() {
         html = markdownPreviewDocument(rendered, effectiveAppearance);
       }
       if (activeDocument.sourceType === 'text') html = textPreviewDocument(activeDocument.value, effectiveAppearance);
+      if (activeDocument.sourceType === 'json') html = jsonPreviewDocument(activeDocument.value, effectiveAppearance);
+      if (activeDocument.sourceType === 'html') html = activeDocument.value || sourcePreviewDocument('', 'HTML', effectiveAppearance);
+      if (SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) && activeDocument.sourceType !== 'text' && activeDocument.sourceType !== 'json') {
+        html = sourcePreviewDocument(activeDocument.value, SOURCE_META[activeDocument.sourceType].label, effectiveAppearance);
+      }
       const result = await window.diagramApi.render.export({
         sourceType: activeDocument.sourceType,
         source: activeDocument.value,
@@ -1428,7 +1774,21 @@ function App() {
     if (!activeDocument) return '';
     const meta = SOURCE_META[activeDocument.sourceType];
     const selection = selectionSource;
-    const activeFileContext = promptSpec.includeActiveFile
+    const isJson = activeDocument.sourceType === 'json';
+    const isJsonAnalysis = isJson && promptSpec.jsonIntent === 'analyze';
+    const isJsonSchema = isJson && promptSpec.jsonIntent === 'schema';
+    const sourceRole = activeDocument.sourceType === 'text'
+      ? 'editor'
+      : activeDocument.sourceType === 'latex'
+        ? 'document author'
+        : activeDocument.sourceType === 'metafont'
+          ? 'font engineer'
+          : activeDocument.sourceType === 'yaml' || isJson
+            ? 'data engineer'
+            : ['javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css'].includes(activeDocument.sourceType)
+              ? 'software engineer'
+              : 'diagram engineer';
+    const activeFileContext = promptSpec.includeActiveFile || isJsonAnalysis || isJsonSchema
       ? `Full active file (${activeDocument.name}):\n\n${activeDocument.value.slice(0, 14000)}${activeDocument.value.length > 14000 ? '\n\n[truncated after 14,000 characters]' : ''}`
       : '';
     const projectContext = promptSpec.includeProjectContext && project
@@ -1437,30 +1797,69 @@ function App() {
     const renderContext = promptSpec.includeRenderError && preview.status === 'error' && preview.message
       ? `Current renderer error to resolve:\n\n${preview.message.slice(-5000)}`
       : '';
+    const localSchemaContext = isJsonSchema
+      ? (() => {
+        const inferred = inferJsonSchema(activeDocument.value);
+        return inferred.schema
+          ? `Local inferred starting schema (permissive, edit it rather than treating it as authoritative):\n\n${JSON.stringify(inferred.schema, null, 2)}`
+          : `The current JSON must be valid before a schema can be inferred. ${inferred.error?.message ?? ''}`;
+      })()
+      : '';
+    const task = isJsonAnalysis
+      ? `Analyze the current JSON for this request: ${promptSpec.goal || 'Explain its structure, semantics, likely schema, and potential data-quality issues.'}.`
+      : isJsonSchema
+        ? `Generate an editable JSON Schema Draft 2020-12 for the current JSON: ${promptSpec.goal || 'capture the observed structure without over-constraining future data.'}.`
+        : `Create ${meta.label} source for this request: ${promptSpec.goal || `[describe the ${meta.label.toLowerCase()} artifact here]`}.`;
+    const sourceInstruction = activeDocument.sourceType === 'tikz'
+      ? `Return a complete, compilable LaTeX document using TikZ. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, only local/common TikZ libraries, no shell escape, and keep labels readable.`
+      : activeDocument.sourceType === 'latex'
+        ? `Return a complete, compilable standalone LaTeX document. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, do not use shell escape, and keep the document structure clear.`
+        : activeDocument.sourceType === 'metafont'
+          ? 'Return complete, compilable MetaFont source only. Include mode_setup, define at least one beginchar glyph, use clear design units, and finish with bye. When TTF conversion is requested, favor closed fill/unfill outlines compatible with mf2pt1 rather than raster-only effects.'
+          : activeDocument.sourceType === 'svg'
+            ? 'Return a complete, valid, self-contained SVG with a responsive viewBox. Do not reference remote assets or scripts.'
+            : activeDocument.sourceType === 'mermaid'
+              ? 'Return valid Mermaid source only. Use strict-compatible syntax and set no HTML labels.'
+              : activeDocument.sourceType === 'markdown'
+                ? 'Return well-structured GitHub-flavored Markdown. Use meaningful headings, concise prose, and ordinary fenced code blocks; use a mermaid fence only when a diagram adds value.'
+                : activeDocument.sourceType === 'json'
+                  ? isJsonAnalysis
+                    ? 'Treat the JSON as data, not executable code. Distinguish observations from assumptions and call out invalid or ambiguous structures without inventing missing values.'
+                    : isJsonSchema
+                      ? 'Return one valid JSON Schema Draft 2020-12 document. Prefer a permissive starting schema, use double-quoted JSON only, and state no prose outside the JSON document.'
+                      : 'Return one strict, valid JSON document: double-quote every key and string, use no comments or trailing commas, and keep types consistent.'
+                  : activeDocument.sourceType === 'yaml'
+                    ? 'Return valid YAML 1.2 with two-space indentation and no tabs. Keep configuration explicit and avoid language-specific tags unless requested.'
+                    : activeDocument.sourceType === 'javascript'
+                      ? 'Return modern, readable JavaScript. State the module/runtime assumptions in code comments only when needed and avoid undeclared global dependencies.'
+                      : activeDocument.sourceType === 'typescript'
+                        ? 'Return modern, strict TypeScript with useful named types at public boundaries. Do not use any unless the request expressly requires it.'
+                        : activeDocument.sourceType === 'python'
+                          ? 'Return readable Python 3 source with conventional imports, four-space indentation, and type hints where they clarify public behavior.'
+                          : activeDocument.sourceType === 'fortran'
+                            ? 'Return portable free-form Fortran source (Fortran 2008 or later unless a target is specified), with explicit implicit none and clear module/program structure.'
+                            : activeDocument.sourceType === 'sql'
+                              ? 'Return readable SQL. Use standard SQL unless a target dialect is named, qualify destructive statements carefully, and format clauses on separate lines.'
+                              : activeDocument.sourceType === 'html'
+                                ? 'Return a complete, semantic, accessible HTML document. Keep it self-contained; do not load remote scripts or assets unless explicitly requested.'
+                                : activeDocument.sourceType === 'css'
+                                  ? 'Return standards-based CSS with readable custom properties and selectors. Avoid browser-specific hacks unless the target requires them.'
+                                  : 'Return clean, readable plain text only. Preserve the requested wording and structure without Markdown syntax unless it is explicitly requested.';
     return [
-      `You are an expert ${meta.label} ${activeDocument.sourceType === 'text' ? 'editor' : activeDocument.sourceType === 'latex' ? 'document author' : activeDocument.sourceType === 'metafont' ? 'font engineer' : 'diagram engineer'}.`,
-      `Create ${meta.label} source for this request: ${promptSpec.goal || '[describe the diagram here]'}.`,
+      `You are an expert ${meta.label} ${sourceRole}.`,
+      task,
       promptSpec.audience ? `Audience / purpose: ${promptSpec.audience}.` : '',
       promptSpec.style ? `Visual direction: ${promptSpec.style}.` : '',
       promptSpec.constraints ? `Technical constraints: ${promptSpec.constraints}.` : '',
-      activeDocument.sourceType === 'tikz'
-        ? `Return a complete, compilable LaTeX document using TikZ. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, only local/common TikZ libraries, no shell escape, and keep labels readable.`
-        : activeDocument.sourceType === 'latex'
-          ? `Return a complete, compilable standalone LaTeX document. The selected PDF compiler is ${texPdfEngineLabel(texPdfEngine)} (${texPdfEngine}); use engine-appropriate packages, do not use shell escape, and keep the document structure clear.`
-          : activeDocument.sourceType === 'metafont'
-            ? 'Return complete, compilable MetaFont source only. Include mode_setup, define at least one beginchar glyph, use clear design units, and finish with bye. When TTF conversion is requested, favor closed fill/unfill outlines compatible with mf2pt1 rather than raster-only effects.'
-          : activeDocument.sourceType === 'svg'
-          ? 'Return a complete, valid, self-contained SVG with a responsive viewBox. Do not reference remote assets or scripts.'
-          : activeDocument.sourceType === 'mermaid'
-            ? 'Return valid Mermaid source only. Use strict-compatible syntax and set no HTML labels.'
-            : activeDocument.sourceType === 'markdown'
-              ? 'Return well-structured GitHub-flavored Markdown. Use meaningful headings, concise prose, and ordinary fenced code blocks; use a mermaid fence only when a diagram adds value.'
-              : 'Return clean, readable plain text only. Preserve the requested wording and structure without Markdown syntax unless it is explicitly requested.',
+      sourceInstruction,
       selection ? `Modify or take inspiration from this selected source fragment:\n\n${selection}` : '',
       activeFileContext,
       projectContext,
       renderContext,
-      promptSpec.outputOnly
+      localSchemaContext,
+      isJsonAnalysis
+        ? 'Return a concise Markdown review with headings for Shape, Semantics, Risks, and Suggested next steps. Do not return a replacement JSON document.'
+        : promptSpec.outputOnly
         ? activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text'
           ? `Return the ${activeDocument.sourceType === 'text' ? 'plain-text document' : 'Markdown document'} directly. Do not wrap the whole response in an outer Markdown fence or add commentary.`
           : 'Return source code only. Do not use Markdown fences, commentary, or explanations.'
@@ -1473,7 +1872,33 @@ function App() {
       showToast('Paste an LLM source response first.', 'error');
       return;
     }
+    const isJsonAnalysis = activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze';
+    if (isJsonAnalysis) {
+      const base = filenameWithoutExtension(activeDocument.name);
+      const review: DocumentModel = {
+        id: `markdown-${crypto.randomUUID()}`,
+        name: `${base} JSON review.md`,
+        sourceType: 'markdown',
+        value: sourceFromAssistantReply(promptReply, 'markdown'),
+        dirty: true,
+        revision: 0,
+      };
+      setDocuments((current) => [...current, review]);
+      setActiveId(review.id);
+      setPromptReply('');
+      setPromptOpen(false);
+      showToast('JSON analysis opened as a Markdown review.', 'success');
+      return;
+    }
     const source = sourceFromAssistantReply(promptReply, activeDocument.sourceType);
+    if (activeDocument.sourceType === 'json') {
+      const inspection = inspectJson(source);
+      if (!inspection.valid) {
+        const location = inspection.line ? ` (line ${inspection.line}, column ${inspection.column ?? 1})` : '';
+        showToast(`The LLM response is not strict JSON${location}. It has not been applied.`, 'error');
+        return;
+      }
+    }
     if (promptApplyMode === 'new') {
       const base = filenameWithoutExtension(activeDocument.name);
       const document: DocumentModel = {
@@ -1496,7 +1921,9 @@ function App() {
     const model = editor?.getModel();
     if (editor && model) {
       const range = promptApplyMode === 'replace'
-        ? (editor.getSelection() ?? model.getFullModelRange())
+        ? activeDocument.sourceType === 'json'
+          ? model.getFullModelRange()
+          : (editor.getSelection() ?? model.getFullModelRange())
         : (() => {
           const position = editor.getPosition();
           return position ? { startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column } : model.getFullModelRange();
@@ -1511,7 +1938,7 @@ function App() {
     setPromptReply('');
     setPromptOpen(false);
     showToast(promptApplyMode === 'replace' ? 'LLM source applied.' : 'LLM source inserted.', 'success');
-  }, [activeDocument, promptApplyMode, promptReply, showToast, updateDocument]);
+  }, [activeDocument, promptApplyMode, promptReply, promptSpec.jsonIntent, showToast, updateDocument]);
 
   const restoreSnapshot = useCallback((snapshot: LocalSnapshot) => {
     if (!activeDocument || !window.confirm(`Restore the local snapshot from ${displayTime(snapshot.createdAt)}? Your current source stays available through Undo.`)) return;
@@ -1569,6 +1996,91 @@ function App() {
       setIsTaskRunning(false);
     }
   }, [activeDocument?.relativePath, project, showToast]);
+
+  const runActivePython = useCallback(async (mode: PythonTaskMode) => {
+    if (!activeDocument || activeDocument.sourceType !== 'python') {
+      showToast('Open a Python source file to run or test it.', 'info');
+      return;
+    }
+    if (isTaskRunning) {
+      showToast('A local task is already running.', 'info');
+      return;
+    }
+
+    // Python deliberately runs the current editor buffer. This means a quick
+    // experiment is runnable before it has a name on disk, while a project
+    // folder (when open) remains available to the runner for local imports.
+    if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
+    setPythonInspectorView('output');
+    const runner = window.diagramApi.project.runPython;
+    const runningTask: PythonTaskState = {
+      documentId: activeDocument.id,
+      revision: activeDocument.revision,
+      name: activeDocument.name,
+      mode,
+      status: 'running',
+      stdout: '',
+      stderr: '',
+    };
+
+    if (typeof runner !== 'function') {
+      const unavailableTask: PythonTaskState = {
+        ...runningTask,
+        status: 'unavailable',
+        stderr: 'The local Python runner is not available in this Yedit build yet. Update the app and try again; editing and source preview remain available.',
+      };
+      setPythonTask(unavailableTask);
+      setTaskOutput(pythonTaskConsoleText(unavailableTask));
+      showToast('Local Python runner is unavailable in this build.', 'info');
+      return;
+    }
+
+    setPythonTask(runningTask);
+    setTaskOutput(`${mode === 'test' ? 'Testing' : 'Running'} Python source from the current editor buffer…`);
+    setIsTaskRunning(true);
+    try {
+      const result: PythonRunResult = await runner(activeDocument.value, activeDocument.name, {
+        mode,
+        projectRoot: project?.root,
+        relativePath: activeDocument.relativePath,
+        timeoutMs: 15_000,
+      });
+      const stderrParts = [result.stderr, result.error]
+        .filter((message): message is string => Boolean(message))
+        .filter((message, index, values) => values.indexOf(message) === index);
+      const completeTask: PythonTaskState = {
+        ...runningTask,
+        status: result.ok ? 'success' : 'error',
+        stdout: result.output ?? '',
+        stderr: stderrParts.join('\n'),
+        command: result.command,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+      };
+      setPythonTask(completeTask);
+      setTaskOutput(pythonTaskConsoleText(completeTask));
+      if (result.ok) {
+        showToast(mode === 'test' ? 'Python tests passed.' : 'Python run finished.', 'success');
+      } else {
+        showToast(result.timedOut ? 'Python task timed out — see output.' : `Python ${mode === 'test' ? 'tests failed' : 'run failed'} — see output.`, 'error');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not start the local Python runner.';
+      const unavailable = /no handler|not available|is not a function|run-python/i.test(message);
+      const failedTask: PythonTaskState = {
+        ...runningTask,
+        status: unavailable ? 'unavailable' : 'error',
+        stderr: unavailable
+          ? 'The local Python runner is not available in this Yedit build yet. Update the app and try again; editing and source preview remain available.'
+          : message,
+      };
+      setPythonTask(failedTask);
+      setTaskOutput(pythonTaskConsoleText(failedTask));
+      showToast(unavailable ? 'Local Python runner is unavailable in this build.' : message, unavailable ? 'info' : 'error');
+    } finally {
+      setIsTaskRunning(false);
+    }
+  }, [activeDocument, isTaskRunning, project?.root, showToast, updatePanel]);
 
   const runActiveBuild = useCallback(async (
     latexMode: LatexRenderMode = 'pdf',
@@ -1628,11 +2140,16 @@ function App() {
     }
   }, [activeDocument, project, showToast, texPdfEngine]);
 
+  const runPrimaryTask = useCallback(() => {
+    if (activeDocument?.sourceType === 'python') return runActivePython('run');
+    return runActiveBuild();
+  }, [activeDocument?.sourceType, runActiveBuild, runActivePython]);
+
   const actions = useMemo(() => [
     { id: 'new-project', label: 'New project', hint: '⌘⇧N', group: 'File', run: newProject },
     { id: 'open-project', label: 'Open project…', hint: '⌘O', group: 'File', run: openProject },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
-    ...(['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type) => ({
+    ...enabledSourceTypes.map((type) => ({
       id: `new-${type}`,
       label: `New ${SOURCE_META[type].label} source…`,
       hint: '',
@@ -1641,7 +2158,21 @@ function App() {
     })),
     { id: 'save', label: 'Save active file', hint: '⌘S', group: 'File', run: () => saveDocument(false) },
     { id: 'save-as', label: 'Save active file as…', hint: '⌘⇧S', group: 'File', run: () => saveDocument(true) },
-    { id: 'render', label: 'Render active preview', hint: '⌘↵', group: 'Diagram', run: () => activeDocument && renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf') },
+    {
+      id: 'render',
+      label: activeDocument?.sourceType === 'python' ? 'Show Python source preview' : 'Render active preview',
+      hint: '⌘↵',
+      group: activeDocument?.sourceType === 'python' ? 'Python' : 'Diagram',
+      run: () => {
+        if (!activeDocument) return;
+        if (activeDocument.sourceType === 'python') {
+          if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
+          setPythonInspectorView('source');
+          return;
+        }
+        void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf');
+      },
+    },
     ...(activeDocument?.sourceType === 'latex' ? [
       ...TEX_PDF_ENGINES.map((engine) => ({
         id: `render-latex-${engine.id}-pdf`,
@@ -1669,8 +2200,15 @@ function App() {
         void renderDocument(activeDocument, 'pdf', engine.id);
       },
     })) : []),
-    { id: 'export', label: 'Export diagram…', hint: '⌘E', group: 'Diagram', run: () => setExportOpen(true) },
-    { id: 'build', label: activeDocument?.sourceType === 'metafont' ? 'Convert MetaFont to TTF build profile' : activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active source build profile', hint: '⌘⇧B', group: 'Diagram', run: () => void runActiveBuild() },
+    { id: 'export', label: 'Export active output…', hint: '⌘E', group: 'Diagram', run: () => setExportOpen(true) },
+    { id: 'build', label: activeDocument?.sourceType === 'python' ? 'Run active Python source' : activeDocument?.sourceType === 'metafont' ? 'Convert MetaFont to TTF build profile' : activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active source build profile', hint: '⌘⇧B', group: activeDocument?.sourceType === 'python' ? 'Python' : 'Diagram', run: () => void runPrimaryTask() },
+    ...(activeDocument?.sourceType === 'python' ? [
+      { id: 'python-test', label: 'Test active Python source', hint: '', group: 'Python', run: () => void runActivePython('test') },
+      { id: 'python-output', label: 'Show Python output', hint: '', group: 'Python', run: () => {
+        if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
+        setPythonInspectorView('output');
+      } },
+    ] : []),
     ...(activeDocument?.sourceType === 'latex' ? [
       ...TEX_PDF_ENGINES.map((engine) => ({
         id: `build-latex-${engine.id}-pdf`,
@@ -1694,8 +2232,15 @@ function App() {
         void runActiveBuild('pdf', engine.id);
       },
     })) : []),
-    { id: 'template-gallery', label: 'Open template gallery', hint: '', group: 'File', run: () => setTemplateGalleryOpen(true) },
+    ...(availableTemplateSourceTypes.length ? [{ id: 'template-gallery', label: 'Open template gallery', hint: '', group: 'File', run: () => setTemplateGalleryOpen(true) }] : []),
     { id: 'format', label: 'Format active source', hint: '⌥⇧F', group: 'Editor', run: formatActive },
+    { id: 'json-validate', label: 'Validate JSON', hint: '', group: 'JSON', run: validateActiveJson },
+    { id: 'json-pretty', label: 'Pretty-print JSON', hint: '', group: 'JSON', run: prettyPrintActiveJson },
+    { id: 'json-minify', label: 'Minify JSON', hint: '', group: 'JSON', run: minifyActiveJson },
+    { id: 'json-schema', label: 'Infer JSON Schema Draft', hint: '', group: 'JSON', run: inferActiveJsonSchema },
+    { id: 'json-prompt-create', label: 'Prompt: Create JSON', hint: '', group: 'JSON', run: () => openJsonPrompt('create') },
+    { id: 'json-prompt-analyze', label: 'Prompt: Analyze current JSON', hint: '', group: 'JSON', run: () => openJsonPrompt('analyze') },
+    { id: 'json-prompt-schema', label: 'Prompt: Generate JSON Schema', hint: '', group: 'JSON', run: () => openJsonPrompt('schema') },
     { id: 'undo', label: 'Undo', hint: '⌘Z', group: 'Editor', run: () => editorRef.current?.trigger('command-palette', 'undo', null) },
     { id: 'redo', label: 'Redo', hint: '⇧⌘Z', group: 'Editor', run: () => editorRef.current?.trigger('command-palette', 'redo', null) },
     { id: 'outline', label: 'Show document outline', hint: '⌘⇧O', group: 'Editor', run: () => setOutlineOpen(true) },
@@ -1706,21 +2251,22 @@ function App() {
     { id: 'zen', label: zenMode ? 'Exit Zen mode' : 'Enter Zen mode', hint: '⌘⇧Z', group: 'View', run: () => setZenMode((current) => !current) },
     { id: 'auto-render', label: settings.previewAutoRender ? 'Disable automatic preview' : 'Enable automatic preview', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, previewAutoRender: !current.previewAutoRender })) },
     { id: 'explorer', label: 'Toggle Explorer', hint: '', group: 'View', run: () => togglePanel('explorerOpen') },
-    { id: 'preview', label: 'Toggle live preview', hint: '', group: 'View', run: () => togglePanel('previewOpen') },
+    { id: 'preview', label: activeDocument?.sourceType === 'python' ? 'Toggle Python output' : 'Toggle live preview', hint: '', group: 'View', run: () => togglePanel('previewOpen') },
     { id: 'references', label: 'Toggle reference deck', hint: '⌘⇧R', group: 'View', run: () => togglePanel('referenceOpen') },
     { id: 'reset-layout', label: 'Reset panel layout', hint: '', group: 'View', run: resetPanelLayout },
     { id: 'prompt-studio', label: 'Open Prompt Studio', hint: '⌘⇧L', group: 'View', run: () => setPromptOpen(true) },
     { id: 'settings', label: 'Open settings', hint: '⌘,', group: 'View', run: () => setSettingsOpen(true) },
-    ...(['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text'] as SourceType[]).map((type, index) => ({
+    { id: 'about', label: 'About Yedit', hint: '', group: 'Help', run: () => setAboutOpen(true) },
+    ...enabledSourceTypes.map((type, index) => ({
       id: `select-${type}`,
       label: `New ${SOURCE_META[type].label} source`,
-      hint: `⌘${index + 1}`,
+      hint: index < 9 ? `⌘${index + 1}` : '',
       group: 'Source type',
       // These are creation shortcuts, not mode selectors.  A shortcut must
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, createBlankScratchpad, documents, formatActive, latexPreviewMode, newProject, openGitPanel, openNewSource, openProject, renderDocument, resetPanelLayout, runActiveBuild, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, zenMode]);
+  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openProject, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -1733,12 +2279,17 @@ function App() {
   useEffect(() => {
     const unsubscribe = window.diagramApi.onMenuAction((action) => {
       if (action === 'palette') { setPaletteOpen(true); return; }
+      const requestedType = /^(?:new|select)-(.+)$/.exec(action)?.[1];
+      if (requestedType && isKnownSourceType(requestedType) && !isSourceTypeEnabled(requestedType)) {
+        showToast(`${SOURCE_META[requestedType].label} is disabled in Settings.`, 'info');
+        return;
+      }
       const selected = actionRef.current.find((entry) => entry.id === action);
       selected?.run();
     });
     window.diagramApi.rendererReady();
     return unsubscribe;
-  }, []);
+  }, [isSourceTypeEnabled, showToast]);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -1784,7 +2335,7 @@ function App() {
       }
       if (shortcut === shortcutBindings.build) {
         event.preventDefault();
-        void runActiveBuild();
+        void runPrimaryTask();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
@@ -1794,7 +2345,18 @@ function App() {
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [recordingShortcut, runActiveBuild, shortcutBindings, showToast]);
+  }, [recordingShortcut, runPrimaryTask, shortcutBindings, showToast]);
+
+  useEffect(() => {
+    if (!aboutOpen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setAboutOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [aboutOpen]);
 
   const configureMonaco = useCallback((monaco: Monaco) => {
     registerFoundryLanguages(monaco);
@@ -1822,6 +2384,13 @@ function App() {
   }, [activeDocument?.sourceType, referenceQuery]);
 
   const activeOutline = useMemo(() => activeDocument ? documentOutline(activeDocument.sourceType, activeDocument.value) : [], [activeDocument]);
+  const activeJsonInspection = useMemo(() => activeDocument?.sourceType === 'json' ? inspectJson(activeDocument.value) : undefined, [activeDocument]);
+  const activePythonTask = activeDocument?.sourceType === 'python' && pythonTask.documentId === activeDocument.id
+    ? pythonTask
+    : EMPTY_PYTHON_TASK;
+  const activePythonOutputIsStale = activePythonTask.documentId === activeDocument?.id
+    && activePythonTask.revision !== undefined
+    && activePythonTask.revision !== activeDocument.revision;
 
   const filteredActions = useMemo(() => {
     const query = paletteQuery.trim().toLowerCase();
@@ -1834,7 +2403,7 @@ function App() {
     return [...recent, ...actions.filter((action) => !paletteHistory.includes(action.id))];
   }, [actions, filteredActions, paletteHistory, paletteQuery]);
 
-  const exportFormats: ExportFormat[] = activeDocument?.sourceType === 'markdown' || activeDocument?.sourceType === 'text'
+  const exportFormats: ExportFormat[] = activeDocument?.sourceType === 'markdown' || activeDocument?.sourceType === 'html' || (activeDocument ? SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) : false)
     ? ['png', 'pdf', 'html']
     : activeDocument?.sourceType === 'latex'
       ? ['png', 'svg', 'pdf', 'dvi']
@@ -1848,6 +2417,9 @@ function App() {
     '--ui-scale': String(interfaceScale),
     width: `${100 / interfaceScale}%`,
     height: `${100 / interfaceScale}%`,
+  } as React.CSSProperties;
+  const monacoWrapStyle: React.CSSProperties = {
+    '--editor-background-color': editorCanvasColor(settings.editorBackgroundColor, effectiveAppearance),
   } as React.CSSProperties;
   const appBodyStyle: React.CSSProperties = {
     gridTemplateColumns: `${zenMode ? '0px' : `${WORKBENCH_RAIL_WIDTH}px`} ${renderedWorkbenchColumns.explorerWidth}px minmax(0px, 1fr) ${renderedWorkbenchColumns.inspectorWidth}px`,
@@ -1863,7 +2435,7 @@ function App() {
     setDragActive(false);
     const file = Array.from(event.dataTransfer.files).find((candidate) => SOURCE_FILENAME_PATTERN.test(candidate.name));
     if (!file) {
-      showToast('Drop a TikZ, LaTeX, MetaFont, SVG, Mermaid, Markdown, or plain-text source file to open it as a tab.', 'info');
+      showToast('Drop a supported diagram, document, data, or code source file to open it as a tab.', 'info');
       return;
     }
     try {
@@ -1894,6 +2466,43 @@ function App() {
     }
   }, [documents, showToast]);
 
+  const aboutDialog = aboutOpen && (
+    <div className="modal-backdrop about-backdrop" onMouseDown={() => setAboutOpen(false)}>
+      <section className="workbench-modal about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title" aria-describedby="about-description" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div><p className="eyebrow">About this editor</p><h2 id="about-title">Yedit</h2></div>
+          <button type="button" className="icon-button" autoFocus onClick={() => setAboutOpen(false)} title="Close About Yedit" aria-label="Close About Yedit">×</button>
+        </div>
+        <div className="about-content">
+          <div className="about-identity">
+            <div className="about-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div><strong>Yedit <code>v{APP_VERSION}</code></strong><small>Developed by Orhan Gökçöl</small></div>
+          </div>
+          <p id="about-description" className="about-lede">A local-first code editor for diagrams, technical documents, fonts, and everyday source files. Write ordinary text, keep it in your folders, and generate output without turning the editor into a canvas.</p>
+          <div className="about-principles" aria-label="Yedit principles">
+            <div><strong>Source stays yours</strong><small>Projects, autosaves, previews, and build profiles stay on this Mac.</small></div>
+            <div><strong>Preview is a companion</strong><small>Edit code first; render only when a visual check helps.</small></div>
+            <div><strong>AI-ready, not AI-bound</strong><small>Prompt Studio prepares copyable prompts; it does not send source to an LLM.</small></div>
+          </div>
+          <section className="about-section" aria-labelledby="about-sources-title">
+            <div className="about-section-head"><h3 id="about-sources-title">Supported source files</h3><small>Recognized in tabs and opened folders</small></div>
+            <div className="about-source-grid">
+              {(Object.keys(SOURCE_META) as SourceType[]).map((type) => <span key={type} className="about-source-chip"><i className={SOURCE_META[type].color} aria-hidden="true">{SOURCE_META[type].short}</i><strong>{SOURCE_META[type].label}</strong><code>.{SOURCE_META[type].extension}</code></span>)}
+            </div>
+          </section>
+          <details className="about-attributions">
+            <summary><span>Open-source acknowledgements</span><small>{ABOUT_DEPENDENCIES.length} major components</small></summary>
+            <p>Major components and their declared licenses for this build. The bundled notices document records the complete attributions.</p>
+            <dl>
+              {ABOUT_DEPENDENCIES.map((dependency) => <div key={dependency.name}><dt>{dependency.name}<small>{dependency.purpose}</small></dt><dd><code>{dependency.license}</code></dd></div>)}
+            </dl>
+          </details>
+        </div>
+        <footer className="about-footer"><span>© {COPYRIGHT_YEAR} Orhan Gökçöl</span><button type="button" className="accent-button" onClick={() => setAboutOpen(false)}>Done</button></footer>
+      </section>
+    </div>
+  );
+
   const newSourceDialog = newSourceOpen && (
     <div className="modal-backdrop new-source-backdrop" onMouseDown={() => !isCreatingSource && setNewSourceOpen(false)}>
       <section className="new-source-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="New source file">
@@ -1901,9 +2510,9 @@ function App() {
         <p className="modal-copy">{project ? <>{selectedFolderPath ? <>New files default to <code>{selectedFolderPath}/</code>. </> : ''}Choose a relative path. The new source is empty and stays as an ordinary file in this project.</> : 'Create an empty named scratchpad tab now; save it anywhere later.'}</p>
         <form className="new-source-form" onSubmit={(event) => { event.preventDefault(); void createFile(); }}>
           <fieldset className="new-source-type-picker">
-            <legend>Choose a source format</legend>
+            <legend>Choose an enabled source format</legend>
             <div role="radiogroup" aria-label="Source format">
-              {(Object.keys(SOURCE_META) as SourceType[]).map((type) => <button key={type} type="button" className={`source-type-option ${newSourceType === type ? 'selected' : ''}`} role="radio" aria-checked={newSourceType === type} onClick={() => changeNewSourceType(type)}>
+              {enabledSourceTypes.map((type) => <button key={type} type="button" className={`source-type-option ${newSourceType === type ? 'selected' : ''}`} role="radio" aria-checked={newSourceType === type} onClick={() => changeNewSourceType(type)}>
                 <span className={`source-type-icon ${SOURCE_META[type].color}`}>{SOURCE_META[type].short}</span>
                 <span><strong>{SOURCE_META[type].label}</strong><small>{SOURCE_DESCRIPTIONS[type]} · .{SOURCE_META[type].extension}</small></span>
               </button>)}
@@ -1917,10 +2526,14 @@ function App() {
                   ? 'documents/report.tex'
                   : newSourceType === 'metafont'
                     ? 'fonts/my-font.mf'
-                  : 'diagrams/architecture.mmd'
+                    : newSourceType === 'json' || newSourceType === 'yaml'
+                      ? `data/untitled.${SOURCE_META[newSourceType].extension}`
+                      : newSourceType === 'tikz' || newSourceType === 'svg' || newSourceType === 'mermaid'
+                        ? `diagrams/untitled.${SOURCE_META[newSourceType].extension}`
+                        : `source/untitled.${SOURCE_META[newSourceType].extension}`
               : `untitled.${SOURCE_META[newSourceType].extension}`} />
           </label>
-          <p className="new-source-hint">The selected format controls the extension. Pick <code>TikZ</code>, <code>LaTeX</code>, <code>MetaFont</code>, <code>SVG</code>, <code>Mermaid</code>, <code>Markdown</code>, or <code>Plain Text</code>.</p>
+          <p className="new-source-hint">The selected format controls the extension. Every new source starts empty; starter content lives in Templates. Manage visible formats in Settings.</p>
           <footer className="new-source-footer"><button type="button" className="outline-button" onClick={() => setNewSourceOpen(false)} disabled={isCreatingSource}>Cancel</button><button type="submit" className="accent-button" disabled={isCreatingSource}>{isCreatingSource ? 'Creating…' : project ? 'Create file' : 'Open tab'}</button></footer>
         </form>
       </section>
@@ -1934,8 +2547,8 @@ function App() {
           <div className="brand">
             <div className="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
             <div>
-              <strong>Diagram Foundry</strong>
-              <span>source-first diagram studio</span>
+              <strong>Yedit</strong>
+              <span>source-first visual and code workbench</span>
             </div>
           </div>
           <div className="project-crumb">
@@ -1955,7 +2568,7 @@ function App() {
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
           onDrop={handleSourceDrop}
         >
-          {dragActive && <div className="source-drop-overlay" role="status"><span>↓</span><strong>Open source as a new tab</strong><small>TikZ · LaTeX · SVG · Mermaid · Markdown · Text</small></div>}
+          {dragActive && <div className="source-drop-overlay" role="status"><span>↓</span><strong>Open source as a new tab</strong><small>Diagrams · documents · data · code</small></div>}
           <section className="empty-workspace-card" aria-label="No editor tabs open">
             <div className="empty-workspace-mark" aria-hidden="true"><span></span><span></span><span></span></div>
             <p className="eyebrow">Workspace ready</p>
@@ -1966,7 +2579,7 @@ function App() {
               <button className="outline-button" onClick={() => void openProject()}>Open folder</button>
               <button className="outline-button" onClick={() => void newProject()}>New project</button>
             </div>
-            <small>TikZ · LaTeX · SVG · Mermaid · Markdown · Plain Text</small>
+            <small>{enabledSourceTypes.length} source type{enabledSourceTypes.length === 1 ? '' : 's'} enabled · Manage availability in Settings</small>
           </section>
 
           {project && <aside className="empty-workspace-project" aria-label={`${project.name} file navigator`}>
@@ -2005,6 +2618,7 @@ function App() {
         </footer>
         {toast && <div className={`toast ${toast.tone}`} role="status"><span>{toast.tone === 'success' ? '✓' : toast.tone === 'error' ? '!' : 'i'}</span>{toast.text}</div>}
         {newSourceDialog}
+        {aboutDialog}
       </main>
     );
   }
@@ -2015,8 +2629,8 @@ function App() {
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
           <div>
-            <strong>Diagram Foundry</strong>
-            <span>source-first diagram studio</span>
+            <strong>Yedit</strong>
+              <span>source-first visual and code workbench</span>
           </div>
         </div>
         <div className="project-crumb">
@@ -2042,7 +2656,7 @@ function App() {
         {dragActive && <div className="source-drop-overlay" role="status"><span>↓</span><strong>Open source as a new tab</strong><small>TikZ · LaTeX · SVG · Mermaid · Markdown · Text</small></div>}
         <nav className="activity-rail" aria-label="Workbench sections">
           <button className={`activity ${panelLayout.explorerOpen ? 'active' : ''}`} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'}><span>▦</span></button>
-          <button className={`activity ${panelLayout.previewOpen ? 'active' : ''}`} onClick={() => togglePanel('previewOpen')} title={panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'}><span>◉</span></button>
+          <button className={`activity ${panelLayout.previewOpen ? 'active' : ''}`} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'}><span>{activeDocument.sourceType === 'python' ? '›_' : '◉'}</span></button>
           <button className={`activity ${panelLayout.referenceOpen ? 'active' : ''}`} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'}><span>⌘</span></button>
           <button className="activity" onClick={() => setPromptOpen(true)} title="Prompt Studio"><span>✦</span></button>
           <div className="activity-spacer" />
@@ -2069,7 +2683,7 @@ function App() {
             <button onClick={() => setProjectSearchOpen(true)} title="Find in project">⌕ Find</button>
             <button onClick={openGitPanel} title="Git status and history">⌘ Git</button>
             <button onClick={() => setTaskConsoleOpen(true)} title="Local build output">›_ Tasks</button>
-            <button onClick={() => setTemplateGalleryOpen(true)} title="Starter templates">▦ Templates</button>
+            <button onClick={() => setTemplateGalleryOpen(true)} disabled={!availableTemplateSourceTypes.length} title={availableTemplateSourceTypes.length ? 'Starter templates' : 'Enable a template-capable source type in Settings'}>▦ Templates</button>
             <button onClick={() => setRecentProjectsOpen(true)} disabled={!recentProjects.length} title="Recently opened projects">↺ Recents</button>
           </div>
           {project ? (
@@ -2111,14 +2725,14 @@ function App() {
             <div className="empty-project">
               <div className="empty-icon">⌘</div>
               <p>Keep diagram source together in ordinary folders.</p>
-              <span>Your files remain portable: <code>.tikz</code>, <code>.tex</code>, <code>.latex</code>, <code>.ltx</code>, <code>.mf</code>, <code>.svg</code>, <code>.mmd</code>, <code>.md</code>, and <code>.txt</code>.</span>
+              <span>Your files remain portable: diagrams, documents, data, and code stay ordinary files in the folder tree.</span>
             </div>
           )}
           <div className="explorer-footer">
             <button onClick={() => openNewSource()}>＋ New source</button>
             <button onClick={() => setPromptOpen(true)}>✦ Draft with LLM</button>
             {recentProjects.length > 0 && <button onClick={openLatestRecentProject}>↺ Reopen latest</button>}
-            <button onClick={() => void runActiveBuild()} title={activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
+            <button onClick={() => void runPrimaryTask()} title={activeDocument.sourceType === 'python' ? 'Run the current Python editor buffer' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'python' ? 'Run Python' : activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
           </div>
           <div className="panel-resizer explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" onPointerDown={(event) => startPanelResize('explorer', event)} />
         </aside>
@@ -2158,12 +2772,17 @@ function App() {
                 </select>
               </label>}
               {activeDocument.sourceType === 'latex' && latexPreviewMode === 'dvi' && <span className="tex-classic-engine" title="DVI always uses classic latex; XeLaTeX and LuaLaTeX produce PDF only.">classic latex</span>}
-              <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'}>▶ {activeDocument.sourceType === 'metafont' ? 'Render proof' : 'Render'}</button>
+              {activeDocument.sourceType === 'python' ? <div className="python-run-controls" role="group" aria-label="Python execution controls">
+                <button className="compact-button python-run-button" onClick={() => void runActivePython('run')} disabled={isTaskRunning} title="Run the active Python editor buffer locally">▶ Run</button>
+                <button className="compact-button python-test-button" onClick={() => void runActivePython('test')} disabled={isTaskRunning} title="Test the active Python editor buffer locally">✓ Test</button>
+                <button className="compact-button" onClick={() => { if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true); setPythonInspectorView('output'); }} title="Show Python output in the right panel">› Output</button>
+              </div> : <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'}>▶ {activeDocument.sourceType === 'metafont' ? 'Render proof' : 'Render'}</button>}
             </div>
           </div>
 
           <div className="editor-meta">
             <div className="type-chip"><span className={SOURCE_META[activeDocument.sourceType].color}></span>{SOURCE_META[activeDocument.sourceType].label} source</div>
+            {activeJsonInspection && <button className={`json-health ${activeJsonInspection.valid ? 'valid' : 'invalid'}`} onClick={validateActiveJson} title={activeJsonInspection.message}>{activeJsonInspection.valid ? '✓ Valid JSON' : '! Invalid JSON'}</button>}
             <div className="editor-meta-actions">
               <button onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)">☷ Outline</button>
               <button onClick={() => setHistoryOpen(true)} title="Local version history">◴ History</button>
@@ -2173,7 +2792,7 @@ function App() {
             </div>
           </div>
 
-          <div className="monaco-wrap">
+          <div className="monaco-wrap" data-background-pattern={settings.editorBackgroundPattern} style={monacoWrapStyle}>
             <Editor
               key={activeDocument.id}
               height="100%"
@@ -2232,7 +2851,34 @@ function App() {
         {inspectorOpen && <aside className="inspector-panel" ref={inspectorRef} style={inspectorStyle}>
           {panelLayout.previewOpen && (
             <div className="preview-pane">
-              <PreviewViewport
+              {activeDocument.sourceType === 'python' && pythonInspectorView === 'output' ? <section className="python-output-panel" aria-label="Python output">
+                <div className="python-output-heading">
+                  <div>
+                    <p className="eyebrow">Local Python session</p>
+                    <h2>Output</h2>
+                  </div>
+                  <div className="python-output-heading-actions">
+                    <span className={`python-output-status ${activePythonTask.status}`}><i></i>{pythonTaskStatusLabel(activePythonTask)}</span>
+                    <button className="compact-button python-source-preview-button" onClick={() => setPythonInspectorView('source')} title="Return to the safe Python source preview">⌘ Source</button>
+                    <button className="icon-button" onClick={() => togglePanel('previewOpen')} title="Hide Python output">×</button>
+                  </div>
+                </div>
+                <div className="python-output-controls" role="group" aria-label="Python output actions">
+                  <button className="accent-button" onClick={() => void runActivePython('run')} disabled={isTaskRunning}>▶ {isTaskRunning && activePythonTask.mode === 'run' ? 'Running…' : 'Run'}</button>
+                  <button className="outline-button" onClick={() => void runActivePython('test')} disabled={isTaskRunning}>✓ {isTaskRunning && activePythonTask.mode === 'test' ? 'Testing…' : 'Test'}</button>
+                  <button className="python-output-clear" onClick={() => { setPythonTask(EMPTY_PYTHON_TASK); setTaskOutput('No Python task has run for this source yet.'); }} disabled={activePythonTask.status === 'idle' || activePythonTask.status === 'running'}>Clear</button>
+                </div>
+                {activePythonTask.command && <div className="python-output-command"><span>Command</span><code>{activePythonTask.command}</code></div>}
+                <div className="python-output-scroll" aria-live="polite">
+                  {activePythonTask.status === 'idle' && <div className="python-output-empty"><div className="python-output-mark">PY</div><strong>Run the current buffer</strong><p>Run and Test use the source in the editor now—saving is optional. Open a project when the code needs local imports.</p></div>}
+                  {activePythonTask.status === 'running' && <div className="python-output-running"><span></span>{activePythonTask.mode === 'test' ? 'Testing the current editor buffer…' : 'Running the current editor buffer…'}</div>}
+                  {activePythonOutputIsStale && activePythonTask.status !== 'running' && <div className="python-output-stale">The source has changed since this {activePythonTask.mode === 'test' ? 'test' : 'run'}. Run again to refresh the output.</div>}
+                  {activePythonTask.stdout && <section className="python-output-stream stdout"><header><span>stdout</span><small>{activePythonTask.name || activeDocument.name}</small></header><pre>{activePythonTask.stdout}</pre></section>}
+                  {activePythonTask.stderr && <section className="python-output-stream stderr"><header><span>{activePythonTask.status === 'unavailable' ? 'Runner' : 'stderr'}</span><small>{activePythonTask.timedOut ? 'Timed out' : typeof activePythonTask.exitCode === 'number' ? `Exit ${activePythonTask.exitCode}` : activePythonTask.name || activeDocument.name}</small></header><pre>{activePythonTask.stderr}</pre></section>}
+                  {activePythonTask.status === 'success' && !activePythonTask.stdout && !activePythonTask.stderr && <div className="python-output-empty compact"><strong>{activePythonTask.mode === 'test' ? 'Tests completed successfully.' : 'The program finished without output.'}</strong><p>{typeof activePythonTask.exitCode === 'number' ? `Exit code ${activePythonTask.exitCode}.` : 'No stdout or stderr was produced.'}</p></div>}
+                  {activePythonTask.status === 'error' && !activePythonTask.stdout && !activePythonTask.stderr && <div className="python-output-empty compact"><strong>The Python task did not produce a diagnostic.</strong><p>{typeof activePythonTask.exitCode === 'number' ? `Exit code ${activePythonTask.exitCode}.` : 'Try running again; the local runner may have stopped before it could start Python.'}</p></div>}
+                </div>
+              </section> : <PreviewViewport
                 preview={preview}
                 sourceType={activeDocument.sourceType}
                 previewDocument={preview.kind === 'svg' && preview.content ? previewDocument(preview.content, effectiveAppearance) : undefined}
@@ -2254,7 +2900,7 @@ function App() {
                   else showToast('The renderer did not report a source line for this issue.', 'info');
                 }}
                 onClose={() => togglePanel('previewOpen')}
-              />
+              />}
               {panelLayout.referenceOpen && <div className="panel-resizer preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize preview and references" onPointerDown={(event) => startPanelResize('preview', event)} />}
             </div>
           )}
@@ -2283,13 +2929,13 @@ function App() {
         <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
         <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
         <span>{activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
-        <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
+        <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + Chromium exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
         <span className="status-spacer"></span>
         <button onClick={() => setProjectSearchOpen(true)}>Find</button>
         <button onClick={openGitPanel}>Git</button>
         <button onClick={() => setZenMode((current) => !current)}>{zenMode ? 'Exit Zen' : 'Zen'}</button>
         <button className={panelLayout.explorerOpen ? 'active' : ''} onClick={() => togglePanel('explorerOpen')} aria-pressed={panelLayout.explorerOpen}>Explorer</button>
-        <button className={panelLayout.previewOpen ? 'active' : ''} onClick={() => togglePanel('previewOpen')} aria-pressed={panelLayout.previewOpen}>Preview</button>
+        <button className={panelLayout.previewOpen ? 'active' : ''} onClick={() => togglePanel('previewOpen')} aria-pressed={panelLayout.previewOpen}>{activeDocument.sourceType === 'python' ? 'Output' : 'Preview'}</button>
         <button className={panelLayout.referenceOpen ? 'active' : ''} onClick={() => togglePanel('referenceOpen')} aria-pressed={panelLayout.referenceOpen}>References</button>
         <button onClick={() => setPaletteOpen(true)}>⌘⇧P</button>
       </footer>
@@ -2338,13 +2984,15 @@ function App() {
 
       {newSourceDialog}
 
+      {aboutDialog}
+
       {settingsOpen && (
         <div className="modal-backdrop settings-backdrop" onMouseDown={() => setSettingsOpen(false)}>
           <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Settings">
             <div className="modal-title"><div><p className="eyebrow">Local preferences</p><h2>Settings</h2></div><button className="icon-button" onClick={() => setSettingsOpen(false)}>×</button></div>
             <p className="modal-copy">Preferences are stored locally on this Mac and apply immediately.</p>
             <div className="settings-section">
-              <div className="settings-section-head"><span>Appearance</span><small>Choose how Diagram Foundry follows your workspace.</small></div>
+              <div className="settings-section-head"><span>Appearance</span><small>Choose how Yedit follows your workspace.</small></div>
               <div className="appearance-options" role="radiogroup" aria-label="Appearance">
                 {(['system', 'dark', 'light'] as const).map((appearance) => <button key={appearance} className={settings.appearance === appearance ? 'selected' : ''} role="radio" aria-checked={settings.appearance === appearance} onClick={() => setSettings((current) => ({ ...current, appearance }))}>
                   <span>{appearance === 'system' ? '◐' : appearance === 'dark' ? '◑' : '◒'}</span>
@@ -2377,11 +3025,50 @@ function App() {
                   {[2, 3, 4, 6, 8].map((size) => <option key={size} value={size}>{size} spaces</option>)}
                 </select>
               </label>
+              <div className="editor-background-settings">
+                <div className="editor-background-controls">
+                  <label className="settings-field editor-background-color-field">Editor canvas
+                    <span>
+                      <input
+                        aria-label="Editor background color"
+                        type="color"
+                        value={editorCanvasColor(settings.editorBackgroundColor, effectiveAppearance)}
+                        onChange={(event) => setSettings((current) => ({ ...current, editorBackgroundColor: event.target.value.toLowerCase() }))}
+                      />
+                      <output>{settings.editorBackgroundColor === 'theme' ? 'Theme default' : settings.editorBackgroundColor.toUpperCase()}</output>
+                    </span>
+                  </label>
+                  <button type="button" className="outline-button editor-background-reset" disabled={settings.editorBackgroundColor === 'theme'} onClick={() => setSettings((current) => ({ ...current, editorBackgroundColor: 'theme' }))}>Use theme default</button>
+                </div>
+                <div className="editor-background-patterns" role="radiogroup" aria-label="Editor background pattern">
+                  {EDITOR_BACKGROUND_PATTERNS.map((pattern) => <button key={pattern.value} type="button" className={settings.editorBackgroundPattern === pattern.value ? 'selected' : ''} role="radio" aria-checked={settings.editorBackgroundPattern === pattern.value} onClick={() => setSettings((current) => ({ ...current, editorBackgroundPattern: pattern.value }))}>
+                    <span className={`editor-background-swatch ${pattern.value}`} aria-hidden="true"></span>
+                    <strong>{pattern.label}</strong>
+                    <small>{pattern.description}</small>
+                  </button>)}
+                </div>
+                <small className="editor-background-note">Color and pattern apply only behind the source editor, not the preview or workspace panels.</small>
+              </div>
               <div className="settings-switch-grid">
                 <label><input type="checkbox" checked={settings.editorWordWrap} onChange={(event) => setSettings((current) => ({ ...current, editorWordWrap: event.target.checked }))} /><span><strong>Word wrap</strong><small>Keep long labels and prose visible.</small></span></label>
                 <label><input type="checkbox" checked={settings.editorMinimap} onChange={(event) => setSettings((current) => ({ ...current, editorMinimap: event.target.checked }))} /><span><strong>Minimap</strong><small>Show a compact source overview.</small></span></label>
                 <label><input type="checkbox" checked={settings.formatOnSave} onChange={(event) => setSettings((current) => ({ ...current, formatOnSave: event.target.checked }))} /><span><strong>Format on save</strong><small>Run the local beautifier before writing.</small></span></label>
               </div>
+            </div>
+            <div className="settings-section source-type-settings">
+              <div className="settings-section-head"><span>Available source types</span><small>{enabledSourceTypes.length} of {SOURCE_TYPES.length} enabled. Disabled formats stay editable when already open, but no longer appear in New Source, templates, or new-file commands.</small></div>
+              <div className="source-type-toggle-grid" role="group" aria-label="Available source types">
+                {SOURCE_TYPES.map((type) => {
+                  const enabled = isSourceTypeEnabled(type);
+                  const locked = enabled && enabledSourceTypes.length === 1;
+                  return <button key={type} type="button" role="switch" aria-checked={enabled} aria-label={`${SOURCE_META[type].label} ${enabled ? 'enabled' : 'disabled'}`} title={locked ? 'Keep at least one source type enabled.' : `${enabled ? 'Disable' : 'Enable'} ${SOURCE_META[type].label}`} disabled={locked} className={`${enabled ? 'selected' : ''}${locked ? ' locked' : ''}`} onClick={() => toggleSourceType(type)}>
+                    <i className={SOURCE_META[type].color} aria-hidden="true">{SOURCE_META[type].short}</i>
+                    <span><strong>{SOURCE_META[type].label}</strong><small>.{SOURCE_META[type].extension} · {enabled ? 'Enabled' : 'Disabled'}</small></span>
+                    <b aria-hidden="true">{enabled ? '✓' : '—'}</b>
+                  </button>;
+                })}
+              </div>
+              <p className="source-type-settings-note">Starter templates follow the same setting. Re-enable a type at any time; your files and folders are never removed.</p>
             </div>
             <div className="settings-section automation-settings">
               <div className="settings-section-head"><span>Workflow</span><small>Keep local source and preview in sync without losing control.</small></div>
@@ -2412,7 +3099,7 @@ function App() {
                 <input type="range" min="9" max="18" step="1" value={settings.referenceFontSize} onChange={(event) => setSettings((current) => ({ ...current, referenceFontSize: Number(event.target.value) }))} />
               </label>
             </div>
-            <footer className="settings-footer"><span>Syntax coloring, snippets, hover help, folding, and local diagnostics are tailored for TikZ, LaTeX, SVG, Mermaid, Markdown, and Plain Text.</span><button className="accent-button" onClick={() => setSettingsOpen(false)}>Done</button></footer>
+            <footer className="settings-footer"><span>Syntax coloring, snippets, hover help, folding, and local diagnostics support diagram, document, data, and everyday programming sources.</span><div><button type="button" className="outline-button settings-about-button" onClick={() => { setSettingsOpen(false); setAboutOpen(true); }}>About Yedit</button><button className="accent-button" onClick={() => setSettingsOpen(false)}>Done</button></div></footer>
           </section>
         </div>
       )}
@@ -2464,9 +3151,10 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setTemplateGalleryOpen(false)}>
           <section className="workbench-modal template-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Template gallery">
             <div className="modal-title"><div><p className="eyebrow">Source-first starters</p><h2>Template gallery</h2></div><button className="icon-button" onClick={() => setTemplateGalleryOpen(false)}>×</button></div>
-            <p className="modal-copy">Open a complete local starter in a fresh tab, then adapt it as ordinary source.</p>
+            <p className="modal-copy">{availableTemplateSourceTypes.length ? 'Open a complete local starter in a fresh tab, then adapt it as ordinary source.' : 'All template-capable source types are disabled. Enable one in Settings to use its local starter.'}</p>
             <div className="template-grid">
-              {(Object.keys(SOURCE_META) as SourceType[]).map((type) => <button key={type} type="button" className={`template-card ${SOURCE_META[type].color}`} aria-label={`Open ${SOURCE_META[type].label} starter template (${samples[type].name})`} onClick={() => { createUnsavedStarterDocument(type); setTemplateGalleryOpen(false); }}><span className="template-badge">{SOURCE_META[type].short}</span><span className="template-card-copy"><strong>{SOURCE_META[type].label} starter</strong><small>{SOURCE_DESCRIPTIONS[type]} <code>{samples[type].name}</code></small></span><span className="template-card-open" aria-hidden="true">→</span></button>)}
+              {availableTemplateSourceTypes.map((type) => <button key={type} type="button" className={`template-card ${SOURCE_META[type].color}`} aria-label={`Open ${SOURCE_META[type].label} starter template (${samples[type].name})`} onClick={() => { createUnsavedStarterDocument(type); setTemplateGalleryOpen(false); }}><span className="template-badge">{SOURCE_META[type].short}</span><span className="template-card-copy"><strong>{SOURCE_META[type].label} starter</strong><small>{SOURCE_DESCRIPTIONS[type]} <code>{samples[type].name}</code></small></span><span className="template-card-open" aria-hidden="true">→</span></button>)}
+              {!availableTemplateSourceTypes.length && <div className="empty-workbench-state template-empty-state">No templates are currently available.</div>}
             </div>
           </section>
         </div>
@@ -2505,7 +3193,10 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setTaskConsoleOpen(false)}>
           <section className="workbench-modal task-console-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Task Console">
             <div className="modal-title"><div><p className="eyebrow">Local build and inspection output</p><h2>Task Console</h2></div><button className="icon-button" onClick={() => setTaskConsoleOpen(false)}>×</button></div>
-            <div className="task-console-actions"><button className="accent-button" onClick={() => void runActiveBuild()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont to TTF' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active source build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
+            <div className="task-console-actions">{activeDocument.sourceType === 'python' ? <>
+              <button className="accent-button" onClick={() => void runActivePython('run')} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : 'Run Python'}</button>
+              <button className="outline-button" onClick={() => void runActivePython('test')} disabled={isTaskRunning}>Test Python</button>
+            </> : <><button className="accent-button" onClick={() => void runPrimaryTask()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont to TTF' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active source build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}</>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
             <pre className="task-console-output">{taskOutput}</pre>
           </section>
         </div>
@@ -2515,18 +3206,25 @@ function App() {
         <div className="modal-backdrop prompt-backdrop" onMouseDown={() => setPromptOpen(false)}>
           <section className="prompt-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><p className="eyebrow">LLM handoff, without an API lock-in</p><h2>Prompt Studio</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)}>×</button></div>
-            <p className="modal-copy">Describe the source artifact, copy the prompt to any LLM, then paste its source response directly into this editor.</p>
+            <p className="modal-copy">{activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'Prepare a local JSON review prompt, copy it to any LLM, then paste the response back as a separate Markdown note.' : 'Describe the source artifact, copy the prompt to any LLM, then paste its source response directly into this editor.'}</p>
             <div className="prompt-layout">
               <form className="prompt-form" onSubmit={(event) => event.preventDefault()}>
                 <label>Target source<span className={`source-label ${SOURCE_META[activeDocument.sourceType].color}`}>{SOURCE_META[activeDocument.sourceType].label}</span></label>
-                <label>What should it show?<textarea autoFocus value={promptSpec.goal} onChange={(event) => setPromptSpec((spec) => ({ ...spec, goal: event.target.value }))} placeholder="e.g. A resilient service topology with queues, retry paths, and observability" /></label>
+                {activeDocument.sourceType === 'json' && <fieldset className="json-prompt-intents">
+                  <legend>JSON workflow</legend>
+                  <div role="group" aria-label="JSON prompt workflow">
+                    {([['create', 'Create'], ['analyze', 'Analyze'], ['schema', 'Schema']] as const).map(([intent, label]) => <button key={intent} type="button" className={promptSpec.jsonIntent === intent ? 'selected' : ''} aria-pressed={promptSpec.jsonIntent === intent} onClick={() => openJsonPrompt(intent)}>{label}</button>)}
+                  </div>
+                  <small>{promptSpec.jsonIntent === 'create' ? 'Ask for strict JSON that can be applied safely.' : promptSpec.jsonIntent === 'analyze' ? 'Review the current JSON and open the reply as Markdown.' : 'Generate an editable JSON Schema Draft from the current file.'}</small>
+                </fieldset>}
+                <label>{activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'What should the review focus on?' : 'What should it produce?'}<textarea autoFocus value={promptSpec.goal} onChange={(event) => setPromptSpec((spec) => ({ ...spec, goal: event.target.value }))} placeholder={activeDocument.sourceType === 'json' ? 'e.g. identify data-quality issues and infer a safe schema' : 'e.g. A resilient service topology with queues, retry paths, and observability'} /></label>
                 <label>Audience / purpose<input value={promptSpec.audience} onChange={(event) => setPromptSpec((spec) => ({ ...spec, audience: event.target.value }))} placeholder="e.g. Engineering design review" /></label>
                 <label>Visual direction<textarea value={promptSpec.style} onChange={(event) => setPromptSpec((spec) => ({ ...spec, style: event.target.value }))} /></label>
                 <label>Technical constraints<textarea value={promptSpec.constraints} onChange={(event) => setPromptSpec((spec) => ({ ...spec, constraints: event.target.value }))} placeholder="e.g. use only arrows.meta and positioning; landscape; 16:9" /></label>
-                <label className="check-label"><input type="checkbox" checked={promptSpec.outputOnly} onChange={(event) => setPromptSpec((spec) => ({ ...spec, outputOnly: event.target.checked }))} /> {activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text' ? 'Document only—no outer fence or explanation' : 'Source only—no Markdown fences or explanation'}</label>
+                <label className="check-label"><input type="checkbox" checked={activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? false : promptSpec.outputOnly} disabled={activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze'} onChange={(event) => setPromptSpec((spec) => ({ ...spec, outputOnly: event.target.checked }))} /> {activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'Markdown analysis—never overwrite the JSON file' : activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text' ? 'Document only—no outer fence or explanation' : 'Source only—no Markdown fences or explanation'}</label>
                 <fieldset className="prompt-context-options">
                   <legend>Include context</legend>
-                  <label className="check-label"><input type="checkbox" checked={promptSpec.includeActiveFile} onChange={(event) => setPromptSpec((spec) => ({ ...spec, includeActiveFile: event.target.checked }))} /> Full active source</label>
+                  <label className="check-label"><input type="checkbox" checked={activeDocument.sourceType === 'json' && promptSpec.jsonIntent !== 'create' ? true : promptSpec.includeActiveFile} disabled={activeDocument.sourceType === 'json' && promptSpec.jsonIntent !== 'create'} onChange={(event) => setPromptSpec((spec) => ({ ...spec, includeActiveFile: event.target.checked }))} /> Full active source</label>
                   <label className="check-label"><input type="checkbox" checked={promptSpec.includeProjectContext} onChange={(event) => setPromptSpec((spec) => ({ ...spec, includeProjectContext: event.target.checked }))} disabled={!project} /> Project file map</label>
                   <label className="check-label"><input type="checkbox" checked={promptSpec.includeRenderError} onChange={(event) => setPromptSpec((spec) => ({ ...spec, includeRenderError: event.target.checked }))} disabled={preview.status !== 'error'} /> Current render error</label>
                   <small>{selectionSource ? 'The current editor selection is included automatically.' : 'Select source in the editor to add focused context.'}</small>
@@ -2537,12 +3235,12 @@ function App() {
                 <textarea readOnly value={promptText} aria-label="Generated LLM prompt" />
                 <div className="prompt-tips"><span>✦ Context stays on this Mac until you copy it.</span><span>✓ No API key or remote service is used here.</span></div>
                 <div className="prompt-response">
-                  <label>Paste the LLM response
-                    <textarea value={promptReply} onChange={(event) => setPromptReply(event.target.value)} placeholder="Paste source from your preferred LLM. Matching outer code fences are removed automatically." />
+                  <label>{activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'Paste the JSON review' : 'Paste the LLM response'}
+                    <textarea value={promptReply} onChange={(event) => setPromptReply(event.target.value)} placeholder={activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'Paste the Markdown analysis from your preferred LLM. It will open as a separate note.' : 'Paste source from your preferred LLM. Matching outer code fences are removed automatically.'} />
                   </label>
                   <div className="prompt-apply-controls" role="group" aria-label="Apply LLM response">
-                    {([['replace', 'Replace'], ['insert', 'Insert'], ['new', 'New draft']] as const).map(([mode, label]) => <button key={mode} type="button" className={promptApplyMode === mode ? 'selected' : ''} onClick={() => setPromptApplyMode(mode)}>{label}</button>)}
-                    <button type="button" className="accent-button" onClick={applyPromptReply}>Apply source</button>
+                    {activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? <span className="prompt-analysis-note">The review opens as Markdown.</span> : ([['replace', 'Replace'], ['insert', 'Insert'], ['new', 'New draft']] as const).filter(([mode]) => !(activeDocument.sourceType === 'json' && mode === 'insert')).map(([mode, label]) => <button key={mode} type="button" className={promptApplyMode === mode ? 'selected' : ''} onClick={() => setPromptApplyMode(mode)}>{label}</button>)}
+                    <button type="button" className="accent-button" onClick={applyPromptReply}>{activeDocument.sourceType === 'json' && promptSpec.jsonIntent === 'analyze' ? 'Open review' : 'Apply source'}</button>
                   </div>
                 </div>
               </div>

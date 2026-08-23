@@ -1,6 +1,28 @@
-export type SourceType = 'tikz' | 'latex' | 'metafont' | 'svg' | 'mermaid' | 'markdown' | 'text';
+/**
+ * Every first-class text format understood by the workbench.  These remain
+ * deliberately file-format oriented rather than tying the editor to a build
+ * system or runtime: a JavaScript file is still an ordinary `.js` file, for
+ * example, and can be opened in any other editor without conversion.
+ */
+export type SourceType =
+  | 'tikz'
+  | 'latex'
+  | 'metafont'
+  | 'svg'
+  | 'mermaid'
+  | 'markdown'
+  | 'text'
+  | 'yaml'
+  | 'json'
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'fortran'
+  | 'sql'
+  | 'html'
+  | 'css';
 
-/** Monaco language identifiers owned by Diagram Foundry. */
+/** Monaco language identifiers owned by Yedit. */
 export type FoundryLanguageId = `foundry-${SourceType}`;
 
 /**
@@ -21,6 +43,7 @@ export type EditorDiagnostic = {
 };
 
 export type Appearance = 'system' | 'dark' | 'light';
+export type EditorBackgroundPattern = 'none' | 'grid' | 'dots' | 'lines';
 
 export type AppSettings = {
   appearance: Appearance;
@@ -32,6 +55,11 @@ export type AppSettings = {
   uiScale: number;
   editorFontFamily: string;
   editorFontSize: number;
+  /** `theme` follows the current light/dark editor palette; custom values are #RRGGBB. */
+  editorBackgroundColor: string;
+  editorBackgroundPattern: EditorBackgroundPattern;
+  /** Formats available for new sources, templates, and creation commands. */
+  enabledSourceTypes: SourceType[];
   referenceFontSize: number;
   autoSave: boolean;
   formatOnSave: boolean;
@@ -113,6 +141,29 @@ export type BuildProfile = {
   engine?: TexPdfEngine | 'latex';
 };
 
+/** A deliberately small, local-only contract for running the active Python buffer. */
+export type PythonRunOptions = {
+  mode?: 'run' | 'test';
+  /** When present, the local project folder is used as the process working directory. */
+  projectRoot?: string;
+  /** Lets the runner preserve the active file's suffix for tracebacks and test discovery. */
+  relativePath?: string;
+  /** A backend-enforced upper bound; the UI normally asks for 15 seconds. */
+  timeoutMs?: number;
+};
+
+export type PythonRunResult = {
+  ok: boolean;
+  /** Captured standard output. */
+  output: string;
+  /** Captured standard error, kept separate so the output pane can label it clearly. */
+  stderr?: string;
+  error?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  command?: string;
+};
+
 export type GitStatusResponse = {
   available: boolean;
   isRepository: boolean;
@@ -150,6 +201,8 @@ declare global {
         onChanged: (callback: (update: ProjectWatchUpdate) => void) => () => void;
         buildProfiles: () => Promise<BuildProfile[]>;
         runBuild: (root: string, relativePath: string, profileId: string) => Promise<{ ok: boolean; profile: string; outputPath?: string; outputRelativePath?: string; error?: string }>;
+        /** Runs the editor's current Python buffer locally; no source must be saved first. */
+        runPython?: (source: string, name: string, options?: PythonRunOptions) => Promise<PythonRunResult>;
         saveAs: (suggestedName: string, content: string, type: SourceType) => Promise<{ path?: string; canceled?: boolean }>;
       };
       render: {

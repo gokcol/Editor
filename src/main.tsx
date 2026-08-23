@@ -7,12 +7,19 @@ import './styles.css';
 // The real bridge is installed by Electron's preload script. This tiny fallback
 // lets a browser-based preview of the renderer open during UI development.
 if (!window.diagramApi) {
-  const browserSettingsKey = 'diagram-foundry-settings';
+  const browserSettingsKey = 'yedit-settings';
+  const legacyBrowserSettingsKey = 'diagram-foundry-settings';
+  const readBrowserSettings = () => window.localStorage.getItem(browserSettingsKey)
+    ?? window.localStorage.getItem(legacyBrowserSettingsKey)
+    ?? '{}';
   const browserDefaults: AppSettings = {
     appearance: 'system',
     uiScale: 110,
     editorFontFamily: 'SF Mono',
     editorFontSize: 14,
+    editorBackgroundColor: 'theme',
+    editorBackgroundPattern: 'none',
+    enabledSourceTypes: ['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css'],
     referenceFontSize: 10,
     autoSave: true,
     formatOnSave: false,
@@ -55,7 +62,7 @@ if (!window.diagramApi) {
     settings: {
       load: async () => {
         try {
-          return { ...browserDefaults, ...JSON.parse(window.localStorage.getItem(browserSettingsKey) || '{}') } as AppSettings;
+          return { ...browserDefaults, ...JSON.parse(readBrowserSettings()) } as AppSettings;
         } catch {
           return browserDefaults;
         }

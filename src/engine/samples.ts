@@ -28,7 +28,7 @@ export const samples: Record<SourceType, { name: string; source: string }> = {
 \usepackage{hyperref}
 
 \title{A source-first LaTeX document}
-\author{Diagram Foundry}
+\author{Yedit}
 \date{\today}
 
 \begin{document}
@@ -83,7 +83,7 @@ bye
   svg: {
     name: 'Untitled Graphic.svg',
     source: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" role="img" aria-labelledby="title desc">
-  <title id="title">Diagram Foundry SVG sample</title>
+  <title id="title">Yedit SVG sample</title>
   <desc id="desc">A source-first SVG sample with a gradient node and arrow.</desc>
   <defs>
     <linearGradient id="gradient" x1="0" y1="0" x2="1" y2="1">
@@ -149,7 +149,7 @@ flowchart LR
   },
   text: {
     name: 'Untitled Notes.txt',
-    source: `Diagram Foundry plain-text note
+    source: `Yedit plain-text note
 ================================
 
 Use a .txt file when you want portable, unformatted notes alongside your diagrams.
@@ -161,6 +161,160 @@ Ideas
 - Store command output or review notes without markup.
 
 TODO: Replace this starter text with your own notes.
+`,
+  },
+  yaml: {
+    name: 'Untitled Config.yaml',
+    source: `# Keep configuration readable, reviewable, and portable.
+project:
+  name: yedit-example
+  version: 1
+
+render:
+  theme: system
+  formats:
+    - svg
+    - pdf
+
+workflow:
+  preview: true
+  autosave: true
+`,
+  },
+  json: {
+    name: 'Untitled Data.json',
+    source: `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Yedit data sample",
+  "version": 1,
+  "render": {
+    "theme": "system",
+    "formats": ["svg", "pdf"]
+  },
+  "preview": true
+}
+`,
+  },
+  javascript: {
+    name: 'Untitled Script.js',
+    source: `/**
+ * A small, dependency-free JavaScript starter.
+ */
+export function labelFor(format) {
+  return format.toUpperCase() + ' source';
+}
+
+const formats = ['tikz', 'svg', 'mermaid'];
+console.log(formats.map(labelFor));
+`,
+  },
+  typescript: {
+    name: 'Untitled Module.ts',
+    source: `type RenderTarget = 'svg' | 'pdf' | 'png';
+
+export interface RenderRequest {
+  source: string;
+  target: RenderTarget;
+}
+
+export function describeRequest({ source, target }: RenderRequest): string {
+  return 'Render ' + source.length + ' characters as ' + target + '.';
+}
+`,
+  },
+  python: {
+    name: 'Untitled Script.py',
+    source: `from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RenderRequest:
+    source: str
+    target: str = "svg"
+
+
+def describe_request(request: RenderRequest) -> str:
+    return f"Render {len(request.source)} characters as {request.target}."
+
+
+if __name__ == "__main__":
+    print(describe_request(RenderRequest("diagram source")))
+`,
+  },
+  fortran: {
+    name: 'Untitled Program.f90',
+    source: `program foundry_sample
+  implicit none
+
+  character(len=*), parameter :: format = "SVG"
+  integer :: width, height
+
+  width = 720
+  height = 340
+  print '(A,1X,I0,A,I0)', "Rendering", width, " x", height
+  print '(A,1X,A)', "Target:", format
+end program foundry_sample
+`,
+  },
+  sql: {
+    name: 'Untitled Query.sql',
+    source: `-- A portable query starter. Adapt identifier quoting for your SQL dialect.
+WITH recent_exports AS (
+  SELECT
+    project_id,
+    format,
+    created_at
+  FROM exports
+  WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+)
+SELECT
+  format,
+  COUNT(*) AS export_count
+FROM recent_exports
+GROUP BY format
+ORDER BY export_count DESC;
+`,
+  },
+  html: {
+    name: 'Untitled Page.html',
+    source: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yedit page</title>
+  </head>
+  <body>
+    <main>
+      <h1>Source-first HTML</h1>
+      <p>Edit this ordinary document with syntax coloring, references, and a local source formatter.</p>
+    </main>
+  </body>
+</html>
+`,
+  },
+  css: {
+    name: 'Untitled Styles.css',
+    source: `:root {
+  color-scheme: light dark;
+  --accent: #119e9b;
+  --surface: #101827;
+}
+
+.card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+@media (width < 42rem) {
+  .card {
+    padding: 0.75rem;
+  }
+}
 `,
   },
 };

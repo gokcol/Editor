@@ -39,6 +39,15 @@ const SOURCE_LABELS: Record<SourceType, { label: string; short: string }> = {
   mermaid: { label: 'Mermaid', short: 'MM' },
   markdown: { label: 'Markdown', short: 'MD' },
   text: { label: 'Plain Text', short: 'TXT' },
+  yaml: { label: 'YAML', short: 'YML' },
+  json: { label: 'JSON', short: 'JSN' },
+  javascript: { label: 'JavaScript', short: 'JS' },
+  typescript: { label: 'TypeScript', short: 'TS' },
+  python: { label: 'Python', short: 'PY' },
+  fortran: { label: 'Fortran', short: 'F90' },
+  sql: { label: 'SQL', short: 'SQL' },
+  html: { label: 'HTML', short: 'HTML' },
+  css: { label: 'CSS', short: 'CSS' },
 };
 
 const STATUS_LABELS: Record<PreviewState['status'], string> = {

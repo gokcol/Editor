@@ -9,6 +9,36 @@ function registerLanguage(monaco: Monaco, id: string) {
   }
 }
 
+/**
+ * Shared lexical treatment for C-style source files. This intentionally
+ * remains a lightweight local highlighter rather than pretending to perform
+ * semantic analysis or run an external language server.
+ */
+function registerCStyleLanguage(monaco: Monaco, id: string, keywords: string[], typeKeywords: string[] = []) {
+  registerLanguage(monaco, id);
+  monaco.languages.setMonarchTokensProvider(id, {
+    keywords,
+    typeKeywords,
+    tokenizer: {
+      root: [
+        [/\/\/.*$/, 'comment'],
+        [/\/\*/, { token: 'comment', next: '@comment' }],
+        [/"([^"\\]|\\.)*"/, 'string'],
+        [/'([^'\\]|\\.)*'/, 'string'],
+        [/\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/, 'number'],
+        [/[{}[\]()]/, 'delimiter'],
+        [/[=><!~?:&|+\-*\/%]+/, 'operator'],
+        [/[A-Za-z_$][\w$]*/, { cases: { '@keywords': 'keyword', '@typeKeywords': 'type', '@default': 'identifier' } }],
+      ],
+      comment: [
+        [/[^/*]+/, 'comment'],
+        [/\*\//, { token: 'comment', next: '@pop' }],
+        [/./, 'comment'],
+      ],
+    },
+  });
+}
+
 function configureFoundryLanguageBehavior(monaco: Monaco) {
   monaco.languages.setLanguageConfiguration('foundry-tikz', {
     comments: { lineComment: '%' },
@@ -89,6 +119,86 @@ function configureFoundryLanguageBehavior(monaco: Monaco) {
     autoClosingPairs: [{ open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
     surroundingPairs: [{ open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
     wordPattern: /[^\s`~!@#$%^&*()=+[{\]}\\|;:'",.<>/?]+/g,
+  });
+  monaco.languages.setLanguageConfiguration('foundry-yaml', {
+    comments: { lineComment: '#' },
+    brackets: [['[', ']'], ['{', '}'], ['(', ')']],
+    colorizedBracketPairs: [['[', ']'], ['{', '}'], ['(', ')']],
+    autoClosingPairs: [{ open: '[', close: ']' }, { open: '{', close: '}' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    surroundingPairs: [{ open: '[', close: ']' }, { open: '{', close: '}' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    wordPattern: /[A-Za-z_][\w.-]*/g,
+    indentationRules: {
+      increaseIndentPattern: /^\s*(?:-\s+)?[^#\n][^:]*:\s*(?:#.*)?$/,
+      decreaseIndentPattern: /^\s*(?:---|\.\.\.)\s*$/,
+    },
+  });
+
+  monaco.languages.setLanguageConfiguration('foundry-json', {
+    comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }],
+    wordPattern: /(?:[A-Za-z_$][\w$-]*|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+  });
+
+  for (const id of ['foundry-javascript', 'foundry-typescript', 'foundry-css'] as const) {
+    monaco.languages.setLanguageConfiguration(id, {
+      comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+      brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+      colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+      autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+      surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+      wordPattern: /[A-Za-z_$][\w$-]*/g,
+    });
+  }
+
+  monaco.languages.setLanguageConfiguration('foundry-python', {
+    comments: { lineComment: '#' },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    wordPattern: /[A-Za-z_][\w]*/g,
+    indentationRules: {
+      increaseIndentPattern: /^\s*(?:async\s+)?(?:def|class)\b.*:\s*(?:#.*)?$|^\s*(?:if|elif|else|for|while|try|except|finally|with|match|case)\b.*:\s*(?:#.*)?$/,
+      decreaseIndentPattern: /^\s*(?:elif|else|except|finally|case)\b/,
+    },
+  });
+
+  monaco.languages.setLanguageConfiguration('foundry-fortran', {
+    comments: { lineComment: '!' },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    wordPattern: /[A-Za-z_][\w]*/g,
+    indentationRules: {
+      increaseIndentPattern: /^\s*(?:program|module|subroutine|function|interface|type|do|if|select\s+case|where|associate|block)\b(?!.*\bend\b).*$/i,
+      decreaseIndentPattern: /^\s*end(?:\s+(?:program|module|subroutine|function|interface|type|do|if|select|where|associate|block))?\b/i,
+    },
+  });
+
+  monaco.languages.setLanguageConfiguration('foundry-sql', {
+    comments: { lineComment: '--', blockComment: ['/*', '*/'] },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' }, { open: '"', close: '"' }, { open: "'", close: "'" }],
+    wordPattern: /[A-Za-z_][\w$]*/g,
+  });
+
+  monaco.languages.setLanguageConfiguration('foundry-html', {
+    comments: { blockComment: ['<!--', '-->'] },
+    brackets: [['<', '>'], ['{', '}'], ['(', ')']],
+    colorizedBracketPairs: [['{', '}'], ['(', ')']],
+    autoClosingPairs: [{ open: '"', close: '"' }, { open: "'", close: "'" }, { open: '{', close: '}' }, { open: '(', close: ')' }],
+    surroundingPairs: [{ open: '"', close: '"' }, { open: "'", close: "'" }, { open: '{', close: '}' }, { open: '(', close: ')' }],
+    wordPattern: /[A-Za-z_:][\w:.-]*/g,
+    indentationRules: {
+      increaseIndentPattern: /^\s*<(?!\/|!|\?)[^>]*[^/\s]>\s*$/,
+      decreaseIndentPattern: /^\s*<\//,
+    },
   });
 }
 
@@ -209,6 +319,162 @@ export function registerFoundryLanguages(monaco: Monaco) {
           [/^\s*[=-]{3,}\s*$/, 'delimiter'],
           [/\b(?:TODO|FIXME|NOTE|IMPORTANT)\b:?/i, 'keyword'],
           [/(?:https?|file):\/\/[^\s<>()]+/, 'link'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-yaml');
+    monaco.languages.setMonarchTokensProvider('foundry-yaml', {
+      tokenizer: {
+        root: [
+          [/#.*$/, 'comment'],
+          [/^\s*(?:---|\.\.\.)\s*$/, 'keyword'],
+          [/^\s*-\s+/, 'delimiter'],
+          [/^\s*(?:[A-Za-z_][\w.-]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*:)/, 'attribute.name'],
+          [/[&*][A-Za-z_][\w.-]*/, 'type'],
+          [/[!][A-Za-z_][\w.-]*/, 'type'],
+          [/\b(?:true|false|null|yes|no|on|off)\b/i, 'keyword'],
+          [/\b[+-]?\d+(?:\.\d+)?\b/, 'number'],
+          [/"(?:[^"\\]|\\.)*"/, 'string'],
+          [/'(?:[^'\\]|\\.)*'/, 'string'],
+          [/[{}\[\](),:]/, 'delimiter'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-json');
+    monaco.languages.setMonarchTokensProvider('foundry-json', {
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, 'comment'],
+          [/\/\*/, { token: 'comment', next: '@comment' }],
+          [/"(?:[^"\\]|\\.)*"(?=\s*:)/, 'attribute.name'],
+          [/"(?:[^"\\]|\\.)*"/, 'string'],
+          [/\b(?:true|false|null)\b/, 'keyword'],
+          [/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/, 'number'],
+          [/[{}\[\],:]/, 'delimiter'],
+        ],
+        comment: [
+          [/[^/*]+/, 'comment'],
+          [/\*\//, { token: 'comment', next: '@pop' }],
+          [/./, 'comment'],
+        ],
+      },
+    });
+
+    registerCStyleLanguage(
+      monaco,
+      'foundry-javascript',
+      ['as', 'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'from', 'function', 'get', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'of', 'return', 'set', 'static', 'super', 'switch', 'throw', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'true', 'false', 'null', 'undefined'],
+      ['Array', 'Boolean', 'Date', 'Error', 'Map', 'Number', 'Object', 'Promise', 'RegExp', 'Set', 'String'],
+    );
+    registerCStyleLanguage(
+      monaco,
+      'foundry-typescript',
+      ['abstract', 'as', 'asserts', 'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'constructor', 'continue', 'declare', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'finally', 'for', 'from', 'function', 'get', 'if', 'implements', 'import', 'in', 'infer', 'instanceof', 'interface', 'is', 'keyof', 'let', 'namespace', 'new', 'of', 'private', 'protected', 'public', 'readonly', 'return', 'satisfies', 'set', 'static', 'super', 'switch', 'throw', 'try', 'type', 'typeof', 'var', 'void', 'while', 'yield', 'true', 'false', 'null', 'undefined'],
+      ['any', 'bigint', 'boolean', 'never', 'number', 'object', 'string', 'symbol', 'unknown', 'void', 'Array', 'Promise', 'Record', 'ReadonlyArray'],
+    );
+
+    registerLanguage(monaco, 'foundry-python');
+    monaco.languages.setMonarchTokensProvider('foundry-python', {
+      tokenizer: {
+        root: [
+          [/#.*$/, 'comment'],
+          [/@[A-Za-z_][\w.]*/, 'type'],
+          [/\b(?:and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b/, 'keyword'],
+          [/\b(?:True|False|None)\b/, 'keyword'],
+          [/\b(?:bool|bytes|dict|float|frozenset|int|list|object|set|str|tuple|type)\b/, 'type'],
+          [/\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?j?\b/, 'number'],
+          [/(?:[rubf]|br|rb|fr|rf)?"""[\s\S]*?"""/i, 'string'],
+          [/(?:[rubf]|br|rb|fr|rf)?'''[\s\S]*?'''/i, 'string'],
+          [/(?:[rubf]|br|rb|fr|rf)?"(?:[^"\\]|\\.)*"/i, 'string'],
+          [/(?:[rubf]|br|rb|fr|rf)?'(?:[^'\\]|\\.)*'/i, 'string'],
+          [/[{}\[\]():,]/, 'delimiter'],
+          [/[=><!~?:&|+\-*\/%]+/, 'operator'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-fortran');
+    monaco.languages.setMonarchTokensProvider('foundry-fortran', {
+      tokenizer: {
+        root: [
+          [/!.*$/, 'comment'],
+          [/^[cC*].*$/, 'comment'],
+          [/\b(?:program|end|module|contains|subroutine|function|use|implicit|none|integer|real|complex|logical|character|type|class|interface|procedure|parameter|allocatable|allocate|deallocate|if|then|else|elseif|select|case|where|associate|block|do|cycle|exit|return|call|print|write|read|open|close|stop)\b/i, 'keyword'],
+          [/\b(?:intent|in|out|inout|kind|len|size|shape|present|optional|pointer|target|save|public|private)\b/i, 'type'],
+          [/\.(?:true|false|and|or|not|eq|ne|lt|le|gt|ge)\./i, 'keyword'],
+          [/\b\d+(?:\.\d*)?(?:[eEdD][+-]?\d+)?(?:_[A-Za-z0-9_]+)?\b/, 'number'],
+          [/"(?:[^"\\]|\\.)*"/, 'string'],
+          [/'(?:[^'\\]|\\.)*'/, 'string'],
+          [/::|=>|==|\/=|<=|>=|\*\*|[=+\-*\/<>]/, 'operator'],
+          [/[()\[\],:]/, 'delimiter'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-sql');
+    monaco.languages.setMonarchTokensProvider('foundry-sql', {
+      tokenizer: {
+        root: [
+          [/--.*$/, 'comment'],
+          [/\/\*/, { token: 'comment', next: '@comment' }],
+          [/\b(?:select|from|where|with|as|join|inner|left|right|full|outer|cross|on|group|by|having|order|limit|offset|union|all|insert|into|values|update|set|delete|create|alter|drop|table|view|index|primary|key|foreign|references|constraint|distinct|case|when|then|else|end|exists|and|or|not|null|is|in|between|like|returning|grant|revoke|begin|commit|rollback)\b/i, 'keyword'],
+          [/\b(?:bigint|boolean|date|decimal|integer|json|jsonb|numeric|real|serial|text|timestamp|uuid|varchar)\b/i, 'type'],
+          [/\b(?:true|false|null|current_date|current_timestamp)\b/i, 'keyword'],
+          [/\b\d+(?:\.\d+)?\b/, 'number'],
+          [/'(?:[^'\\]|\\.)*'/, 'string'],
+          [/"(?:[^"\\]|\\.)*"/, 'attribute.name'],
+          [/[=><!~:+\-*\/%]+/, 'operator'],
+          [/[()\[\],;.]/, 'delimiter'],
+        ],
+        comment: [
+          [/[^/*]+/, 'comment'],
+          [/\*\//, { token: 'comment', next: '@pop' }],
+          [/./, 'comment'],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-html');
+    monaco.languages.setMonarchTokensProvider('foundry-html', {
+      tokenizer: {
+        root: [
+          [/<!--[\s\S]*?-->/, 'comment'],
+          [/<\/?[\w:-]+/, { token: 'tag', next: '@tag' }],
+          [/<!DOCTYPE[^>]*>/i, 'metatag'],
+          [/&[\w#]+;/, 'string'],
+        ],
+        tag: [
+          [/\s+[\w:-]+/, 'attribute.name'],
+          [/=/, 'delimiter'],
+          [/"[^"\\]*(?:\\.[^"\\]*)*"/, 'attribute.value'],
+          [/'[^'\\]*(?:\\.[^'\\]*)*'/, 'attribute.value'],
+          [/>/, { token: 'tag', next: '@pop' }],
+          [/\/>/, { token: 'tag', next: '@pop' }],
+        ],
+      },
+    });
+
+    registerLanguage(monaco, 'foundry-css');
+    monaco.languages.setMonarchTokensProvider('foundry-css', {
+      tokenizer: {
+        root: [
+          [/\/\*/, { token: 'comment', next: '@comment' }],
+          [/@(?:charset|container|font-face|import|keyframes|layer|media|property|supports)\b/i, 'keyword'],
+          [/(?:--[A-Za-z_][\w-]*|[A-Za-z-]+)(?=\s*:)/, 'attribute.name'],
+          [/#(?:[0-9a-fA-F]{3,8})\b/, 'number'],
+          [/\b\d+(?:\.\d+)?(?:%|[a-z]+)?\b/i, 'number'],
+          [/\b(?:auto|block|flex|grid|inherit|initial|none|relative|absolute|fixed|sticky|transparent|unset)\b/, 'keyword'],
+          [/"(?:[^"\\]|\\.)*"/, 'string'],
+          [/'(?:[^'\\]|\\.)*'/, 'string'],
+          [/[{}[\]():;,]/, 'delimiter'],
+          [/[>+~*=|]/, 'operator'],
+        ],
+        comment: [
+          [/[^/*]+/, 'comment'],
+          [/\*\//, { token: 'comment', next: '@pop' }],
+          [/./, 'comment'],
         ],
       },
     });
