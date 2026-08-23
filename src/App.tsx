@@ -407,6 +407,10 @@ type PythonTaskState = {
   exitCode?: number;
   timedOut?: boolean;
 };
+type CursorLocation = {
+  line: number;
+  column: number;
+};
 const EMPTY_PYTHON_TASK: PythonTaskState = {
   status: 'idle',
   stdout: '',
@@ -575,6 +579,7 @@ function App() {
   const [autoSaving, setAutoSaving] = useState(false);
   const [previewBackground, setPreviewBackground] = useState<PreviewBackground>('grid');
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [cursorLocation, setCursorLocation] = useState<CursorLocation>({ line: 1, column: 1 });
 
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const appBodyRef = useRef<HTMLElement | null>(null);
@@ -2364,12 +2369,21 @@ function App() {
 
   const handleEditorMount: OnMount = useCallback((editor) => {
     editorRef.current = editor;
+    const updateCursorLocation = () => {
+      const position = editor.getPosition();
+      if (!position) return;
+      setCursorLocation((current) => current.line === position.lineNumber && current.column === position.column
+        ? current
+        : { line: position.lineNumber, column: position.column });
+    };
     const updateSelection = () => {
       const model = editor.getModel();
       const selection = editor.getSelection();
       setSelectionSource(model && selection ? model.getValueInRange(selection) : '');
     };
+    updateCursorLocation();
     updateSelection();
+    editor.onDidChangeCursorPosition(updateCursorLocation);
     editor.onDidChangeCursorSelection(updateSelection);
     window.setTimeout(() => {
       if (pendingRevealLineRef.current) revealEditorLine(pendingRevealLineRef.current);
@@ -2931,6 +2945,7 @@ function App() {
         <span>{activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
         <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + Chromium exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
         <span className="status-spacer"></span>
+        <span className="cursor-location" title="Current cursor position">Row {cursorLocation.line} · Col {cursorLocation.column}</span>
         <button onClick={() => setProjectSearchOpen(true)}>Find</button>
         <button onClick={openGitPanel}>Git</button>
         <button onClick={() => setZenMode((current) => !current)}>{zenMode ? 'Exit Zen' : 'Zen'}</button>
