@@ -630,6 +630,12 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             Some("CmdOrCtrl+3"),
         )?)
         .separator()
+        .item(&item(
+            app,
+            "toggle-sidebar",
+            "Show / Hide Files Sidebar",
+            Some("CmdOrCtrl+Shift+B"),
+        )?)
         .item(&item(app, "toggle-editor-split", "Split Editor", None)?)
         .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;

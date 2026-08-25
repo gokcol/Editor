@@ -32,11 +32,17 @@ const PROJECT_FOLDER_KEY = '7txt:open-folder:v1';
 const FOLDER_BOOKMARKS_KEY = '7txt:folder-bookmarks:v1';
 const EDITOR_APPEARANCE_KEY = '7txt:editor-appearance:v1';
 const EDITOR_OPTIONS_KEY = '7txt:editor-options:v1';
+const UI_THEME_KEY = '7txt:ui-theme:v1';
+const SIDEBAR_VISIBLE_KEY = '7txt:sidebar-visible:v1';
+const SIDEBAR_WIDTH_KEY = '7txt:sidebar-width:v1';
 const SESSION_KEY = '7txt:workspace-session:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_RECOVERY_BYTES = 3 * 1024 * 1024;
+const MIN_SIDEBAR_WIDTH = 180;
+const DEFAULT_SIDEBAR_WIDTH = 218;
+const MAX_SIDEBAR_WIDTH = 430;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
   ['SFMono-Regular, SF Mono, Menlo, Monaco, monospace', 'SF Mono'],
@@ -49,6 +55,13 @@ const EDITOR_FONTS = [
 const EDITOR_FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24] as const;
 const DEFAULT_EDITOR_FONT = EDITOR_FONTS[0][0];
 const DEFAULT_EDITOR_FONT_SIZE = 14;
+const UI_THEMES = [
+  ['system', 'System'], ['light', 'Light'], ['dark', 'Dark'],
+  ['midnight', 'Midnight'], ['graphite', 'Graphite'], ['ocean', 'Ocean'],
+  ['forest', 'Forest'], ['violet', 'Violet'], ['rose', 'Rose'],
+  ['sepia', 'Sepia'], ['contrast', 'High contrast'], ['paper', 'Paper'],
+] as const;
+type UiTheme = typeof UI_THEMES[number][0];
 const CHARACTER_ENCODINGS = [
   ['auto', 'Auto detect (UTF-8 / BOM / Windows-1252)'],
   ['utf-8', 'UTF-8'], ['utf-8-bom', 'UTF-8 with BOM'],
@@ -81,6 +94,7 @@ app.innerHTML = `
         <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
         <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z"/></svg></button>
       </div>
+      <button class="toolbar-icon-button sidebar-toggle" data-action="toggle-sidebar" title="Hide Files sidebar (⇧⌘B)" aria-label="Hide Files sidebar" aria-expanded="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM10 4v16M7 8h.01M7 12h.01M7 16h.01"/></svg></button>
       <div class="quick-actions" aria-label="Quick actions">
         <button class="toolbar-icon-button save-button" data-action="save" title="Save (⌘S)" aria-label="Save"><svg class="toolbar-icon toolbar-save-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="save-body" d="M5 3h12l3 3v15H5z"/><path d="M8 3v6h8V3M8 20v-6h8v6"/></svg></button>
         <button class="toolbar-icon-button" data-action="find" title="Find (⌘F)" aria-label="Find"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg></button>
@@ -100,6 +114,10 @@ app.innerHTML = `
         <button class="toolbar-icon-button" data-action="export-html" title="Export Markdown as HTML" aria-label="Export Markdown as HTML"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v7M9 15l3 3 3-3"/></svg></button>
       </div>
       <div class="toolbar-spacer"></div>
+      <details class="theme-picker">
+        <summary title="Choose interface theme" aria-label="Choose interface theme"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="11" r="8"/><path d="M5.5 15.5 3.8 19a1.4 1.4 0 0 0 1.9 1.9l3.5-1.7M9 9h.01M13 7h.01M17 9h.01M16 14h.01"/></svg></summary>
+        <div class="theme-picker-menu" role="group" aria-label="Interface theme">${UI_THEMES.map(([value, label]) => `<button type="button" data-theme-choice="${value}" aria-pressed="false"><span class="theme-swatch theme-swatch-${value}"></span><span>${label}</span></button>`).join('')}</div>
+      </details>
       <details class="editor-appearance">
         <summary title="Editor font and size" aria-label="Editor font and size"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19 9.5 5h5L20 19M7 14h10M10 19h4"/></svg></summary>
         <div class="editor-appearance-menu">
@@ -130,7 +148,7 @@ app.innerHTML = `
     <section class="workspace">
       <aside class="sidebar">
         <section class="sidebar-section project-section">
-          <div class="section-head"><span>FILES</span><span class="section-actions"><button data-action="new-browser-entry" title="New text file or folder" aria-label="New text file or folder">+</button><button data-action="toggle-hidden-files" title="Show hidden files" aria-label="Show hidden files">·</button><button data-action="browser-up" title="Go to parent folder" aria-label="Go up">↑</button><button data-action="browser-home" title="Go to your home folder">Home</button><button data-action="browser-documents" title="Go to Documents">Docs</button><button data-action="open-folder" title="Choose any folder or disk">Choose</button><button data-action="refresh-folder" title="Refresh this folder" aria-label="Refresh folder">↻</button></span></div>
+          <div class="section-head"><span class="files-section-icon" title="Files" aria-label="Files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></span><span class="section-actions"><button data-action="new-browser-entry" title="New text file or folder" aria-label="New text file or folder">+</button><button data-action="toggle-hidden-files" title="Show hidden files" aria-label="Show hidden files">·</button><button data-action="browser-up" title="Go to parent folder" aria-label="Go up">↑</button><button class="sidebar-icon-button" data-action="browser-home" title="Go to your home folder" aria-label="Go to your home folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6h-6v6H3z"/></svg></button><button class="sidebar-icon-button" data-action="browser-documents" title="Go to Documents" aria-label="Go to Documents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/></svg></button><button class="sidebar-icon-button" data-action="open-folder" title="Choose any folder or disk" aria-label="Choose any folder or disk"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2M12 12v5M9.5 14.5h5"/></svg></button><button data-action="refresh-folder" title="Refresh this folder" aria-label="Refresh folder">↻</button></span></div>
           <input class="folder-filter" type="search" placeholder="Filter files…" aria-label="Filter folder files" spellcheck="false" />
           <div class="folder-bookmarks" aria-label="Folder bookmarks" hidden></div>
           <div class="project-tree"></div>
@@ -144,6 +162,7 @@ app.innerHTML = `
           <div class="recents-list"></div>
         </section>
       </aside>
+      <div class="sidebar-resizer" role="separator" aria-label="Resize Files sidebar" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="430" tabindex="0"></div>
       <section class="editor-pane">
         <div class="external-change" hidden><span></span><button data-action="reload-external">Reload</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Ignore</button></div>
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
@@ -190,7 +209,11 @@ const editorTabSizeSelect = required<HTMLSelectElement>('[data-editor-tab-size]'
 const editorLineEndingSelect = required<HTMLSelectElement>('[data-editor-line-ending]');
 const editorSpellLanguageSelect = required<HTMLSelectElement>('[data-editor-spell-language]');
 const folderBookmarkToggle = required<HTMLButtonElement>('[data-action="toggle-folder-bookmark"]');
+const sidebarToggle = required<HTMLButtonElement>('[data-action="toggle-sidebar"]');
+const themePicker = required<HTMLDetailsElement>('.theme-picker');
 const folderFilter = required<HTMLInputElement>('.folder-filter');
+const workspace = required<HTMLElement>('.workspace');
+const sidebarResizer = required<HTMLElement>('.sidebar-resizer');
 const externalChangeBar = required<HTMLElement>('.external-change');
 const commandPalette = required<HTMLElement>('.command-palette');
 const commandPaletteInput = required<HTMLInputElement>('.command-palette input');
@@ -208,6 +231,10 @@ let showHiddenFiles = false;
 let folderFilterValue = '';
 let editorSplit = false;
 let zenMode = false;
+let uiTheme = readUiTheme();
+let sidebarVisible = readSidebarVisible();
+let sidebarWidth = readSidebarWidth();
+let sidebarResizePointerId: number | null = null;
 let externalChange: ExternalChange | null = null;
 const fileFingerprints = new Map<string, FileFingerprint>();
 const histories = new Map<string, DocumentHistory>([[firstDocument.id, { entries: [''], index: 0 }]]);
@@ -220,6 +247,70 @@ function required<T extends Element>(selector: string): T {
   const value = app!.querySelector<T>(selector);
   if (!value) throw new Error(`7TXT is missing ${selector}.`);
   return value;
+}
+
+function isUiTheme(value: string): value is UiTheme {
+  return UI_THEMES.some(([theme]) => theme === value);
+}
+
+function readUiTheme(): UiTheme {
+  const stored = localStorage.getItem(UI_THEME_KEY) || 'system';
+  return isUiTheme(stored) ? stored : 'system';
+}
+
+function applyUiTheme() {
+  shell.dataset.theme = uiTheme;
+  for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-theme-choice]')) {
+    const selected = button.dataset.themeChoice === uiTheme;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function setUiTheme(next: string) {
+  if (!isUiTheme(next)) return;
+  uiTheme = next;
+  localStorage.setItem(UI_THEME_KEY, uiTheme);
+  applyUiTheme();
+  themePicker.open = false;
+  showToast(`${UI_THEMES.find(([theme]) => theme === uiTheme)?.[1] || 'System'} theme selected.`);
+}
+
+function clampSidebarWidth(width: number) {
+  const available = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - 320);
+  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR_WIDTH), Math.min(MAX_SIDEBAR_WIDTH, available)));
+}
+
+function readSidebarVisible() {
+  return localStorage.getItem(SIDEBAR_VISIBLE_KEY) !== 'false';
+}
+
+function readSidebarWidth() {
+  const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  return Number.isFinite(stored) ? clampSidebarWidth(stored) : DEFAULT_SIDEBAR_WIDTH;
+}
+
+function applySidebarLayout() {
+  const visibleLabel = sidebarVisible ? 'Hide Files sidebar' : 'Show Files sidebar';
+  workspace.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
+  shell.classList.toggle('sidebar-hidden', !sidebarVisible);
+  sidebarToggle.title = `${visibleLabel} (⇧⌘B)`;
+  sidebarToggle.setAttribute('aria-label', visibleLabel);
+  sidebarToggle.setAttribute('aria-expanded', String(sidebarVisible));
+  sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
+}
+
+function setSidebarWidth(width: number, persist = true) {
+  sidebarWidth = clampSidebarWidth(width);
+  if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+  applySidebarLayout();
+}
+
+function toggleSidebar() {
+  sidebarVisible = !sidebarVisible;
+  localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
+  applySidebarLayout();
+  showToast(sidebarVisible ? 'Files sidebar shown.' : 'Files sidebar hidden.');
 }
 
 function blankDocument(isMarkdown = false): TextDocument {
@@ -1342,6 +1433,43 @@ function toggleZenMode() {
   showToast(zenMode ? 'Zen mode on. Press Escape to leave.' : 'Zen mode off.');
 }
 
+function startSidebarResizing() {
+  sidebarResizer.addEventListener('pointerdown', (event) => {
+    if (!sidebarVisible || event.button !== 0) return;
+    sidebarResizePointerId = event.pointerId;
+    sidebarResizer.setPointerCapture(event.pointerId);
+    workspace.classList.add('sidebar-resizing');
+    event.preventDefault();
+  });
+
+  sidebarResizer.addEventListener('pointermove', (event) => {
+    if (sidebarResizePointerId !== event.pointerId) return;
+    const bounds = workspace.getBoundingClientRect();
+    setSidebarWidth(event.clientX - bounds.left, false);
+  });
+
+  const finishResize = (event: PointerEvent) => {
+    if (sidebarResizePointerId !== event.pointerId) return;
+    if (sidebarResizer.hasPointerCapture(event.pointerId)) sidebarResizer.releasePointerCapture(event.pointerId);
+    sidebarResizePointerId = null;
+    workspace.classList.remove('sidebar-resizing');
+    setSidebarWidth(sidebarWidth);
+  };
+  sidebarResizer.addEventListener('pointerup', finishResize);
+  sidebarResizer.addEventListener('pointercancel', finishResize);
+  sidebarResizer.addEventListener('keydown', (event) => {
+    let nextWidth: number | undefined;
+    const step = event.shiftKey ? 30 : 10;
+    if (event.key === 'ArrowLeft') nextWidth = sidebarWidth - step;
+    else if (event.key === 'ArrowRight') nextWidth = sidebarWidth + step;
+    else if (event.key === 'Home') nextWidth = MIN_SIDEBAR_WIDTH;
+    else if (event.key === 'End') nextWidth = MAX_SIDEBAR_WIDTH;
+    if (nextWidth === undefined) return;
+    event.preventDefault();
+    setSidebarWidth(nextWidth);
+  });
+}
+
 function goToLinePrompt() {
   const line = Number(window.prompt('Go to line:', String(editor.value.slice(0, editor.selectionStart).split('\n').length)));
   if (Number.isInteger(line) && line > 0) goToLine(line);
@@ -1358,6 +1486,7 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Save As', hint: '⇧⌘S', run: () => void saveAs() },
     { label: 'Find and replace', hint: '⌘F', run: openFind },
     { label: 'Go to line', hint: '⌘L', run: goToLinePrompt },
+    { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
     { label: 'Print / Save as PDF', hint: '⌘P', run: printDocument },
@@ -1482,6 +1611,7 @@ function handleAction(action?: string) {
     case 'toggle-folder-bookmark': toggleFolderBookmark(); break;
     case 'save': void save(); break;
     case 'save-as': void saveAs(); break;
+    case 'toggle-sidebar': toggleSidebar(); break;
     case 'close': closeDocument(); break;
     case 'reopen-encoding': reopenWithEncoding(); break;
     case 'undo': undo(); break;
@@ -1513,6 +1643,11 @@ function handleAction(action?: string) {
 
 app.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
+  const themeChoice = event.target.closest<HTMLButtonElement>('[data-theme-choice]');
+  if (themeChoice?.dataset.themeChoice) {
+    setUiTheme(themeChoice.dataset.themeChoice);
+    return;
+  }
   const target = event.target.closest<HTMLElement>('[data-action], [data-mode-button]');
   if (!target) return;
   if (target.dataset.modeButton) setViewMode(target.dataset.modeButton as ViewMode);
@@ -1588,6 +1723,9 @@ window.addEventListener('keydown', (event) => {
   else if (key === 'n') { event.preventDefault(); createDocument(event.shiftKey); }
   else if (key === 'w') { event.preventDefault(); closeDocument(); }
   else if (key === 'f') { event.preventDefault(); openFind(); }
+  else if (key === 'h') { event.preventDefault(); openFind(); window.requestAnimationFrame(() => replaceInput.focus()); }
+  else if (key === 'g') { event.preventDefault(); if (findbar.hidden) openFind(); else findNext(); }
+  else if (key === 'b' && event.shiftKey) { event.preventDefault(); toggleSidebar(); }
   else if (key === 'l') { event.preventDefault(); goToLinePrompt(); }
   else if (key === 'p' && event.shiftKey) { event.preventDefault(); openCommandPalette(); }
   else if (key === 'p') { event.preventDefault(); printDocument(); }
@@ -1647,9 +1785,16 @@ window.addEventListener('beforeunload', (event) => {
 restoreSession();
 applyEditorAppearance();
 applyEditorOptions();
+applySidebarLayout();
+applyUiTheme();
+startSidebarResizing();
 render();
 renderProjectTree();
 void refreshProjectFolder(true);
 void startExternalFileHandling();
 void startDragAndDrop();
+window.addEventListener('resize', () => {
+  const constrained = clampSidebarWidth(sidebarWidth);
+  if (constrained !== sidebarWidth) setSidebarWidth(constrained);
+});
 window.setInterval(() => { void watchFiles(); }, 4000);
