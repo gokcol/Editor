@@ -1,6 +1,7 @@
 const COMMANDS: &[&str] = &[
     "project_open",
     "project_open_file",
+    "project_reveal_open_file_folder",
     "project_create",
     "project_refresh",
     "project_read_file",

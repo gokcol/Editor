@@ -54,6 +54,7 @@ export const TAURI_EXTERNAL_OPEN_FILES_EVENT = 'external-open-files';
 type TauriCommandArgs = {
   project_open: EmptyArgs;
   project_open_file: { projectRoot?: Parameters<ProjectApi['openFile']>[0]; encoding?: Parameters<ProjectApi['openFile']>[1] };
+  project_reveal_open_file_folder: { fileHandle: Parameters<ProjectApi['revealOpenedFileFolder']>[0] };
   project_create: { name: Parameters<ProjectApi['create']>[0] };
   project_refresh: { root: Parameters<ProjectApi['refresh']>[0] };
   project_read_file: { root: Parameters<ProjectApi['readFile']>[0]; relativePath: Parameters<ProjectApi['readFile']>[1]; encoding?: Parameters<ProjectApi['readFile']>[2] };
@@ -101,6 +102,7 @@ type TauriCommandArgs = {
 type TauriCommandResult = {
   project_open: Awaited<ReturnType<ProjectApi['open']>>;
   project_open_file: Awaited<ReturnType<ProjectApi['openFile']>>;
+  project_reveal_open_file_folder: Awaited<ReturnType<ProjectApi['revealOpenedFileFolder']>>;
   project_create: Awaited<ReturnType<ProjectApi['create']>>;
   project_refresh: Awaited<ReturnType<ProjectApi['refresh']>>;
   project_read_file: Awaited<ReturnType<ProjectApi['readFile']>>;
@@ -252,6 +254,7 @@ export function createTauriDesktopApi(): DesktopApi {
     project: {
       open: () => invokeCommand('project_open'),
       openFile: (projectRoot, encoding) => invokeCommand('project_open_file', { projectRoot, encoding }),
+      revealOpenedFileFolder: (fileHandle) => invokeCommand('project_reveal_open_file_folder', { fileHandle }),
       create: (name) => invokeCommand('project_create', { name }),
       refresh: (root) => invokeCommand('project_refresh', { root }),
       readFile: (root, relativePath, encoding) => invokeCommand('project_read_file', { root, relativePath, encoding }),

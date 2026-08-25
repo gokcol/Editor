@@ -98,6 +98,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core::project_open,
             core::project_open_file,
+            core::project_reveal_open_file_folder,
             core::project_create,
             core::project_refresh,
             core::project_read_file,

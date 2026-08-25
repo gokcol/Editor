@@ -9,6 +9,7 @@
     "core:default",
     "allow-project-open",
     "allow-project-open-file",
+    "allow-project-reveal-open-file-folder",
     "allow-project-create",
     "allow-project-refresh",
     "allow-project-read-file",

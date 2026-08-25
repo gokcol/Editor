@@ -43,6 +43,7 @@ export function createBrowserDesktopApi(): DesktopApi {
     project: {
       open: async () => ({ canceled: true }),
       openFile: async () => ({ canceled: true }),
+      revealOpenedFileFolder: async () => { throw new Error('Folders are available in the desktop app.'); },
       create: async () => ({ canceled: true }),
       refresh: async () => { throw new Error('Project folders are available in the desktop app.'); },
       readFile: async () => { throw new Error('Project folders are available in the desktop app.'); },

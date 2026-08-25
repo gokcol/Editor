@@ -974,6 +974,23 @@ pub async fn project_open_file(
     Ok(OpenedSourceOrCanceled::Source(source))
 }
 
+/// Opens the parent folder of an independently opened file in Yedit's Files
+/// area. The caller supplies only its opaque standalone-file handle; the
+/// native side resolves the permitted path and never accepts an arbitrary
+/// filesystem location from the webview.
+#[tauri::command]
+pub fn project_reveal_open_file_folder(
+    window: WebviewWindow,
+    state: State<'_, CoreState>,
+    file_handle: String,
+) -> Result<Project, String> {
+    let target = opened_standalone_file(state.inner(), window.label(), &file_handle)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| error("The containing folder is unavailable."))?;
+    remembered_project_payload(state.inner(), &path_text(parent))
+}
+
 /// Drains Finder-delivered file paths. Paths never cross the webview boundary:
 /// the native side validates and decodes each one before returning the normal
 /// opaque opened-file payload used by the Open command.

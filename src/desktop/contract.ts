@@ -32,6 +32,8 @@ export interface DesktopApi {
   project: {
     open: () => Promise<Project | { canceled: true }>;
     openFile: (projectRoot?: string, encoding?: CharacterEncoding) => Promise<OpenedSourceFile | { canceled: true }>;
+    /** Shows the containing folder of an independently opened file in Files. */
+    revealOpenedFileFolder: (fileHandle: string) => Promise<Project>;
     create: (name: string) => Promise<Project | { canceled: true }>;
     refresh: (root: string) => Promise<Project>;
     readFile: (root: string, relativePath: string, encoding?: CharacterEncoding) => Promise<DecodedSourceFile>;

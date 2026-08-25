@@ -1456,17 +1456,38 @@ function App({ desktop }: { desktop: DesktopApi }) {
     setPreview(EMPTY_PREVIEW);
   }, [documents]);
 
+  const revealOpenedFileFolder = useCallback(async (fileHandle: string, name: string) => {
+    try {
+      const folder = await desktop.project.revealOpenedFileFolder(fileHandle);
+      // The native command resolves the opaque handle first, so this folder
+      // is necessarily the parent of the exact file the user opened.
+      syncProjectTree(folder, true);
+      setDocuments((current) => current.map((document) => {
+        if (document.fileHandle !== fileHandle) return document;
+        const { fileHandle: _fileHandle, ...projectDocument } = document;
+        return { ...projectDocument, relativePath: name };
+      }));
+      updatePanel('explorerOpen', true);
+      setZenMode(false);
+      void refreshRecentProjects();
+      showToast(`Showing ${folder.name} in Files.`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not show this file’s folder.', 'error');
+    }
+  }, [desktop.project, refreshRecentProjects, showToast, syncProjectTree, updatePanel]);
+
   const openStandaloneFile = useCallback(async () => {
     try {
       const opened = await desktop.project.openFile(project?.root, openingEncoding);
       if ('canceled' in opened) return;
       activateOpenedSource(opened);
+      if ('fileHandle' in opened) void revealOpenedFileFolder(opened.fileHandle, opened.name);
       void refreshRecentProjects();
       showToast(`Opened ${opened.name}.`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not open that source file.', 'error');
     }
-  }, [activateOpenedSource, openingEncoding, project?.root, refreshRecentProjects, showToast]);
+  }, [activateOpenedSource, openingEncoding, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
 
   const drainFinderOpenedFiles = useCallback(() => {
     // Finder can send paths while the React app is mounting or while another
@@ -1475,7 +1496,10 @@ function App({ desktop }: { desktop: DesktopApi }) {
     externalOpenQueueRef.current = externalOpenQueueRef.current.then(async () => {
       try {
         const opened = await desktop.externalFiles.takePending(project?.root);
-        for (const file of opened.files) activateOpenedSource(file);
+        for (const file of opened.files) {
+          activateOpenedSource(file);
+          if ('fileHandle' in file) void revealOpenedFileFolder(file.fileHandle, file.name);
+        }
         if (opened.files.length) {
           void refreshRecentProjects();
           showToast(`Opened ${opened.files.length === 1 ? opened.files[0].name : `${opened.files.length} files`} from Finder.`, 'success');
@@ -1485,7 +1509,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
         showToast(error instanceof Error ? error.message : 'Could not open the file Finder sent to Yedit.', 'error');
       }
     });
-  }, [activateOpenedSource, desktop.externalFiles, project?.root, refreshRecentProjects, showToast]);
+  }, [activateOpenedSource, desktop.externalFiles, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
 
   useEffect(() => {
     const unsubscribe = desktop.externalFiles.onOpen(drainFinderOpenedFiles);
@@ -1566,6 +1590,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       if (opened.kind === 'project') await hydrateProject(opened.project);
       else {
         activateOpenedSource(opened.file);
+        if ('fileHandle' in opened.file) void revealOpenedFileFolder(opened.file.fileHandle, opened.file.name);
         showToast(`Opened ${recent.name}.`, 'success');
       }
       await refreshRecentProjects();
@@ -1583,7 +1608,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       showToast(message, 'error');
       return false;
     }
-  }, [activateOpenedSource, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, showToast]);
+  }, [activateOpenedSource, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
 
   const openLatestRecentEntry = useCallback(() => {
     const latest = recentProjects[0];
