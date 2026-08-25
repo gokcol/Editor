@@ -53,7 +53,7 @@ const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
   javascript: 'Modern JavaScript source',
   typescript: 'Typed JavaScript source',
   python: 'Python source and scripts',
-  fortran: 'Free-form scientific source',
+  fortran: 'Scientific source (.f, .for, .f90, .f95+)',
   sql: 'Queries and migrations',
   html: 'Semantic web documents',
   css: 'Stylesheets and design tokens',

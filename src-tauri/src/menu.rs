@@ -82,7 +82,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&source_item(app, "javascript", "JavaScript (.js)", None)?)
         .item(&source_item(app, "typescript", "TypeScript (.ts)", None)?)
         .item(&source_item(app, "python", "Python (.py)", None)?)
-        .item(&source_item(app, "fortran", "Fortran (.f90)", None)?)
+        .item(&source_item(app, "fortran", "Fortran (.f, .for, .f90, .f95…)", None)?)
         .item(&source_item(app, "sql", "SQL (.sql)", None)?)
         .item(&source_item(app, "html", "HTML (.html)", None)?)
         .item(&source_item(app, "css", "CSS (.css)", None)?)
