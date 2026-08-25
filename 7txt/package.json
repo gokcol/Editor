@@ -1,0 +1,20 @@
+{
+  "name": "7txt",
+  "version": "0.1.4",
+  "private": true,
+  "description": "7TXT is a lightweight native text and Markdown editor for macOS.",
+  "scripts": {
+    "dev:web": "../node_modules/.bin/vite --host 127.0.0.1",
+    "dev": "../node_modules/.bin/tauri dev",
+    "build:web": "../node_modules/.bin/tsc --noEmit && ../node_modules/.bin/vite build",
+    "build": "../node_modules/.bin/tauri build --bundles app",
+    "bundle:app": "../node_modules/.bin/tauri build --bundles app"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^24.3.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.1.3"
+  }
+}

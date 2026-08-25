@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for 7TXT's one local editor window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-open-file",
+    "allow-open-recent",
+    "allow-open-folder",
+    "allow-refresh-folder",
+    "allow-save-as",
+    "allow-write-file"
+  ]
+}
