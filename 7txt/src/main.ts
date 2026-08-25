@@ -68,6 +68,7 @@ const UI_SCALES = [
   ['compact', 'Compact'], ['normal', 'Normal'], ['comfortable', 'Comfortable'], ['large', 'Large'], ['very-large', 'Very large'],
 ] as const;
 type UiScale = typeof UI_SCALES[number][0];
+const UI_SCALE_FACTORS: Record<UiScale, number> = { compact: .88, normal: 1, comfortable: 1.08, large: 1.17, 'very-large': 1.28 };
 const EDITOR_SURFACES = [
   ['plain', 'Plain'], ['glossy', 'Glossy'], ['ruled', 'Ruled'], ['college', 'College ruled'], ['graph', 'Graph paper'], ['dotted', 'Dotted'], ['musical', 'Musical staff'], ['blueprint', 'Blueprint'], ['warm-paper', 'Warm paper'], ['linen', 'Linen'], ['night-grid', 'Night grid'],
 ] as const;
@@ -299,6 +300,10 @@ function readUiScale(): UiScale {
   return isUiScale(stored) ? stored : 'normal';
 }
 
+function uiScaleFactor() {
+  return UI_SCALE_FACTORS[uiScale];
+}
+
 function applyUiScale() {
   shell.dataset.uiScale = uiScale;
   for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-ui-scale-choice]')) {
@@ -355,7 +360,7 @@ function setupTransientMenus() {
 }
 
 function clampSidebarWidth(width: number) {
-  const available = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - 320);
+  const available = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth / uiScaleFactor() - 320);
   return Math.round(Math.min(Math.max(width, MIN_SIDEBAR_WIDTH), Math.min(MAX_SIDEBAR_WIDTH, available)));
 }
 
@@ -1523,7 +1528,7 @@ function startSidebarResizing() {
   sidebarResizer.addEventListener('pointermove', (event) => {
     if (sidebarResizePointerId !== event.pointerId) return;
     const bounds = workspace.getBoundingClientRect();
-    setSidebarWidth(event.clientX - bounds.left, false);
+    setSidebarWidth((event.clientX - bounds.left) / uiScaleFactor(), false);
   });
 
   const finishResize = (event: PointerEvent) => {
