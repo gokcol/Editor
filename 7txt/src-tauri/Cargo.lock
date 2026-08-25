@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "seventxt"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "encoding_rs",
  "rfd",

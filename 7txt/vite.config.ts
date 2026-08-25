@@ -13,7 +13,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: resolve(__dirname, 'index.html'),
-        boot: resolve(__dirname, '7txt-0.1.7.html'),
+        boot: resolve(__dirname, '7txt-0.1.10.html'),
       },
     },
   },

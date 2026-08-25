@@ -3,13 +3,17 @@ mod text_encoding;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
-    AppHandle, Emitter, Runtime,
+    AppHandle, Emitter, Manager, RunEvent, Runtime, State,
 };
 
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
@@ -51,6 +55,26 @@ struct FileBrowser {
     documents_path: String,
     entries: Vec<FolderEntry>,
     truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileFingerprint {
+    modified_millis: u64,
+    size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportedFile {
+    name: String,
+    path: String,
+}
+
+#[derive(Default)]
+struct PendingExternalFiles {
+    paths: Mutex<Vec<String>>,
+    frontend_ready: AtomicBool,
 }
 
 fn is_supported_text_path(path: &Path) -> bool {
@@ -99,7 +123,7 @@ fn documents_directory(home: &Path) -> PathBuf {
     }
 }
 
-fn read_browser_directory(path: PathBuf) -> Result<FileBrowser, String> {
+fn read_browser_directory(path: PathBuf, show_hidden: bool) -> Result<FileBrowser, String> {
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "That folder is unavailable.".to_owned())?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -119,7 +143,7 @@ fn read_browser_directory(path: PathBuf) -> Result<FileBrowser, String> {
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if !show_hidden && name.starts_with('.') {
             continue;
         }
         let Ok(metadata) = fs::symlink_metadata(&path) else {
@@ -197,6 +221,66 @@ fn read_text_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedTextF
     })
 }
 
+fn reveal_text_file_folder(path: PathBuf, show_hidden: bool) -> Result<FileBrowser, String> {
+    if !is_supported_text_path(&path) {
+        return Err("7TXT can reveal plain text and Markdown files only.".to_owned());
+    }
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("Only regular text files can be revealed here.".to_owned());
+    }
+    let real_path = fs::canonicalize(&path).map_err(|_| "That file is unavailable.".to_owned())?;
+    let parent = real_path
+        .parent()
+        .ok_or_else(|| "That file has no containing folder.".to_owned())?;
+    read_browser_directory(parent.to_path_buf(), show_hidden)
+}
+
+fn initial_open_paths() -> Vec<PathBuf> {
+    env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file() && is_supported_text_path(path))
+        .collect()
+}
+
+fn queue_external_open_paths<R: Runtime>(
+    app: &AppHandle<R>,
+    paths: impl IntoIterator<Item = PathBuf>,
+) {
+    let paths = paths
+        .into_iter()
+        .filter(|path| path.is_file() && is_supported_text_path(path))
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return;
+    }
+
+    let frontend_ready = {
+        let state = app.state::<PendingExternalFiles>();
+        let mut pending = state
+            .paths
+            .lock()
+            .expect("external file queue lock poisoned");
+        for path in &paths {
+            if !pending.contains(path) {
+                pending.push(path.clone());
+            }
+        }
+        state.frontend_ready.load(Ordering::Acquire)
+    };
+    if frontend_ready {
+        let _ = app.emit_to("main", "external-open-files", &paths);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn checked_content(content: &str) -> Result<(), String> {
     if content.len() as u64 > MAX_TEXT_BYTES {
         Err("7TXT limits a document to 16 MB.".to_owned())
@@ -247,22 +331,185 @@ fn open_recent(path: String, encoding: Option<String>) -> Result<OpenedTextFile,
 fn open_folder() -> Result<Option<FileBrowser>, String> {
     FileDialog::new()
         .pick_folder()
-        .map(read_browser_directory)
+        .map(|path| read_browser_directory(path, false))
         .transpose()
 }
 
 #[tauri::command]
-fn browse_folder(path: Option<String>) -> Result<FileBrowser, String> {
+fn browse_folder(path: Option<String>, show_hidden: Option<bool>) -> Result<FileBrowser, String> {
     let target = match path {
         Some(path) => PathBuf::from(path),
         None => documents_directory(&home_directory()?),
     };
-    read_browser_directory(target)
+    read_browser_directory(target, show_hidden.unwrap_or(false))
 }
 
 #[tauri::command]
-fn refresh_folder(path: String) -> Result<FileBrowser, String> {
-    read_browser_directory(PathBuf::from(path))
+fn refresh_folder(path: String, show_hidden: Option<bool>) -> Result<FileBrowser, String> {
+    read_browser_directory(PathBuf::from(path), show_hidden.unwrap_or(false))
+}
+
+#[tauri::command]
+fn reveal_file_folder(path: String, show_hidden: Option<bool>) -> Result<FileBrowser, String> {
+    reveal_text_file_folder(PathBuf::from(path), show_hidden.unwrap_or(false))
+}
+
+#[tauri::command]
+fn take_pending_open_files(state: State<PendingExternalFiles>) -> Vec<String> {
+    state.frontend_ready.store(true, Ordering::Release);
+    let mut pending = state
+        .paths
+        .lock()
+        .expect("external file queue lock poisoned");
+    std::mem::take(&mut *pending)
+}
+
+#[tauri::command]
+fn file_fingerprint(path: String) -> Result<FileFingerprint, String> {
+    let path = PathBuf::from(path);
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("Only regular text files can be watched here.".to_owned());
+    }
+    let modified_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    Ok(FileFingerprint {
+        modified_millis,
+        size: metadata.len(),
+    })
+}
+
+fn valid_browser_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err("Use a simple file or folder name, without a path.".to_owned());
+    }
+    Ok(name)
+}
+
+fn regular_browser_path(path: PathBuf) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| "That file or folder is unavailable.".to_owned())?;
+    if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+        return Err("Choose a regular file or folder.".to_owned());
+    }
+    fs::canonicalize(path).map_err(|_| "That file or folder is unavailable.".to_owned())
+}
+
+#[tauri::command]
+fn create_browser_entry(
+    parent_path: String,
+    name: String,
+    kind: String,
+) -> Result<FolderEntry, String> {
+    let parent = regular_browser_path(PathBuf::from(parent_path))?;
+    if !parent.is_dir() {
+        return Err("Choose a folder to create an item in.".to_owned());
+    }
+    let name = valid_browser_name(&name)?;
+    let target = parent.join(name);
+    if target.exists() {
+        return Err("An item with that name already exists.".to_owned());
+    }
+    match kind.as_str() {
+        "directory" => {
+            fs::create_dir(&target).map_err(|error| format!("Could not create folder: {error}"))?
+        }
+        "file" => {
+            if !is_supported_text_path(&target) {
+                return Err("New files must use .txt, .md, or .markdown.".to_owned());
+            }
+            fs::write(&target, b"").map_err(|error| format!("Could not create file: {error}"))?;
+        }
+        _ => return Err("Choose a text file or folder to create.".to_owned()),
+    }
+    Ok(FolderEntry {
+        name: name.to_owned(),
+        path: target.to_string_lossy().into_owned(),
+        kind,
+    })
+}
+
+#[tauri::command]
+fn rename_browser_entry(path: String, name: String) -> Result<String, String> {
+    let source = regular_browser_path(PathBuf::from(path))?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "That item cannot be renamed.".to_owned())?;
+    let target = parent.join(valid_browser_name(&name)?);
+    if target.exists() {
+        return Err("An item with that name already exists.".to_owned());
+    }
+    fs::rename(&source, &target).map_err(|error| format!("Could not rename item: {error}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn move_browser_entry_to_trash(path: String) -> Result<(), String> {
+    let source = regular_browser_path(PathBuf::from(path))?;
+    let trash = home_directory()?.join(".Trash");
+    fs::create_dir_all(&trash).map_err(|error| format!("Could not open Trash: {error}"))?;
+    let name = source
+        .file_name()
+        .ok_or_else(|| "That item cannot be moved to Trash.".to_owned())?
+        .to_string_lossy();
+    let mut target = trash.join(name.as_ref());
+    let mut suffix = 2usize;
+    while target.exists() {
+        target = trash.join(format!("{} {}", name, suffix));
+        suffix += 1;
+    }
+    fs::rename(&source, &target).map_err(|error| {
+        format!("Could not move this item to Trash. If it is on another disk, move it in Finder: {error}")
+    })
+}
+
+#[tauri::command]
+fn export_document(
+    suggested_name: String,
+    content: String,
+    extension: String,
+) -> Result<Option<ExportedFile>, String> {
+    let extension = extension.trim_start_matches('.').to_ascii_lowercase();
+    if !matches!(extension.as_str(), "html" | "htm") {
+        return Err("7TXT can export this document as HTML.".to_owned());
+    }
+    let fallback_name = if suggested_name
+        .to_ascii_lowercase()
+        .ends_with(&format!(".{extension}"))
+    {
+        suggested_name
+    } else {
+        format!(
+            "{}.{}",
+            suggested_name.trim().trim_end_matches('.'),
+            extension
+        )
+    };
+    let path = FileDialog::new()
+        .add_filter("HTML", &[extension.as_str()])
+        .set_file_name(&fallback_name)
+        .save_file();
+    path.map(|path| {
+        fs::write(&path, content).map_err(|error| format!("Could not export HTML: {error}"))?;
+        let real_path = fs::canonicalize(&path)
+            .map_err(|_| "The exported file could not be resolved.".to_owned())?;
+        Ok(ExportedFile {
+            name: text_file_name(&real_path),
+            path: real_path.to_string_lossy().into_owned(),
+        })
+    })
+    .transpose()
 }
 
 #[tauri::command]
@@ -337,6 +584,10 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             Some("CmdOrCtrl+Shift+S"),
         )?)
         .separator()
+        .item(&item(app, "print", "Print…", Some("CmdOrCtrl+P"))?)
+        .item(&item(app, "export-html", "Export HTML…", None)?)
+        .item(&item(app, "export-pdf", "Export PDF…", None)?)
+        .separator()
         .item(&item(app, "close", "Close Document", Some("CmdOrCtrl+W"))?)
         .separator()
         .item(&PredefinedMenuItem::quit(app, Some("Quit 7TXT"))?)
@@ -351,6 +602,18 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .select_all()
         .separator()
         .item(&item(app, "find", "Find", Some("CmdOrCtrl+F"))?)
+        .item(&item(
+            app,
+            "go-to-line",
+            "Go to Line…",
+            Some("CmdOrCtrl+L"),
+        )?)
+        .item(&item(
+            app,
+            "command-palette",
+            "Command Palette…",
+            Some("CmdOrCtrl+Shift+P"),
+        )?)
         .build()?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&item(app, "mode-edit", "Edit", Some("CmdOrCtrl+1"))?)
@@ -366,6 +629,9 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             "Markdown Preview",
             Some("CmdOrCtrl+3"),
         )?)
+        .separator()
+        .item(&item(app, "toggle-editor-split", "Split Editor", None)?)
+        .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;
     MenuBuilder::new(app)
         .item(&file)
@@ -375,7 +641,8 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .manage(PendingExternalFiles::default())
         .menu(|app| menu(app))
         .on_menu_event(|app, event| {
             let _ = app.emit_to("main", "menu-action", event.id().as_ref());
@@ -386,11 +653,28 @@ pub fn run() {
             open_folder,
             browse_folder,
             refresh_folder,
+            reveal_file_folder,
+            take_pending_open_files,
+            file_fingerprint,
+            create_browser_entry,
+            rename_browser_entry,
+            move_browser_entry_to_trash,
+            export_document,
             save_as,
             write_file
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running 7TXT");
+        .build(tauri::generate_context!())
+        .expect("error while building 7TXT");
+    queue_external_open_paths(app.handle(), initial_open_paths());
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = event {
+            queue_external_open_paths(
+                app,
+                urls.into_iter().filter_map(|url| url.to_file_path().ok()),
+            );
+        }
+    });
 }
 
 #[cfg(test)]
@@ -406,7 +690,7 @@ mod tests {
         fs::write(folder.join("notes").join("draft.txt"), "Draft").expect("create text file");
         fs::write(folder.join("notes").join("image.png"), "not text")
             .expect("create unsupported file");
-        let result = read_browser_directory(folder.clone());
+        let result = read_browser_directory(folder.clone(), false);
         let _ = fs::remove_dir_all(&folder);
         let browser = result.expect("folder should be readable");
         assert_eq!(browser.entries.len(), 3);
@@ -419,5 +703,21 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.name == "readme.md"));
+    }
+
+    #[test]
+    fn revealing_a_text_file_browses_its_containing_folder() {
+        let folder =
+            std::env::temp_dir().join(format!("7txt-reveal-folder-{}", std::process::id()));
+        fs::create_dir_all(&folder).expect("create reveal folder");
+        let document = folder.join("notes.txt");
+        fs::write(&document, "Notes").expect("create text file");
+        let result = reveal_text_file_folder(document, false);
+        let _ = fs::remove_dir_all(&folder);
+        let browser = result.expect("text file parent should be browseable");
+        assert!(browser
+            .entries
+            .iter()
+            .any(|entry| entry.name == "notes.txt"));
     }
 }

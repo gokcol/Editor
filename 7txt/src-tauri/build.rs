@@ -4,6 +4,13 @@ const COMMANDS: &[&str] = &[
     "open_folder",
     "browse_folder",
     "refresh_folder",
+    "reveal_file_folder",
+    "take_pending_open_files",
+    "file_fingerprint",
+    "create_browser_entry",
+    "rename_browser_entry",
+    "move_browser_entry_to_trash",
+    "export_document",
     "save_as",
     "write_file",
 ];

@@ -10,6 +10,13 @@
     "allow-open-folder",
     "allow-browse-folder",
     "allow-refresh-folder",
+    "allow-reveal-file-folder",
+    "allow-take-pending-open-files",
+    "allow-file-fingerprint",
+    "allow-create-browser-entry",
+    "allow-rename-browser-entry",
+    "allow-move-browser-entry-to-trash",
+    "allow-export-document",
     "allow-save-as",
     "allow-write-file"
   ]
