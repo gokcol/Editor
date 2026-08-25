@@ -3765,7 +3765,10 @@ function App({ desktop }: { desktop: DesktopApi }) {
                   horizontalScrollbarSize: 10,
                   alwaysConsumeMouseWheel: true,
                 },
-                renderLineHighlight: 'all',
+                // Highlight the source line itself, not the surrounding
+                // gutter. This keeps the active-line cue contained inside
+                // the editor instead of drawing against the workbench frame.
+                renderLineHighlight: 'line',
                 stickyScroll: { enabled: false },
               }}
             />
