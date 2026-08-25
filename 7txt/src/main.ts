@@ -33,6 +33,8 @@ const FOLDER_BOOKMARKS_KEY = '7txt:folder-bookmarks:v1';
 const EDITOR_APPEARANCE_KEY = '7txt:editor-appearance:v1';
 const EDITOR_OPTIONS_KEY = '7txt:editor-options:v1';
 const UI_THEME_KEY = '7txt:ui-theme:v1';
+const UI_SCALE_KEY = '7txt:ui-scale:v1';
+const EDITOR_SURFACE_KEY = '7txt:editor-surface:v1';
 const SIDEBAR_VISIBLE_KEY = '7txt:sidebar-visible:v1';
 const SIDEBAR_WIDTH_KEY = '7txt:sidebar-width:v1';
 const SESSION_KEY = '7txt:workspace-session:v1';
@@ -62,6 +64,14 @@ const UI_THEMES = [
   ['sepia', 'Sepia'], ['contrast', 'High contrast'], ['paper', 'Paper'],
 ] as const;
 type UiTheme = typeof UI_THEMES[number][0];
+const UI_SCALES = [
+  ['compact', 'Compact'], ['normal', 'Normal'], ['comfortable', 'Comfortable'], ['large', 'Large'], ['very-large', 'Very large'],
+] as const;
+type UiScale = typeof UI_SCALES[number][0];
+const EDITOR_SURFACES = [
+  ['plain', 'Plain'], ['glossy', 'Glossy'], ['ruled', 'Ruled'], ['college', 'College ruled'], ['graph', 'Graph paper'], ['dotted', 'Dotted'], ['musical', 'Musical staff'], ['blueprint', 'Blueprint'], ['warm-paper', 'Warm paper'], ['linen', 'Linen'], ['night-grid', 'Night grid'],
+] as const;
+type EditorSurface = typeof EDITOR_SURFACES[number][0];
 const CHARACTER_ENCODINGS = [
   ['auto', 'Auto detect (UTF-8 / BOM / Windows-1252)'],
   ['utf-8', 'UTF-8'], ['utf-8-bom', 'UTF-8 with BOM'],
@@ -115,14 +125,15 @@ app.innerHTML = `
       </div>
       <div class="toolbar-spacer"></div>
       <details class="theme-picker">
-        <summary title="Choose interface theme" aria-label="Choose interface theme"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="11" r="8"/><path d="M5.5 15.5 3.8 19a1.4 1.4 0 0 0 1.9 1.9l3.5-1.7M9 9h.01M13 7h.01M17 9h.01M16 14h.01"/></svg></summary>
-        <div class="theme-picker-menu" role="group" aria-label="Interface theme">${UI_THEMES.map(([value, label]) => `<button type="button" data-theme-choice="${value}" aria-pressed="false"><span class="theme-swatch theme-swatch-${value}"></span><span>${label}</span></button>`).join('')}</div>
+        <summary title="Interface theme and size" aria-label="Interface theme and size"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="11" r="8"/><path d="M5.5 15.5 3.8 19a1.4 1.4 0 0 0 1.9 1.9l3.5-1.7M9 9h.01M13 7h.01M17 9h.01M16 14h.01"/></svg></summary>
+        <div class="theme-picker-menu" aria-label="Interface appearance"><div class="theme-choice-grid" role="group" aria-label="Interface theme">${UI_THEMES.map(([value, label]) => `<button type="button" data-theme-choice="${value}" aria-pressed="false"><span class="theme-swatch theme-swatch-${value}"></span><span>${label}</span></button>`).join('')}</div><div class="theme-menu-divider"></div><span class="theme-menu-heading">Interface size</span><div class="ui-scale-options" role="group" aria-label="Interface size">${UI_SCALES.map(([value, label]) => `<button type="button" data-ui-scale-choice="${value}" aria-pressed="false">${label}</button>`).join('')}</div></div>
       </details>
       <details class="editor-appearance">
         <summary title="Editor font and size" aria-label="Editor font and size"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19 9.5 5h5L20 19M7 14h10M10 19h4"/></svg></summary>
         <div class="editor-appearance-menu">
           <label>Font<select data-editor-font aria-label="Editor font">${EDITOR_FONTS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
           <label>Size<select data-editor-font-size aria-label="Editor font size">${EDITOR_FONT_SIZES.map((size) => `<option value="${size}">${size} px</option>`).join('')}</select></label>
+          <label>Writing surface<select data-editor-surface aria-label="Writing surface">${EDITOR_SURFACES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
           <label>Wrap<select data-editor-wrap aria-label="Word wrap"><option value="on">Wrap lines</option><option value="off">No wrap</option></select></label>
           <label>Indent<select data-editor-indent aria-label="Indentation"><option value="spaces">Spaces</option><option value="tabs">Tabs</option></select></label>
           <label>Tab width<select data-editor-tab-size aria-label="Tab width"><option value="2">2 spaces</option><option value="4">4 spaces</option><option value="8">8 spaces</option></select></label>
@@ -203,6 +214,7 @@ const encodingSelect = required<HTMLSelectElement>('[data-encoding]');
 const reopenEncodingButton = required<HTMLButtonElement>('.reopen-encoding');
 const editorFontSelect = required<HTMLSelectElement>('[data-editor-font]');
 const editorFontSizeSelect = required<HTMLSelectElement>('[data-editor-font-size]');
+const editorSurfaceSelect = required<HTMLSelectElement>('[data-editor-surface]');
 const editorWrapSelect = required<HTMLSelectElement>('[data-editor-wrap]');
 const editorIndentSelect = required<HTMLSelectElement>('[data-editor-indent]');
 const editorTabSizeSelect = required<HTMLSelectElement>('[data-editor-tab-size]');
@@ -232,6 +244,8 @@ let folderFilterValue = '';
 let editorSplit = false;
 let zenMode = false;
 let uiTheme = readUiTheme();
+let uiScale = readUiScale();
+let editorSurface = readEditorSurface();
 let sidebarVisible = readSidebarVisible();
 let sidebarWidth = readSidebarWidth();
 let sidebarResizePointerId: number | null = null;
@@ -274,6 +288,70 @@ function setUiTheme(next: string) {
   applyUiTheme();
   themePicker.open = false;
   showToast(`${UI_THEMES.find(([theme]) => theme === uiTheme)?.[1] || 'System'} theme selected.`);
+}
+
+function isUiScale(value: string): value is UiScale {
+  return UI_SCALES.some(([scale]) => scale === value);
+}
+
+function readUiScale(): UiScale {
+  const stored = localStorage.getItem(UI_SCALE_KEY) || 'normal';
+  return isUiScale(stored) ? stored : 'normal';
+}
+
+function applyUiScale() {
+  shell.dataset.uiScale = uiScale;
+  for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-ui-scale-choice]')) {
+    const selected = button.dataset.uiScaleChoice === uiScale;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function setUiScale(next: string) {
+  if (!isUiScale(next)) return;
+  uiScale = next;
+  localStorage.setItem(UI_SCALE_KEY, uiScale);
+  applyUiScale();
+  themePicker.open = false;
+  showToast(`${UI_SCALES.find(([scale]) => scale === uiScale)?.[1] || 'Normal'} interface size selected.`);
+}
+
+function isEditorSurface(value: string): value is EditorSurface {
+  return EDITOR_SURFACES.some(([surface]) => surface === value);
+}
+
+function readEditorSurface(): EditorSurface {
+  const stored = localStorage.getItem(EDITOR_SURFACE_KEY) || 'plain';
+  return isEditorSurface(stored) ? stored : 'plain';
+}
+
+function applyEditorSurface() {
+  shell.dataset.editorSurface = editorSurface;
+  editorSurfaceSelect.value = editorSurface;
+}
+
+function setEditorSurface(next: string) {
+  if (!isEditorSurface(next)) return;
+  editorSurface = next;
+  localStorage.setItem(EDITOR_SURFACE_KEY, editorSurface);
+  applyEditorSurface();
+  showToast(`${EDITOR_SURFACES.find(([surface]) => surface === editorSurface)?.[1] || 'Plain'} writing surface selected.`);
+}
+
+function closeTransientMenus() {
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) menu.open = false;
+}
+
+function setupTransientMenus() {
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
+    menu.addEventListener('toggle', () => {
+      if (!menu.open) return;
+      for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
+        if (other !== menu) other.open = false;
+      }
+    });
+  }
 }
 
 function clampSidebarWidth(width: number) {
@@ -1641,11 +1719,22 @@ function handleAction(action?: string) {
   }
 }
 
+app.addEventListener('pointerdown', (event) => {
+  if (!(event.target instanceof Element)) return;
+  if (event.target.closest('.theme-picker, .editor-appearance')) return;
+  closeTransientMenus();
+});
+
 app.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
   const themeChoice = event.target.closest<HTMLButtonElement>('[data-theme-choice]');
   if (themeChoice?.dataset.themeChoice) {
     setUiTheme(themeChoice.dataset.themeChoice);
+    return;
+  }
+  const scaleChoice = event.target.closest<HTMLButtonElement>('[data-ui-scale-choice]');
+  if (scaleChoice?.dataset.uiScaleChoice) {
+    setUiScale(scaleChoice.dataset.uiScaleChoice);
     return;
   }
   const target = event.target.closest<HTMLElement>('[data-action], [data-mode-button]');
@@ -1694,6 +1783,7 @@ editorFontSizeSelect.addEventListener('change', () => {
   editorAppearance = { ...editorAppearance, fontSize: Number(editorFontSizeSelect.value) };
   saveEditorAppearance();
 });
+editorSurfaceSelect.addEventListener('change', () => setEditorSurface(editorSurfaceSelect.value));
 editorWrapSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, wordWrap: editorWrapSelect.value === 'on' }; saveEditorOptions(); });
 editorIndentSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, indentation: editorIndentSelect.value === 'tabs' ? 'tabs' : 'spaces' }; saveEditorOptions(); });
 editorTabSizeSelect.addEventListener('change', () => { const size = Number(editorTabSizeSelect.value); editorOptions = { ...editorOptions, tabSize: size === 4 || size === 8 ? size : 2 }; saveEditorOptions(); });
@@ -1712,6 +1802,14 @@ commandPaletteInput.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open]'));
+    if (hasOpenTransientMenu) {
+      event.preventDefault();
+      closeTransientMenus();
+      return;
+    }
+  }
   if (event.key === 'Escape' && zenMode) { event.preventDefault(); toggleZenMode(); return; }
   if (!commandPalette.hidden) return;
   const primary = event.metaKey || event.ctrlKey;
@@ -1787,6 +1885,9 @@ applyEditorAppearance();
 applyEditorOptions();
 applySidebarLayout();
 applyUiTheme();
+applyUiScale();
+applyEditorSurface();
+setupTransientMenus();
 startSidebarResizing();
 render();
 renderProjectTree();
