@@ -1,0 +1,62 @@
+const COMMANDS: &[&str] = &[
+    "project_open",
+    "project_open_file",
+    "project_create",
+    "project_refresh",
+    "project_read_file",
+    "project_write_file",
+    "project_create_file",
+    "project_rename_file",
+    "project_duplicate_file",
+    "project_delete_file",
+    "project_watch",
+    "project_unwatch",
+    "project_build_profiles",
+    "project_list_tasks",
+    "project_run_task",
+    "project_run_build",
+    "project_run_python",
+    "project_write_open_file",
+    "project_read_open_file",
+    "project_save_as",
+    "recents_list",
+    "recents_migrate_legacy_projects",
+    "recents_open",
+    "recents_remove",
+    "recents_clear",
+    "render_tikz",
+    "render_latex",
+    "render_metafont",
+    "render_export",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_stage",
+    "git_unstage",
+    "git_commit",
+    "git_branches",
+    "git_switch_branch",
+    "clipboard_write_svg",
+    "clipboard_write_data_uri_image",
+    "settings_load",
+    "settings_save",
+    "shell_reveal",
+    "renderer_ready",
+];
+
+fn main() {
+    println!("cargo:rerun-if-changed=src/html_export_bridge.m");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new()
+            .file("src/html_export_bridge.m")
+            .flag("-fobjc-arc")
+            .compile("yedit_html_export");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+        println!("cargo:rustc-link-lib=framework=WebKit");
+    }
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
+    )
+    .expect("failed to build Yedit's Tauri command manifest");
+}

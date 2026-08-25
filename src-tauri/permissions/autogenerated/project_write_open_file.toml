@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-write-open-file"
+description = "Enables the project_write_open_file command without any pre-configured scope."
+commands.allow = ["project_write_open_file"]
+
+[[permission]]
+identifier = "deny-project-write-open-file"
+description = "Denies the project_write_open_file command without any pre-configured scope."
+commands.deny = ["project_write_open_file"]

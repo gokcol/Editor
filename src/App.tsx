@@ -11,12 +11,13 @@ import { registerFoundryLanguages } from './engine/monacoLanguages';
 import { references } from './engine/references';
 import { readSnapshots, rememberSnapshot, type LocalSnapshot } from './engine/localHistory';
 import { formatJson, inferJsonSchema, inspectJson, minifyJson } from './engine/jsonTools';
-import { compactPath, documentOutline, findInSource, sourceFromAssistantReply } from './engine/workbench';
+import { compactPath, documentOutline, findInSource, fuzzyScore, sourceFromAssistantReply, sourceReviewDiff, textStatistics, upsertMarkdownTableOfContents } from './engine/workbench';
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
-import type { AppSettings, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
+import type { DesktopApi } from './desktop/contract';
+import type { AppSettings, CharacterEncoding, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, ProjectTask, ProjectTaskResult, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
-// into `file:///vs` inside a packaged Electron worker, which makes Monaco fall
+// into `file:///vs` inside a packaged desktop worker, which makes Monaco fall
 // back to the UI thread and can freeze a busy editor.
 const monacoVsUrl = new URL('./vs/', window.location.href).toString().replace(/\/$/, '');
 loader.config({ paths: { vs: monacoVsUrl } });
@@ -64,6 +65,20 @@ const DEFAULT_ENABLED_SOURCE_TYPES = [...SOURCE_TYPES];
 // remain available as empty files from New Source.
 const TEMPLATE_SOURCE_TYPES: SourceType[] = ['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'yaml', 'json', 'html'];
 const SOURCE_PREVIEW_TYPES = new Set<SourceType>(['text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'css']);
+const PROJECT_TASKS_FILENAME = 'yedit.tasks.json';
+const PROJECT_TASKS_TEMPLATE = `{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "test",
+      "label": "Run tests",
+      "kind": "test",
+      "command": "python3",
+      "args": ["-m", "pytest"]
+    }
+  ]
+}
+`;
 
 // The package manifest is bundled with the renderer at build time. Keep a
 // guarded display value so a malformed development manifest cannot make the
@@ -92,11 +107,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   editorBackgroundPattern: 'none',
   referenceFontSize: 10,
   autoSave: true,
+  safeMode: false,
   formatOnSave: false,
   previewAutoRender: true,
   editorWordWrap: true,
-  editorMinimap: true,
+  editorMinimap: false,
   editorTabSize: 2,
+  navigationPlacement: 'bottom',
   explorerOpen: true,
   previewOpen: true,
   referenceOpen: true,
@@ -112,6 +129,20 @@ const EDITOR_BACKGROUND_PATTERNS: Array<{ value: AppSettings['editorBackgroundPa
   { value: 'dots', label: 'Dots', description: 'Subtle dot field' },
   { value: 'lines', label: 'Lines', description: 'Writing lines' },
 ];
+const CHARACTER_ENCODINGS: Array<{ value: CharacterEncoding; label: string }> = [
+  { value: 'auto', label: 'Auto detect (UTF-8 / BOM / Windows-1252)' },
+  { value: 'utf-8', label: 'UTF-8' }, { value: 'utf-8-bom', label: 'UTF-8 with BOM' },
+  { value: 'utf-16le', label: 'UTF-16 Little Endian' }, { value: 'utf-16le-bom', label: 'UTF-16 Little Endian with BOM' }, { value: 'utf-16be', label: 'UTF-16 Big Endian' }, { value: 'utf-16be-bom', label: 'UTF-16 Big Endian with BOM' },
+  { value: 'windows-1252', label: 'Western: Windows-1252 / ISO-8859-1' }, { value: 'windows-1250', label: 'Central European: Windows-1250' }, { value: 'windows-1251', label: 'Cyrillic: Windows-1251' }, { value: 'windows-1253', label: 'Greek: Windows-1253' }, { value: 'windows-1254', label: 'Turkish: Windows-1254 / ISO-8859-9' }, { value: 'windows-1255', label: 'Hebrew: Windows-1255' }, { value: 'windows-1256', label: 'Arabic: Windows-1256' }, { value: 'windows-1257', label: 'Baltic: Windows-1257' }, { value: 'windows-1258', label: 'Vietnamese: Windows-1258' }, { value: 'windows-874', label: 'Thai: Windows-874 / ISO-8859-11' },
+  ...[2, 3, 4, 5, 6, 7, 8, 10, 13, 14, 15, 16].map((number) => ({ value: `iso-8859-${number}`, label: `ISO-8859-${number}` })),
+  { value: 'iso-8859-8-i', label: 'ISO-8859-8-I (Hebrew visual)' },
+  { value: 'macintosh', label: 'Mac Roman' }, { value: 'x-mac-cyrillic', label: 'Mac Cyrillic' }, { value: 'koi8-r', label: 'KOI8-R' }, { value: 'koi8-u', label: 'KOI8-U' }, { value: 'ibm866', label: 'IBM866 / DOS Cyrillic' },
+  { value: 'shift_jis', label: 'Shift_JIS (Japanese)' }, { value: 'euc-jp', label: 'EUC-JP (Japanese)' }, { value: 'iso-2022-jp', label: 'ISO-2022-JP (Japanese)' }, { value: 'euc-kr', label: 'EUC-KR (Korean)' }, { value: 'big5', label: 'Big5 (Traditional Chinese)' }, { value: 'gbk', label: 'GBK (Simplified Chinese)' }, { value: 'gb18030', label: 'GB18030 (Chinese)' },
+];
+
+function encodingLabel(value?: CharacterEncoding) {
+  return CHARACTER_ENCODINGS.find((entry) => entry.value === value)?.label ?? value ?? 'UTF-8';
+}
 const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|markdown|txt|ya?ml|json|(?:c|m)?js|jsx|(?:c|m)?ts|tsx|pyw?|f(?:or|90|95|03|08|18)?|sql|ddl|x?html?|css)$/i;
 type PanelLayout = Pick<AppSettings, 'explorerOpen' | 'previewOpen' | 'referenceOpen' | 'explorerWidth' | 'inspectorWidth' | 'previewSplit'>;
 type PanelLayoutKey = keyof PanelLayout;
@@ -122,6 +153,10 @@ const WORKBENCH_MIN_EXPLORER_WIDTH = 180;
 const WORKBENCH_MAX_EXPLORER_WIDTH = 480;
 const WORKBENCH_MIN_INSPECTOR_WIDTH = 280;
 const WORKBENCH_MAX_INSPECTOR_WIDTH = 760;
+// The native traffic-light controls float above the transparent title bar.
+// Keep their hit targets unobstructed, but anchor the brand to the real left
+// edge rather than reserving a broad faux title column.
+const MACOS_TITLEBAR_LEADING_INSET = 18;
 const DEFAULT_PANEL_LAYOUT: PanelLayout = {
   explorerOpen: DEFAULT_SETTINGS.explorerOpen,
   previewOpen: DEFAULT_SETTINGS.previewOpen,
@@ -177,13 +212,14 @@ function editorCanvasColor(color: string, appearance: PreviewAppearance) {
 function workbenchColumns(
   viewportWidth: number,
   interfaceScale: number,
+  navigationRailWidth: number,
   explorerVisible: boolean,
   inspectorVisible: boolean,
   explorerPreference: number,
   inspectorPreference: number,
 ) {
   const logicalWidth = Math.max(0, Math.floor(viewportWidth / Math.max(interfaceScale, 0.01)));
-  const sideBudget = Math.max(0, logicalWidth - WORKBENCH_RAIL_WIDTH - WORKBENCH_MIN_EDITOR_WIDTH);
+  const sideBudget = Math.max(0, logicalWidth - navigationRailWidth - WORKBENCH_MIN_EDITOR_WIDTH);
   let explorerWidth = explorerVisible
     ? clamp(explorerPreference, WORKBENCH_MIN_EXPLORER_WIDTH, WORKBENCH_MAX_EXPLORER_WIDTH)
     : 0;
@@ -235,6 +271,7 @@ function makeBlankDocument(type: SourceType = 'text'): DocumentModel {
     name: `untitled.${SOURCE_META[type].extension}`,
     sourceType: type,
     value: '',
+    encoding: 'utf-8',
     dirty: false,
     revision: 0,
   };
@@ -247,6 +284,7 @@ function makeStarterDocument(type: SourceType): DocumentModel {
     name: sample.name,
     sourceType: type,
     value: sample.source,
+    encoding: 'utf-8',
     dirty: false,
     revision: 0,
   };
@@ -411,6 +449,12 @@ type CursorLocation = {
   line: number;
   column: number;
 };
+type EditorRangeSnapshot = {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+};
 const EMPTY_PYTHON_TASK: PythonTaskState = {
   status: 'idle',
   stdout: '',
@@ -428,6 +472,29 @@ const TEX_PDF_ENGINE_LABEL: Record<TexPdfEngine, string> = Object.fromEntries(
 
 function texPdfEngineLabel(engine: TexPdfEngine) {
   return TEX_PDF_ENGINE_LABEL[engine];
+}
+
+function projectTaskForIntent(tasks: ProjectTask[], intent: 'build' | 'preview') {
+  const expression = intent === 'build'
+    ? /\b(?:build|compile|make)\b/i
+    : /\b(?:preview|view|watch|open)\b/i;
+  return tasks.find((task) => expression.test(`${task.id} ${task.label} ${task.kind || ''} ${task.description}`));
+}
+
+function projectTaskTooltip(task: ProjectTask) {
+  const source = task.command || task.script;
+  return `${task.description}${source ? ` · ${source}` : ''}`;
+}
+
+function projectTaskConsoleText(result: ProjectTaskResult) {
+  const location = result.outputRelativePath || result.outputPath;
+  const parts = [
+    `${result.ok ? '✓' : '✕'} ${result.label}`,
+    result.output?.trim(),
+    location ? `Output: ${location}` : '',
+    result.error?.trim(),
+  ].filter((part): part is string => Boolean(part));
+  return parts.join('\n\n') || (result.ok ? `${result.label} completed.` : `${result.label} did not finish.`);
 }
 
 function pythonTaskStatusLabel(task: PythonTaskState) {
@@ -453,13 +520,18 @@ function pythonTaskConsoleText(task: PythonTaskState) {
 
 type ProjectSearchHit = { node: FileNode; line: number; column: number; excerpt: string };
 type GitFileStatus = { path: string; index?: string; workingTree?: string; status?: string };
-type GitInfo = { branch?: string; files?: GitFileStatus[]; commits?: { hash: string; subject: string; author?: string; date?: string }[]; available?: boolean; message?: string };
+type GitInfo = { branch?: string; branches?: string[]; files?: GitFileStatus[]; commits?: { hash: string; subject: string; author?: string; date?: string }[]; available?: boolean; message?: string };
+type QuickOpenResult = { id: string; label: string; detail: string; kind: 'tab' | 'file' | 'symbol' | 'line'; run: () => void };
 
 const LEGACY_RECENT_PROJECTS_KEY = 'diagram-foundry:recent-projects';
 const LEGACY_RECENT_PROJECTS_MIGRATION_KEY = 'yedit:recents-native-migration-v1';
 const PALETTE_HISTORY_KEY = 'diagram-foundry:palette-history';
 const SHORTCUTS_KEY = 'diagram-foundry:shortcuts';
+const SCRATCH_SESSION_KEY = 'yedit:scratch-session-v1';
+const MAX_SCRATCH_SESSION_DOCUMENTS = 12;
+const MAX_SCRATCH_SESSION_CHARACTERS = 1_500_000;
 const SHORTCUT_ACTIONS = [
+  ['quickOpen', 'Quick Open'],
   ['palette', 'Command palette'],
   ['prompt', 'Prompt Studio'],
   ['search', 'Find in project'],
@@ -470,6 +542,7 @@ const SHORTCUT_ACTIONS = [
 type ShortcutActionId = (typeof SHORTCUT_ACTIONS)[number][0];
 type ShortcutBindings = Record<ShortcutActionId, string>;
 const DEFAULT_SHORTCUTS: ShortcutBindings = {
+  quickOpen: 'Meta+P',
   palette: 'Meta+Shift+P',
   prompt: 'Meta+Shift+L',
   search: 'Meta+Shift+F',
@@ -498,6 +571,69 @@ function legacyRecentProjects() {
   }
 }
 
+function restoredScratchSession(fallback: DocumentModel): { documents: DocumentModel[]; activeId: string } {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(SCRATCH_SESSION_KEY) || '{}');
+    const candidate = parsed && typeof parsed === 'object' ? parsed as { documents?: unknown; activeId?: unknown } : {};
+    if (!Array.isArray(candidate.documents)) return { documents: [fallback], activeId: fallback.id };
+    const documents = candidate.documents
+      .filter((value): value is {
+        id: string;
+        name: string;
+        sourceType: SourceType;
+        value: string;
+        revision?: unknown;
+        pinned?: unknown;
+      } => (
+        Boolean(value)
+        && typeof value === 'object'
+        && typeof (value as Record<string, unknown>).id === 'string'
+        && typeof (value as Record<string, unknown>).name === 'string'
+        && typeof (value as Record<string, unknown>).value === 'string'
+        && typeof (value as Record<string, unknown>).sourceType === 'string'
+        && SOURCE_TYPES.includes((value as Record<string, unknown>).sourceType as SourceType)
+      ))
+      .slice(0, MAX_SCRATCH_SESSION_DOCUMENTS)
+      .map((value) => ({
+        id: value.id,
+        name: value.name,
+        sourceType: value.sourceType as SourceType,
+        value: value.value.slice(0, MAX_SCRATCH_SESSION_CHARACTERS),
+        dirty: true,
+        revision: typeof value.revision === 'number' && Number.isFinite(value.revision) ? Math.max(0, Math.round(value.revision)) : 0,
+        pinned: value.pinned === true,
+      }));
+    if (!documents.length) return { documents: [fallback], activeId: fallback.id };
+    const requestedActive = typeof candidate.activeId === 'string' ? candidate.activeId : '';
+    return { documents, activeId: documents.some((document) => document.id === requestedActive) ? requestedActive : documents[0].id };
+  } catch {
+    return { documents: [fallback], activeId: fallback.id };
+  }
+}
+
+function rememberScratchSession(documents: DocumentModel[], activeId: string) {
+  try {
+    let usedCharacters = 0;
+    const scratch = documents
+      .filter((document) => !document.relativePath && !document.fileHandle)
+      .slice(0, MAX_SCRATCH_SESSION_DOCUMENTS)
+      .filter((document) => {
+        usedCharacters += document.value.length;
+        return usedCharacters <= MAX_SCRATCH_SESSION_CHARACTERS;
+      })
+      .map(({ id, name, sourceType, value, revision, pinned }) => ({ id, name, sourceType, value, revision, pinned: pinned === true }));
+    if (!scratch.length) {
+      window.localStorage.removeItem(SCRATCH_SESSION_KEY);
+      return;
+    }
+    const restoredActive = scratch.some((document) => document.id === activeId) ? activeId : scratch[0].id;
+    window.localStorage.setItem(SCRATCH_SESSION_KEY, JSON.stringify({ documents: scratch, activeId: restoredActive }));
+  } catch {
+    // Session recovery is an enhancement; a full or blocked local store must
+    // never interrupt editing or saving the actual source files.
+  }
+}
+
 function sourceFilenameForDrop(name: string, type: SourceType) {
   const safe = name.trim() || `untitled.${SOURCE_META[type].extension}`;
   return SOURCE_FILENAME_PATTERN.test(safe) ? safe : `${safe}.${SOURCE_META[type].extension}`;
@@ -518,11 +654,15 @@ function shortcutLabel(shortcut: string) {
   return shortcut.replaceAll('Meta', '⌘').replaceAll('Ctrl', '⌃').replaceAll('Alt', '⌥').replaceAll('Shift', '⇧').replaceAll('+', '');
 }
 
-function App() {
+function App({ desktop }: { desktop: DesktopApi }) {
   const initialDocument = useMemo(() => makeBlankDocument(), []);
+  const initialScratchSession = useMemo(() => restoredScratchSession(initialDocument), [initialDocument]);
   const [project, setProject] = useState<Project | null>(null);
-  const [documents, setDocuments] = useState<DocumentModel[]>([initialDocument]);
-  const [activeId, setActiveId] = useState(initialDocument.id);
+  const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
+  const [isProjectTasksLoading, setIsProjectTasksLoading] = useState(false);
+  const [projectTaskRefreshVersion, setProjectTaskRefreshVersion] = useState(0);
+  const [documents, setDocuments] = useState<DocumentModel[]>(initialScratchSession.documents);
+  const [activeId, setActiveId] = useState(initialScratchSession.activeId);
   const [preview, setPreview] = useState<PreviewState>(EMPTY_PREVIEW);
   const [latexPreviewMode, setLatexPreviewMode] = useState<LatexRenderMode>('pdf');
   const [texPdfEngine, setTexPdfEngine] = useState<TexPdfEngine>('pdflatex');
@@ -531,6 +671,9 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [encodingOpen, setEncodingOpen] = useState(false);
+  const [openingEncoding, setOpeningEncoding] = useState<CharacterEncoding>('auto');
+  const [encodingChoice, setEncodingChoice] = useState<CharacterEncoding>('utf-8');
   const [newSourceOpen, setNewSourceOpen] = useState(false);
   const [newSourceName, setNewSourceName] = useState('untitled.txt');
   const [newSourceType, setNewSourceType] = useState<SourceType>('text');
@@ -560,6 +703,15 @@ function App() {
   const [exportScale, setExportScale] = useState<1 | 2 | 4>(2);
   const [promptReply, setPromptReply] = useState('');
   const [promptApplyMode, setPromptApplyMode] = useState<'replace' | 'insert' | 'new'>('replace');
+  const [pendingAiReview, setPendingAiReview] = useState<{
+    documentId: string;
+    documentName: string;
+    sourceType: SourceType;
+    mode: 'replace' | 'insert' | 'new';
+    before: string;
+    source: string;
+    range?: EditorRangeSnapshot;
+  } | null>(null);
   const [selectionSource, setSelectionSource] = useState('');
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -568,11 +720,15 @@ function App() {
   const [projectSearchQuery, setProjectSearchQuery] = useState('');
   const [projectSearchHits, setProjectSearchHits] = useState<ProjectSearchHit[]>([]);
   const [isProjectSearching, setIsProjectSearching] = useState(false);
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
   const [templateGalleryOpen, setTemplateGalleryOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [isGitLoading, setIsGitLoading] = useState(false);
+  const [isGitMutating, setIsGitMutating] = useState(false);
+  const [gitCommitMessage, setGitCommitMessage] = useState('');
   const [taskConsoleOpen, setTaskConsoleOpen] = useState(false);
   const [taskOutput, setTaskOutput] = useState('No local task has run in this session.');
   const [isTaskRunning, setIsTaskRunning] = useState(false);
@@ -596,6 +752,13 @@ function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [cursorLocation, setCursorLocation] = useState<CursorLocation>({ line: 1, column: 1 });
 
+  const changeEditorFontSize = useCallback((delta: number) => {
+    setSettings((current) => ({
+      ...current,
+      editorFontSize: clamp(current.editorFontSize + delta, 11, 24),
+    }));
+  }, []);
+
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const appBodyRef = useRef<HTMLElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
@@ -610,8 +773,8 @@ function App() {
 
   useEffect(() => {
     // Monaco rejects an internal cancellation promise while disposing a model
-    // during tab/source switches. It is expected, but Electron otherwise
-    // surfaces it as an uncaught renderer error in the packaged app.
+    // during tab/source switches. It is expected, but the packaged app can
+    // otherwise surface it as an uncaught renderer error.
     const ignoreMonacoCancellation = (event: PromiseRejectionEvent) => {
       const reason = event.reason;
       const message = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
@@ -624,16 +787,76 @@ function App() {
   const activeDocument = documents.find((document) => document.id === activeId) ?? documents[0];
   const effectiveAppearance: PreviewAppearance = settings.appearance === 'system' ? systemAppearance : settings.appearance;
   const interfaceScale = settings.uiScale / 100;
+  // The native store validates this setting; keep the browser preview equally
+  // resilient to an old or hand-edited localStorage value.
+  const navigationPlacement: AppSettings['navigationPlacement'] = settings.navigationPlacement === 'left' ? 'left' : 'bottom';
+  const navigationRailVisible = !zenMode && navigationPlacement === 'left';
+  const navigationRailWidth = navigationRailVisible ? WORKBENCH_RAIL_WIDTH : 0;
   const explorerVisible = !zenMode && panelLayout.explorerOpen;
   const inspectorOpen = !zenMode && (panelLayout.previewOpen || panelLayout.referenceOpen);
   const renderedWorkbenchColumns = useMemo(() => workbenchColumns(
     viewportWidth,
     interfaceScale,
+    navigationRailWidth,
     explorerVisible,
     inspectorOpen,
     panelLayout.explorerWidth,
     panelLayout.inspectorWidth,
-  ), [explorerVisible, inspectorOpen, interfaceScale, panelLayout.explorerWidth, panelLayout.inspectorWidth, viewportWidth]);
+  ), [explorerVisible, inspectorOpen, interfaceScale, navigationRailWidth, panelLayout.explorerWidth, panelLayout.inspectorWidth, viewportWidth]);
+
+  // Project tasks are discovered by the trusted native backend. While that
+  // lookup is pending, hold LaTeX auto-preview for project files so a chapter
+  // is not mistakenly compiled as a standalone fragment before its book
+  // pipeline becomes available.
+  useEffect(() => {
+    let disposed = false;
+    if (!project) {
+      setProjectTasks([]);
+      setIsProjectTasksLoading(false);
+      return () => { disposed = true; };
+    }
+
+    setProjectTasks([]);
+    setIsProjectTasksLoading(true);
+    void desktop.project.listTasks(project.root)
+      .then((tasks) => {
+        if (!disposed) setProjectTasks(tasks);
+      })
+      .catch(() => {
+        // A normal source folder need not have any project automation. Keep
+        // the existing one-file build workflow available in that case.
+        if (!disposed) setProjectTasks([]);
+      })
+      .finally(() => {
+        if (!disposed) setIsProjectTasksLoading(false);
+      });
+
+    return () => { disposed = true; };
+  }, [desktop, project?.root, projectTaskRefreshVersion]);
+
+  const activeProjectTasks = useMemo(
+    () => project && activeDocument?.relativePath ? projectTasks : [],
+    [activeDocument?.relativePath, project, projectTasks],
+  );
+  const availableProjectTasks = project ? projectTasks : [];
+  const projectBuildTask = useMemo(
+    () => projectTaskForIntent(availableProjectTasks, 'build') ?? availableProjectTasks[0],
+    [availableProjectTasks],
+  );
+  const projectPreviewTask = useMemo(
+    () => projectTaskForIntent(availableProjectTasks, 'preview'),
+    [availableProjectTasks],
+  );
+  const projectToolbarTasks = useMemo(() => {
+    const preferred = [projectBuildTask, projectPreviewTask].filter((task): task is ProjectTask => Boolean(task));
+    return Array.from(new Map([...preferred, ...activeProjectTasks].map((task) => [task.id, task])).values()).slice(0, 2);
+  }, [activeProjectTasks, projectBuildTask, projectPreviewTask]);
+  const taskManagedLatex = Boolean(
+    project
+    && activeDocument?.relativePath
+    && activeDocument?.sourceType === 'latex'
+    && (isProjectTasksLoading || activeProjectTasks.length),
+  );
 
   const showToast = useCallback((text: string, tone: ToastTone = 'info') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -642,14 +865,14 @@ function App() {
   }, []);
 
   const refreshRecentProjects = useCallback(async () => {
-    const entries = await window.diagramApi.recents.list();
+    const entries = await desktop.recents.list();
     setRecentProjects(entries);
     return entries;
   }, []);
 
   const clearPanelResizeArtifacts = useCallback(() => {
     panelResizeCleanupRef.current?.();
-    // A pointer release that occurs outside Electron can leave an orphaned
+    // A pointer release that occurs outside the desktop webview can leave an orphaned
     // shield behind. It is intentionally invisible, so remove it explicitly
     // before opening any modal surface as a final safety net.
     document.querySelectorAll('.panel-resize-shield').forEach((element) => element.remove());
@@ -741,7 +964,7 @@ function App() {
     const pointerId = event.pointerId;
     const initial = { ...panelLayoutRef.current };
     // The Inspector can contain an embedded PDF/object or iframe. Once a drag
-    // crosses one of those surfaces, Electron can otherwise deliver the
+    // crosses one of those surfaces, the embedded view can otherwise deliver the
     // release to that nested surface instead of this renderer. A top-level
     // shield keeps the remainder of the drag in the same document.
     const dragShield = document.createElement('div');
@@ -765,6 +988,7 @@ function App() {
       const currentColumns = workbenchColumns(
         appRect.width,
         interfaceScale,
+        navigationRailWidth,
         initial.explorerOpen,
         initial.previewOpen || initial.referenceOpen,
         initial.explorerWidth,
@@ -773,17 +997,17 @@ function App() {
       if (target === 'explorer') {
         const maxWidth = Math.max(WORKBENCH_MIN_EXPLORER_WIDTH, Math.min(
           WORKBENCH_MAX_EXPLORER_WIDTH,
-          logicalWidth - WORKBENCH_RAIL_WIDTH - currentColumns.inspectorWidth - WORKBENCH_MIN_EDITOR_WIDTH,
+          logicalWidth - navigationRailWidth - currentColumns.inspectorWidth - WORKBENCH_MIN_EDITOR_WIDTH,
         ));
         next.explorerWidth = clamp(
-          ((moveEvent.clientX - appRect.left) / interfaceScale) - WORKBENCH_RAIL_WIDTH,
+          ((moveEvent.clientX - appRect.left) / interfaceScale) - navigationRailWidth,
           WORKBENCH_MIN_EXPLORER_WIDTH,
           maxWidth,
         );
       } else if (target === 'inspector') {
         const maxWidth = Math.max(WORKBENCH_MIN_INSPECTOR_WIDTH, Math.min(
           WORKBENCH_MAX_INSPECTOR_WIDTH,
-          logicalWidth - WORKBENCH_RAIL_WIDTH - currentColumns.explorerWidth - WORKBENCH_MIN_EDITOR_WIDTH,
+          logicalWidth - navigationRailWidth - currentColumns.explorerWidth - WORKBENCH_MIN_EDITOR_WIDTH,
         ));
         next.inspectorWidth = clamp(
           (appRect.right - moveEvent.clientX) / interfaceScale,
@@ -850,11 +1074,11 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
     handle.addEventListener('lostpointercapture', finish);
-  }, [clearPanelResizeArtifacts, commitPanelLayout, interfaceScale]);
+  }, [clearPanelResizeArtifacts, commitPanelLayout, interfaceScale, navigationRailWidth]);
 
   useEffect(() => {
     let mounted = true;
-    window.diagramApi.settings.load()
+    desktop.settings.load()
       .then((loaded) => { if (mounted) setSettings({ ...DEFAULT_SETTINGS, ...loaded }); })
       .catch(() => { if (mounted) showToast('Could not load settings; using defaults.', 'error'); })
       .finally(() => { if (mounted) setSettingsReady(true); });
@@ -870,7 +1094,7 @@ function App() {
 
   useEffect(() => {
     if (!settingsReady) return;
-    void window.diagramApi.settings.save(settings).catch(() => showToast('Could not save settings.', 'error'));
+    void desktop.settings.save(settings).catch(() => showToast('Could not save settings.', 'error'));
   }, [settings, settingsReady, showToast]);
 
   useEffect(() => {
@@ -900,14 +1124,14 @@ function App() {
     let mounted = true;
     // Older renderer builds in this profile kept folder history in local
     // storage. Import it once into the native, durable list; modern entries
-    // are written by Electron so standalone files can be reopened safely after
+    // are written by the native app so standalone files can be reopened safely after
     // a relaunch too. The marker prevents a cleared native list from being
     // repopulated from this legacy cache on the next launch.
     let shouldMigrateLegacy = true;
     try { shouldMigrateLegacy = window.localStorage.getItem(LEGACY_RECENT_PROJECTS_MIGRATION_KEY) !== 'done'; } catch { /* no readable legacy storage */ }
     const loadRecents = shouldMigrateLegacy
-      ? window.diagramApi.recents.migrateLegacyProjects(legacyRecentProjects())
-      : window.diagramApi.recents.list();
+      ? desktop.recents.migrateLegacyProjects(legacyRecentProjects())
+      : desktop.recents.list();
     void loadRecents
       .then((entries) => {
         if (shouldMigrateLegacy) {
@@ -919,7 +1143,7 @@ function App() {
         if (mounted) setRecentProjects(entries);
       })
       .catch(() => {
-        void window.diagramApi.recents.list()
+        void desktop.recents.list()
           .then((entries) => { if (mounted) setRecentProjects(entries); })
           .catch(() => { if (mounted) setRecentProjects([]); });
       });
@@ -933,6 +1157,10 @@ function App() {
   useEffect(() => {
     try { window.localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(shortcutBindings)); } catch { /* ignored */ }
   }, [shortcutBindings]);
+
+  useEffect(() => {
+    rememberScratchSession(documents, activeId);
+  }, [activeId, documents]);
 
   useEffect(() => {
     if (!activeDocument) return;
@@ -977,6 +1205,10 @@ function App() {
     engine: TexPdfEngine = texPdfEngine,
   ) => {
     const isMetafont = document.sourceType === 'metafont';
+    if (settings.safeMode && (document.sourceType === 'tikz' || document.sourceType === 'latex' || isMetafont)) {
+      setPreview({ status: 'idle', revision: document.revision, message: 'Safe Mode blocks local compiler execution for this project.' });
+      return;
+    }
     // MetaFont invokes several native tools. A second click while a proof is
     // running must not launch another pipeline or invalidate the current one.
     if (isMetafont && metafontRenderInFlightRef.current) return;
@@ -984,7 +1216,7 @@ function App() {
     setPreview({ status: 'rendering', revision: document.revision, message: 'Building preview…' });
     try {
       if (document.sourceType === 'tikz') {
-        const result = await window.diagramApi.render.tikz(document.value, document.name, engine);
+        const result = await desktop.render.tikz(document.value, document.name, engine);
         if (token !== renderTokenRef.current) return;
         if (!result.ok) {
           setPreview({ status: 'error', revision: document.revision, message: result.error });
@@ -997,7 +1229,7 @@ function App() {
       if (document.sourceType === 'latex') {
         // DVI is intentionally kept on classic `latex`; a selected PDF engine
         // applies only to PDF preview/build paths.
-        const result = await window.diagramApi.render.latex(
+        const result = await desktop.render.latex(
           document.value,
           document.name,
           latexMode,
@@ -1023,7 +1255,7 @@ function App() {
       if (isMetafont) {
         metafontRenderInFlightRef.current = true;
         try {
-          const result = await window.diagramApi.render.metafont(document.value, document.name);
+          const result = await desktop.render.metafont(document.value, document.name);
           if (token !== renderTokenRef.current) return;
           if (!result.ok) {
             setPreview({ status: 'error', revision: document.revision, message: result.error });
@@ -1065,7 +1297,7 @@ function App() {
         if (token !== renderTokenRef.current) return;
         // The preview viewport uses a fully sandboxed iframe. HTML stays
         // useful as a visual check without granting its scripts any access to
-        // Electron, the local project, or the network-capable page context.
+        // native project, or the network-capable page context.
         setPreview({ status: 'ready', revision: document.revision, kind: 'html', content: document.value || sourcePreviewDocument('', 'HTML', effectiveAppearance) });
         return;
       }
@@ -1090,10 +1322,14 @@ function App() {
       if (token !== renderTokenRef.current) return;
       setPreview({ status: 'error', revision: document.revision, message: error instanceof Error ? error.message : String(error) });
     }
-  }, [effectiveAppearance, texPdfEngine]);
+  }, [effectiveAppearance, settings.safeMode, texPdfEngine]);
 
   useEffect(() => {
-    if (!activeDocument || !settings.previewAutoRender) return undefined;
+    if (!activeDocument || !settings.previewAutoRender || settings.safeMode) return undefined;
+    // A project with an explicit pipeline (for example a multi-file book)
+    // must not automatically compile the current chapter as an isolated TeX
+    // fragment. Its task buttons remain available for the full document.
+    if (taskManagedLatex) return undefined;
     // MetaFont proofing launches mf-nowin → gftodvi → dvisvgm. It stays manual
     // so normal typing cannot accumulate native compiler jobs in the background.
     if (activeDocument.sourceType === 'metafont') return undefined;
@@ -1101,7 +1337,7 @@ function App() {
     const mode: LatexRenderMode = activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf';
     const timer = window.setTimeout(() => renderDocument(activeDocument, mode), delay);
     return () => window.clearTimeout(timer);
-  }, [activeDocument, latexPreviewMode, renderDocument, settings.previewAutoRender]);
+  }, [activeDocument, latexPreviewMode, renderDocument, settings.previewAutoRender, settings.safeMode, taskManagedLatex]);
 
   const addScratchpadDocument = useCallback((seed: DocumentModel) => {
     const baseName = filenameWithoutExtension(seed.name);
@@ -1159,12 +1395,13 @@ function App() {
       return;
     }
     const first = sourceFiles[0];
-    const source = await window.diagramApi.project.readFile(openedProject.root, first.relativePath);
+    const source = await desktop.project.readFile(openedProject.root, first.relativePath, openingEncoding);
     const document: DocumentModel = {
       id: `file-${crypto.randomUUID()}`,
       name: first.name,
       sourceType: first.sourceType ?? sourceTypeForName(first.name),
-      value: source,
+      value: source.content,
+      encoding: source.encoding,
       relativePath: first.relativePath,
       dirty: false,
       revision: 0,
@@ -1173,12 +1410,12 @@ function App() {
     setActiveId(document.id);
     setPreview(EMPTY_PREVIEW);
     showToast(`Opened ${openedProject.name}.`, 'success');
-  }, [defaultCreationSourceType, refreshRecentProjects, showToast, syncProjectTree]);
+  }, [defaultCreationSourceType, openingEncoding, refreshRecentProjects, showToast, syncProjectTree]);
 
   const openProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Opening a project will close the current scratchpad tabs. Continue without saving those edits?')) return;
     try {
-      const opened = await window.diagramApi.project.open();
+      const opened = await desktop.project.open();
       if ('canceled' in opened) return;
       await hydrateProject(opened);
     } catch (error) {
@@ -1200,6 +1437,7 @@ function App() {
       name: opened.name,
       sourceType: opened.sourceType,
       value: opened.content,
+      encoding: opened.encoding,
       ...(isProjectFile ? { relativePath: opened.relativePath } : { fileHandle: opened.fileHandle }),
       dirty: false,
       revision: 0,
@@ -1219,7 +1457,7 @@ function App() {
 
   const openStandaloneFile = useCallback(async () => {
     try {
-      const opened = await window.diagramApi.project.openFile(project?.root);
+      const opened = await desktop.project.openFile(project?.root, openingEncoding);
       if ('canceled' in opened) return;
       activateOpenedSource(opened);
       void refreshRecentProjects();
@@ -1227,14 +1465,54 @@ function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not open that source file.', 'error');
     }
-  }, [activateOpenedSource, project?.root, refreshRecentProjects, showToast]);
+  }, [activateOpenedSource, openingEncoding, project?.root, refreshRecentProjects, showToast]);
+
+  const openEncodingDialog = useCallback(() => {
+    setEncodingChoice(activeDocument?.encoding ?? 'utf-8');
+    setEncodingOpen(true);
+  }, [activeDocument?.encoding]);
+
+  const setActiveDocumentEncoding = useCallback(() => {
+    if (!activeDocument) return;
+    const nextEncoding = encodingChoice === 'auto' ? 'utf-8' : encodingChoice;
+    setDocuments((current) => current.map((document) => document.id === activeDocument.id
+      ? { ...document, encoding: nextEncoding }
+      : document));
+    setEncodingOpen(false);
+    showToast(`${activeDocument.name} will save as ${encodingLabel(nextEncoding)}.`, 'success');
+  }, [activeDocument, encodingChoice, showToast]);
+
+  const reopenActiveWithEncoding = useCallback(async () => {
+    if (!activeDocument) return;
+    if (!activeDocument.relativePath && !activeDocument.fileHandle) {
+      setActiveDocumentEncoding();
+      return;
+    }
+    if (activeDocument.dirty && !window.confirm(`Reopen “${activeDocument.name}” using ${encodingLabel(encodingChoice)}? Unsaved changes will be lost.`)) return;
+    try {
+      const source = project && activeDocument.relativePath
+        ? await desktop.project.readFile(project.root, activeDocument.relativePath, encodingChoice)
+        : activeDocument.fileHandle
+          ? await desktop.project.readOpenedFile(activeDocument.fileHandle, encodingChoice)
+          : undefined;
+      if (!source) return;
+      setDocuments((current) => current.map((document) => document.id === activeDocument.id
+        ? { ...document, value: source.content, encoding: source.encoding, dirty: false, revision: document.revision + 1 }
+        : document));
+      setEncodingOpen(false);
+      setPreview(EMPTY_PREVIEW);
+      showToast(`Reopened ${activeDocument.name} as ${encodingLabel(source.encoding)}.`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not reopen this file with that encoding.', 'error');
+    }
+  }, [activeDocument, encodingChoice, project, setActiveDocumentEncoding, showToast]);
 
   const newProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Creating a new project will close the current scratchpad tabs. Continue without saving those edits?')) return;
     const name = window.prompt('Name your new diagram project:', 'Diagram Project');
     if (!name?.trim()) return;
     try {
-      const created = await window.diagramApi.project.create(name.trim());
+      const created = await desktop.project.create(name.trim());
       if ('canceled' in created) return;
       await hydrateProject(created);
     } catch (error) {
@@ -1243,9 +1521,12 @@ function App() {
   }, [documents, hydrateProject, showToast]);
 
   const refreshProject = useCallback(async () => {
-    if (!project) return;
+    if (!project) {
+      showToast('Open a folder before refreshing its project files.', 'info');
+      return;
+    }
     try {
-      const refreshed = await window.diagramApi.project.refresh(project.root);
+      const refreshed = await desktop.project.refresh(project.root);
       syncProjectTree(refreshed);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not refresh files.', 'error');
@@ -1255,7 +1536,7 @@ function App() {
   const openRecentEntry = useCallback(async (recent: RecentEntry) => {
     if (recent.kind === 'project' && documents.some((document) => document.dirty) && !window.confirm('Opening a recent folder will close the current scratchpad tabs. Continue without saving those edits?')) return false;
     try {
-      const opened = await window.diagramApi.recents.open(recent.id, project?.root);
+      const opened = await desktop.recents.open(recent.id, project?.root, openingEncoding);
       if (opened.kind === 'project') await hydrateProject(opened.project);
       else {
         activateOpenedSource(opened.file);
@@ -1267,7 +1548,7 @@ function App() {
       const message = error instanceof Error ? error.message : `Could not reopen ${recent.name}.`;
       if (/(?:ENOENT|no such file|no longer available|unavailable)/i.test(message)) {
         try {
-          const entries = await window.diagramApi.recents.remove(recent.id);
+          const entries = await desktop.recents.remove(recent.id);
           setRecentProjects(entries);
         } catch { /* The original unavailable-item error is still useful. */ }
         showToast(`${recent.name} is no longer available and was removed from Recents.`, 'error');
@@ -1276,7 +1557,7 @@ function App() {
       showToast(message, 'error');
       return false;
     }
-  }, [activateOpenedSource, documents, hydrateProject, project?.root, refreshRecentProjects, showToast]);
+  }, [activateOpenedSource, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, showToast]);
 
   const openLatestRecentEntry = useCallback(() => {
     const latest = recentProjects[0];
@@ -1285,7 +1566,7 @@ function App() {
 
   const removeRecentEntry = useCallback(async (recent: RecentEntry) => {
     try {
-      const entries = await window.diagramApi.recents.remove(recent.id);
+      const entries = await desktop.recents.remove(recent.id);
       setRecentProjects(entries);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not remove that recent item.', 'error');
@@ -1295,7 +1576,7 @@ function App() {
   const clearRecentEntries = useCallback(async () => {
     if (!recentProjects.length || !window.confirm('Clear all remembered folders and files from Recents?')) return;
     try {
-      const entries = await window.diagramApi.recents.clear();
+      const entries = await desktop.recents.clear();
       setRecentProjects(entries);
       showToast('Recent items cleared.', 'success');
     } catch (error) {
@@ -1313,7 +1594,7 @@ function App() {
     try {
       localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
       localWritePathsRef.current.set(destination, Date.now());
-      const result = await window.diagramApi.project.renameFile(project.root, activeDocument.relativePath, destination);
+      const result = await desktop.project.renameFile(project.root, activeDocument.relativePath, destination);
       setDocuments((current) => current.map((document) => document.id === activeDocument.id ? {
         ...document,
         relativePath: result.relativePath,
@@ -1326,7 +1607,7 @@ function App() {
         for (const ancestor of ancestorFolderPaths(result.relativePath)) next.delete(ancestor);
         return next;
       });
-      syncProjectTree(await window.diagramApi.project.refresh(project.root));
+      syncProjectTree(await desktop.project.refresh(project.root));
       showToast('File renamed.', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not rename this file.', 'error');
@@ -1347,13 +1628,14 @@ function App() {
     if (!destination) return;
     try {
       localWritePathsRef.current.set(destination, Date.now());
-      const result = await window.diagramApi.project.duplicateFile(project.root, activeDocument.relativePath, destination);
-      const source = await window.diagramApi.project.readFile(project.root, result.relativePath);
+      const result = await desktop.project.duplicateFile(project.root, activeDocument.relativePath, destination);
+      const source = await desktop.project.readFile(project.root, result.relativePath, activeDocument.encoding);
       const copy: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
         name: result.relativePath.split('/').at(-1) || activeDocument.name,
         sourceType: sourceTypeForName(result.relativePath),
-        value: source,
+        value: source.content,
+        encoding: source.encoding,
         relativePath: result.relativePath,
         dirty: false,
         revision: 0,
@@ -1366,7 +1648,7 @@ function App() {
         for (const ancestor of ancestorFolderPaths(result.relativePath)) next.delete(ancestor);
         return next;
       });
-      syncProjectTree(await window.diagramApi.project.refresh(project.root));
+      syncProjectTree(await desktop.project.refresh(project.root));
       showToast('Duplicate opened in a new tab.', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not duplicate this file.', 'error');
@@ -1381,7 +1663,7 @@ function App() {
     if (!window.confirm(`Move “${activeDocument.relativePath}” out of this project permanently? This cannot be undone by Yedit.`)) return;
     try {
       localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-      await window.diagramApi.project.deleteFile(project.root, activeDocument.relativePath);
+      await desktop.project.deleteFile(project.root, activeDocument.relativePath);
       const index = documents.findIndex((document) => document.id === activeDocument.id);
       const next = documents.filter((document) => document.id !== activeDocument.id);
       if (!next.length) {
@@ -1392,7 +1674,7 @@ function App() {
         setDocuments(next);
         setActiveId(next[Math.max(0, index - 1)].id);
       }
-      syncProjectTree(await window.diagramApi.project.refresh(project.root));
+      syncProjectTree(await desktop.project.refresh(project.root));
       showToast('File deleted from the project.', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not delete this file.', 'error');
@@ -1402,7 +1684,7 @@ function App() {
   useEffect(() => {
     if (!project) return undefined;
     let watchId: string | undefined;
-    const unsubscribe = window.diagramApi.project.onChanged((update) => {
+    const unsubscribe = desktop.project.onChanged((update) => {
       if (update.root !== project.root || !update.changes?.length) return;
       const now = Date.now();
       const externalChanges = update.changes.filter((change) => {
@@ -1410,23 +1692,29 @@ function App() {
         return !localWriteAt || now - localWriteAt > 1800;
       });
       if (!externalChanges.length) return;
-      void window.diagramApi.project.refresh(project.root).then(syncProjectTree).catch(() => undefined);
+      if (externalChanges.some((change) => change.relativePath === PROJECT_TASKS_FILENAME)) {
+        setProjectTaskRefreshVersion((current) => current + 1);
+      }
+      void desktop.project.refresh(project.root).then(syncProjectTree).catch(() => undefined);
       const changedPaths = new Set(externalChanges.map((change) => change.relativePath));
       const reloadable = documentsRef.current.filter((document) => document.relativePath && changedPaths.has(document.relativePath) && !document.dirty);
       if (reloadable.length) {
-        void Promise.all(reloadable.map(async (document) => ({ id: document.id, value: await window.diagramApi.project.readFile(project.root, document.relativePath!) })))
+        void Promise.all(reloadable.map(async (document) => ({ id: document.id, source: await desktop.project.readFile(project.root, document.relativePath!, document.encoding) })))
           .then((reloaded) => {
-            const values = new Map(reloaded.map((entry) => [entry.id, entry.value]));
-            setDocuments((current) => current.map((document) => values.has(document.id) ? { ...document, value: values.get(document.id)!, revision: document.revision + 1, dirty: false } : document));
+            const values = new Map(reloaded.map((entry) => [entry.id, entry.source]));
+            setDocuments((current) => current.map((document) => {
+              const source = values.get(document.id);
+              return source ? { ...document, value: source.content, encoding: source.encoding, revision: document.revision + 1, dirty: false } : document;
+            }));
           })
           .catch(() => undefined);
       }
       showToast(`Project changed outside Yedit (${externalChanges.length} update${externalChanges.length === 1 ? '' : 's'}).`);
     });
-    void window.diagramApi.project.watch(project.root).then((watch) => { watchId = watch.watchId; }).catch(() => undefined);
+    void desktop.project.watch(project.root).then((watch) => { watchId = watch.watchId; }).catch(() => undefined);
     return () => {
       unsubscribe();
-      if (watchId) void window.diagramApi.project.unwatch(watchId);
+      if (watchId) void desktop.project.unwatch(watchId);
     };
   }, [project?.root, showToast, syncProjectTree]);
 
@@ -1445,12 +1733,13 @@ function App() {
       return;
     }
     try {
-      const source = await window.diagramApi.project.readFile(project.root, node.relativePath);
+      const source = await desktop.project.readFile(project.root, node.relativePath, openingEncoding);
       const document: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
         name: node.name,
         sourceType: node.sourceType ?? sourceTypeForName(node.name),
-        value: source,
+        value: source.content,
+        encoding: source.encoding,
         relativePath: node.relativePath,
         dirty: false,
         revision: 0,
@@ -1462,7 +1751,30 @@ function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not read that file.', 'error');
     }
-  }, [documents, project, showToast]);
+  }, [documents, openingEncoding, project, showToast]);
+
+  const createProjectTaskConfig = useCallback(async () => {
+    if (!project) {
+      showToast('Open a project before creating its task configuration.', 'info');
+      return;
+    }
+    const existing = flattenFiles(project.tree).find((node) => node.kind === 'file' && node.relativePath === PROJECT_TASKS_FILENAME);
+    if (existing) {
+      await openFile(existing);
+      showToast('Opened the existing yedit.tasks.json file.', 'info');
+      return;
+    }
+    try {
+      localWritePathsRef.current.set(PROJECT_TASKS_FILENAME, Date.now());
+      await desktop.project.createFile(project.root, PROJECT_TASKS_FILENAME, PROJECT_TASKS_TEMPLATE);
+      await openFile({ name: PROJECT_TASKS_FILENAME, relativePath: PROJECT_TASKS_FILENAME, kind: 'file', sourceType: 'json', supported: true });
+      syncProjectTree(await desktop.project.refresh(project.root));
+      setProjectTaskRefreshVersion((current) => current + 1);
+      showToast('Created yedit.tasks.json. Adjust the example task, then run it from Task Console.', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not create yedit.tasks.json.', 'error');
+    }
+  }, [openFile, project, showToast, syncProjectTree]);
 
   const searchProject = useCallback(async () => {
     const query = projectSearchQuery.trim();
@@ -1478,8 +1790,8 @@ function App() {
     try {
       const files = flattenFiles(project.tree).filter((node) => node.kind === 'file' && node.supported).slice(0, 160);
       const groups = await Promise.all(files.map(async (node) => {
-        const content = await window.diagramApi.project.readFile(project.root, node.relativePath);
-        return findInSource(content, query, 24).map((match) => ({ node, ...match }));
+        const source = await desktop.project.readFile(project.root, node.relativePath);
+        return findInSource(source.content, query, 24).map((match) => ({ node, ...match }));
       }));
       setProjectSearchHits(groups.flat().slice(0, 180));
     } catch (error) {
@@ -1561,12 +1873,13 @@ function App() {
       }
       const source = '';
       localWritePathsRef.current.set(name, Date.now());
-      await window.diagramApi.project.createFile(project.root, name, source);
+      await desktop.project.createFile(project.root, name, source);
       const document: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
         name: name.split('/').at(-1) ?? name,
         sourceType: type,
         value: source,
+        encoding: 'utf-8',
         relativePath: name,
         dirty: false,
         revision: 0,
@@ -1581,7 +1894,7 @@ function App() {
       });
       setPreview(EMPTY_PREVIEW);
       try {
-        syncProjectTree(await window.diagramApi.project.refresh(project.root));
+        syncProjectTree(await desktop.project.refresh(project.root));
       } catch {
         // The source is already open; the user can refresh the tree later if needed.
       }
@@ -1609,19 +1922,20 @@ function App() {
       }
       if (project && activeDocument.relativePath && !saveAs) {
         localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-        await window.diagramApi.project.writeFile(project.root, activeDocument.relativePath, content);
+        await desktop.project.writeFile(project.root, activeDocument.relativePath, content, activeDocument.encoding);
         setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, dirty: false } : document));
+        if (activeDocument.relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
         refreshProject();
         showToast(`${activeDocument.name} saved.`, 'success');
         return;
       }
       if (activeDocument.fileHandle && !saveAs) {
-        await window.diagramApi.project.writeOpenedFile(activeDocument.fileHandle, content);
+        await desktop.project.writeOpenedFile(activeDocument.fileHandle, content, activeDocument.encoding);
         setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, dirty: false } : document));
         showToast(`${activeDocument.name} saved.`, 'success');
         return;
       }
-      const result = await window.diagramApi.project.saveAs(activeDocument.name, content, activeDocument.sourceType, project?.root);
+      const result = await desktop.project.saveAs(activeDocument.name, content, activeDocument.sourceType, project?.root, activeDocument.encoding);
       if (result.canceled) return;
       const name = result.name ?? activeDocument.name;
       const savedRelativePath = result.relativePath;
@@ -1653,14 +1967,15 @@ function App() {
     const documentId = activeDocument.id;
     const relativePath = activeDocument.relativePath;
     const fileHandle = activeDocument.fileHandle;
+    const encoding = activeDocument.encoding;
     const source = activeDocument.value;
     const persist = project && relativePath
       ? () => {
         localWritePathsRef.current.set(relativePath, Date.now());
-        return window.diagramApi.project.writeFile(project.root, relativePath, source);
+        return desktop.project.writeFile(project.root, relativePath, source, encoding);
       }
       : fileHandle
-        ? () => window.diagramApi.project.writeOpenedFile(fileHandle, source)
+        ? () => desktop.project.writeOpenedFile(fileHandle, source, encoding)
         : undefined;
     if (!persist) return undefined;
     const timer = window.setTimeout(() => {
@@ -1668,15 +1983,20 @@ function App() {
       void persist()
         .then(() => {
           setDocuments((current) => current.map((document) => document.id === documentId && document.value === source ? { ...document, dirty: false } : document));
+          if (relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
         })
         .catch((error) => showToast(error instanceof Error ? error.message : 'Auto-save could not write this file.', 'error'))
         .finally(() => setAutoSaving(false));
     }, 1050);
     return () => window.clearTimeout(timer);
-  }, [activeDocument?.dirty, activeDocument?.fileHandle, activeDocument?.id, activeDocument?.relativePath, activeDocument?.value, project?.root, settings.autoSave, showToast]);
+  }, [activeDocument?.dirty, activeDocument?.encoding, activeDocument?.fileHandle, activeDocument?.id, activeDocument?.relativePath, activeDocument?.value, project?.root, settings.autoSave, showToast]);
 
   const closeDocument = useCallback((document: DocumentModel, event?: React.MouseEvent) => {
     event?.stopPropagation();
+    if (document.pinned) {
+      showToast(`Unpin “${document.name}” before closing it.`, 'info');
+      return;
+    }
     if (document.dirty && !window.confirm(`Discard unsaved changes to “${document.name}”?`)) return;
     const index = documents.findIndex((candidate) => candidate.id === document.id);
     const next = documents.filter((candidate) => candidate.id !== document.id);
@@ -1697,7 +2017,15 @@ function App() {
     }
     setDocuments(next);
     if (activeId === document.id) setActiveId(next[Math.max(0, index - 1)].id);
-  }, [activeId, documents]);
+  }, [activeId, documents, showToast]);
+
+  const toggleActiveTabPin = useCallback(() => {
+    if (!activeDocument) return;
+    setDocuments((current) => current.map((document) => document.id === activeDocument.id
+      ? { ...document, pinned: !document.pinned }
+      : document));
+    showToast(activeDocument.pinned ? 'Tab unpinned.' : 'Tab pinned for this workspace session.', 'success');
+  }, [activeDocument, showToast]);
 
   const formatActive = useCallback(() => {
     if (!activeDocument) return;
@@ -1859,7 +2187,7 @@ function App() {
       if (SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) && activeDocument.sourceType !== 'text' && activeDocument.sourceType !== 'json') {
         html = sourcePreviewDocument(activeDocument.value, SOURCE_META[activeDocument.sourceType].label, effectiveAppearance);
       }
-      const result = await window.diagramApi.render.export({
+      const result = await desktop.render.export({
         sourceType: activeDocument.sourceType,
         source: activeDocument.value,
         svg,
@@ -1900,7 +2228,7 @@ function App() {
   const copyPreviewOutput = useCallback(async (content: string, kind: NonNullable<PreviewState['kind']>) => {
     try {
       if (kind === 'svg') {
-        await window.diagramApi.clipboard.writeSvg(content);
+        await desktop.clipboard.writeSvg(content);
         showToast('SVG copied to the clipboard.', 'success');
         return;
       }
@@ -1933,7 +2261,7 @@ function App() {
       const context = canvas.getContext('2d');
       if (!context) throw new Error('This browser cannot create a PNG preview.');
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      await window.diagramApi.clipboard.writeDataUriImage(canvas.toDataURL('image/png'));
+      await desktop.clipboard.writeDataUriImage(canvas.toDataURL('image/png'));
       showToast('PNG copied to the clipboard.', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not copy a PNG preview.', 'error');
@@ -2063,6 +2391,10 @@ function App() {
       return;
     }
     const source = sourceFromAssistantReply(promptReply, activeDocument.sourceType);
+    if (!source.trim()) {
+      showToast('The pasted response does not contain source to review.', 'error');
+      return;
+    }
     if (activeDocument.sourceType === 'json') {
       const inspection = inspectJson(source);
       if (!inspection.valid) {
@@ -2071,46 +2403,78 @@ function App() {
         return;
       }
     }
-    if (promptApplyMode === 'new') {
-      const base = filenameWithoutExtension(activeDocument.name);
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const range = promptApplyMode === 'new' || !model
+      ? undefined
+      : promptApplyMode === 'replace'
+        ? activeDocument.sourceType === 'json'
+          ? model.getFullModelRange()
+          : (editor?.getSelection() ?? model.getFullModelRange())
+        : (() => {
+          const position = editor?.getPosition();
+          return position ? { startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column } : model.getFullModelRange();
+        })();
+    const rangeSnapshot = range ? {
+      startLineNumber: range.startLineNumber,
+      startColumn: range.startColumn,
+      endLineNumber: range.endLineNumber,
+      endColumn: range.endColumn,
+    } : undefined;
+    const before = promptApplyMode === 'new' || promptApplyMode === 'insert'
+      ? ''
+      : model && range ? model.getValueInRange(range) : activeDocument.value;
+    setPendingAiReview({
+      documentId: activeDocument.id,
+      documentName: activeDocument.name,
+      sourceType: activeDocument.sourceType,
+      mode: promptApplyMode,
+      before,
+      source,
+      range: rangeSnapshot,
+    });
+    setPromptReply('');
+    setPromptOpen(false);
+    showToast('Review the proposed source change before applying it.', 'info');
+  }, [activeDocument, promptApplyMode, promptReply, promptSpec.jsonIntent, showToast]);
+
+  const applyReviewedAiSource = useCallback(() => {
+    if (!pendingAiReview) return;
+    if (pendingAiReview.mode === 'new') {
+      const base = filenameWithoutExtension(pendingAiReview.documentName);
       const document: DocumentModel = {
-        id: `${activeDocument.sourceType}-${crypto.randomUUID()}`,
-        name: `${base} AI draft.${SOURCE_META[activeDocument.sourceType].extension}`,
-        sourceType: activeDocument.sourceType,
-        value: source,
+        id: `${pendingAiReview.sourceType}-${crypto.randomUUID()}`,
+        name: `${base} AI draft.${SOURCE_META[pendingAiReview.sourceType].extension}`,
+        sourceType: pendingAiReview.sourceType,
+        value: pendingAiReview.source,
         dirty: true,
         revision: 0,
       };
       setDocuments((current) => [...current, document]);
       setActiveId(document.id);
-      setPromptReply('');
-      setPromptOpen(false);
-      showToast('LLM response opened as a new draft.', 'success');
+      setPendingAiReview(null);
+      showToast('Reviewed LLM response opened as a new draft.', 'success');
       return;
     }
-
+    if (activeDocument?.id !== pendingAiReview.documentId) {
+      setActiveId(pendingAiReview.documentId);
+      showToast('Returned to the target tab. Review the change once more before applying it.', 'info');
+      return;
+    }
     const editor = editorRef.current;
     const model = editor?.getModel();
     if (editor && model) {
-      const range = promptApplyMode === 'replace'
-        ? activeDocument.sourceType === 'json'
-          ? model.getFullModelRange()
-          : (editor.getSelection() ?? model.getFullModelRange())
-        : (() => {
-          const position = editor.getPosition();
-          return position ? { startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column } : model.getFullModelRange();
-        })();
-      editor.executeEdits('apply-llm-reply', [{ range, text: source, forceMoveMarkers: true }]);
+      const range = pendingAiReview.range ?? model.getFullModelRange();
+      editor.executeEdits('apply-reviewed-llm-reply', [{ range, text: pendingAiReview.source, forceMoveMarkers: true }]);
       editor.focus();
-    } else if (promptApplyMode === 'replace') {
-      updateDocument(activeDocument.id, source);
+    } else if (pendingAiReview.mode === 'replace') {
+      updateDocument(pendingAiReview.documentId, pendingAiReview.source);
     } else {
-      updateDocument(activeDocument.id, `${activeDocument.value}\n${source}`);
+      updateDocument(pendingAiReview.documentId, `${activeDocument.value}\n${pendingAiReview.source}`);
     }
-    setPromptReply('');
-    setPromptOpen(false);
-    showToast(promptApplyMode === 'replace' ? 'LLM source applied.' : 'LLM source inserted.', 'success');
-  }, [activeDocument, promptApplyMode, promptReply, promptSpec.jsonIntent, showToast, updateDocument]);
+    setPendingAiReview(null);
+    showToast(pendingAiReview.mode === 'replace' ? 'Reviewed LLM source applied.' : 'Reviewed LLM source inserted.', 'success');
+  }, [activeDocument, pendingAiReview, showToast, updateDocument]);
 
   const restoreSnapshot = useCallback((snapshot: LocalSnapshot) => {
     if (!activeDocument || !window.confirm(`Restore the local snapshot from ${displayTime(snapshot.createdAt)}? Your current source stays available through Undo.`)) return;
@@ -2126,6 +2490,27 @@ function App() {
     showToast('Local snapshot restored. Use Undo to return to your latest edits.', 'success');
   }, [activeDocument, showToast, updateDocument]);
 
+  const insertMarkdownTableOfContents = useCallback(() => {
+    if (!activeDocument || activeDocument.sourceType !== 'markdown') {
+      showToast('Open a Markdown document to build its table of contents.', 'info');
+      return;
+    }
+    const result = upsertMarkdownTableOfContents(activeDocument.value);
+    if (!result.count) {
+      showToast('Add level-two or deeper Markdown headings before creating a table of contents.', 'info');
+      return;
+    }
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (editor && model) {
+      editor.executeEdits('markdown-table-of-contents', [{ range: model.getFullModelRange(), text: result.source, forceMoveMarkers: true }]);
+      editor.focus();
+    } else {
+      updateDocument(activeDocument.id, result.source);
+    }
+    showToast(`Table of contents updated from ${result.count} heading${result.count === 1 ? '' : 's'}.`, 'success');
+  }, [activeDocument, showToast, updateDocument]);
+
   const openGitPanel = useCallback(async () => {
     if (!project) {
       showToast('Open a project to inspect its Git status.', 'info');
@@ -2134,16 +2519,18 @@ function App() {
     setGitOpen(true);
     setIsGitLoading(true);
     try {
-      const [status, log] = await Promise.all([
-        window.diagramApi.git.status(project.root),
-        window.diagramApi.git.log(project.root, undefined, { limit: 8 }),
+      const [status, log, branches] = await Promise.all([
+        desktop.git.status(project.root),
+        desktop.git.log(project.root, undefined, { limit: 8 }),
+        desktop.git.branches(project.root),
       ]);
       setGitInfo({
         available: status.available,
-        branch: status.branch,
+        branch: branches.current || status.branch,
+        branches: branches.branches,
         files: (status.changes ?? []).map((change) => ({ path: change.path, status: change.status, index: change.indexStatus, workingTree: change.workTreeStatus })),
         commits: (log.entries ?? []).map((entry) => ({ hash: entry.shortHash, subject: entry.subject, author: entry.author, date: entry.date })),
-        message: status.error || log.error,
+        message: status.error || log.error || branches.error,
       });
     } catch (error) {
       setGitInfo({ available: false, message: error instanceof Error ? error.message : 'Could not inspect Git for this project.' });
@@ -2152,7 +2539,44 @@ function App() {
     }
   }, [project, showToast]);
 
-  const showActiveDiff = useCallback(async () => {
+  const runGitMutation = useCallback(async (label: string, mutation: () => Promise<{ ok: boolean; error?: string }>) => {
+    if (!project) {
+      showToast('Open a project before changing Git state.', 'info');
+      return false;
+    }
+    if (settings.safeMode) {
+      showToast('Safe Mode blocks Git changes. Disable it in Settings only for a project you trust.', 'info');
+      return false;
+    }
+    if (isGitMutating) return false;
+    setIsGitMutating(true);
+    try {
+      const result = await mutation();
+      if (!result.ok) throw new Error(result.error || `${label} could not be completed.`);
+      await openGitPanel();
+      showToast(label, 'success');
+      return true;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : `${label} could not be completed.`, 'error');
+      return false;
+    } finally {
+      setIsGitMutating(false);
+    }
+  }, [isGitMutating, openGitPanel, project, settings.safeMode, showToast]);
+
+  const commitGitChanges = useCallback(() => {
+    if (!project) return;
+    const message = gitCommitMessage.trim();
+    if (!message) {
+      showToast('Enter a commit message before committing.', 'info');
+      return;
+    }
+    void runGitMutation('Created local commit.', () => desktop.git.commit(project.root, message)).then((committed) => {
+      if (committed) setGitCommitMessage('');
+    });
+  }, [gitCommitMessage, project, runGitMutation, showToast]);
+
+  const showGitDiff = useCallback(async (relativePath?: string, staged = false) => {
     if (!project) {
       showToast('Open a project to inspect a diff.', 'info');
       return;
@@ -2160,18 +2584,24 @@ function App() {
     setIsTaskRunning(true);
     setTaskConsoleOpen(true);
     try {
-      const result = await window.diagramApi.git.diff(project.root, activeDocument?.relativePath);
-      setTaskOutput(result.error || result.diff || 'No uncommitted changes for the active source.');
+      const result = await desktop.git.diff(project.root, relativePath, { staged });
+      setTaskOutput(result.error || result.diff || `No ${staged ? 'staged' : 'unstaged'} changes for this source.`);
     } catch (error) {
       setTaskOutput(error instanceof Error ? error.message : 'Could not read the Git diff.');
     } finally {
       setIsTaskRunning(false);
     }
-  }, [activeDocument?.relativePath, project, showToast]);
+  }, [project, showToast]);
+
+  const showActiveDiff = useCallback(() => showGitDiff(activeDocument?.relativePath), [activeDocument?.relativePath, showGitDiff]);
 
   const runActivePython = useCallback(async (mode: PythonTaskMode) => {
     if (!activeDocument || activeDocument.sourceType !== 'python') {
       showToast('Open a Python source file to run or test it.', 'info');
+      return;
+    }
+    if (settings.safeMode) {
+      showToast('Safe Mode blocks local runners. Disable it in Settings only for a project you trust.', 'info');
       return;
     }
     if (isTaskRunning) {
@@ -2184,7 +2614,7 @@ function App() {
     // folder (when open) remains available to the runner for local imports.
     if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
     setPythonInspectorView('output');
-    const runner = window.diagramApi.project.runPython;
+    const runner = desktop.project.runPython;
     const runningTask: PythonTaskState = {
       documentId: activeDocument.id,
       revision: activeDocument.revision,
@@ -2252,12 +2682,98 @@ function App() {
     } finally {
       setIsTaskRunning(false);
     }
-  }, [activeDocument, isTaskRunning, project?.root, showToast, updatePanel]);
+  }, [activeDocument, isTaskRunning, project?.root, settings.safeMode, showToast, updatePanel]);
+
+  const runProjectTask = useCallback(async (task: ProjectTask) => {
+    if (!project) {
+      showToast('Open a project to run its build or preview tasks.', 'info');
+      return;
+    }
+    if (settings.safeMode) {
+      showToast('Safe Mode blocks project tasks. Disable it in Settings only for a project you trust.', 'info');
+      return;
+    }
+    if (!projectTasks.some((candidate) => candidate.id === task.id)) {
+      showToast('That project task is no longer available. Refresh the project and try again.', 'info');
+      return;
+    }
+    if (isTaskRunning) {
+      showToast('A local task is already running.', 'info');
+      return;
+    }
+
+    const document = activeDocument;
+    setTaskConsoleOpen(true);
+    if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
+    setTaskOutput(`Running ${task.label}…`);
+    setIsTaskRunning(true);
+    try {
+      // A task builds the actual project folder, so persist an edited project
+      // file first. Standalone tabs deliberately stay out of this workflow.
+      if (document?.relativePath && document.dirty) {
+        const source = document.value;
+        localWritePathsRef.current.set(document.relativePath, Date.now());
+        setTaskOutput(`Saving ${document.relativePath} before ${task.label}…`);
+        await desktop.project.writeFile(project.root, document.relativePath, source, document.encoding);
+        setDocuments((current) => current.map((candidate) => (
+          candidate.id === document.id && candidate.value === source
+            ? { ...candidate, dirty: false }
+            : candidate
+        )));
+      }
+
+      setTaskOutput(`Running ${task.label}…`);
+      const result = await desktop.project.runTask(project.root, task.id);
+      setTaskOutput(projectTaskConsoleText(result));
+      if (!result.ok) {
+        showToast(`${task.label} failed — see the Task Console.`, 'error');
+        return;
+      }
+
+      if (result.dataUri) {
+        // Invalidate any in-flight fragment preview before replacing it with
+        // the authoritative PDF produced by the project pipeline.
+        renderTokenRef.current += 1;
+        setPreview({
+          status: 'ready',
+          revision: document?.revision ?? -1,
+          kind: 'pdf',
+          content: result.dataUri,
+          message: `${result.label} output`,
+        });
+      }
+      showToast(result.dataUri ? `${task.label} completed and opened its PDF.` : `${task.label} completed.`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Could not run ${task.label}.`;
+      setTaskOutput(message);
+      showToast(message, 'error');
+    } finally {
+      setIsTaskRunning(false);
+    }
+  }, [activeDocument, isTaskRunning, project, projectTasks, settings.safeMode, showToast, updatePanel]);
+
+  const renderActivePreview = useCallback(() => {
+    if (!activeDocument) return;
+    if (taskManagedLatex) {
+      const task = projectPreviewTask ?? projectBuildTask;
+      if (task) {
+        void runProjectTask(task);
+      } else {
+        showToast('Discovering this project’s LaTeX pipeline…', 'info');
+      }
+      return;
+    }
+    void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf');
+  }, [activeDocument, latexPreviewMode, projectBuildTask, projectPreviewTask, renderDocument, runProjectTask, showToast, taskManagedLatex]);
 
   const runActiveBuild = useCallback(async (
     latexMode: LatexRenderMode = 'pdf',
     engine: TexPdfEngine = texPdfEngine,
   ) => {
+    if (settings.safeMode) {
+      showToast('Safe Mode blocks local build profiles. Disable it in Settings only for a project you trust.', 'info');
+      return;
+    }
     if (!project || !activeDocument?.relativePath) {
       showToast('Save the active TikZ, LaTeX, or MetaFont source into a project before running a build profile.', 'info');
       return;
@@ -2291,9 +2807,9 @@ function App() {
     try {
       if (activeDocument.dirty) {
         localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-        await window.diagramApi.project.writeFile(project.root, activeDocument.relativePath, activeDocument.value);
+        await desktop.project.writeFile(project.root, activeDocument.relativePath, activeDocument.value, activeDocument.encoding);
       }
-      const result = await window.diagramApi.project.runBuild(project.root, activeDocument.relativePath, profileId);
+      const result = await desktop.project.runBuild(project.root, activeDocument.relativePath, profileId);
       if (!result.ok) {
         setTaskOutput(result.error || 'The build did not finish.');
         showToast('Build failed — see the Task Console.', 'error');
@@ -2310,16 +2826,18 @@ function App() {
     } finally {
       setIsTaskRunning(false);
     }
-  }, [activeDocument, project, showToast, texPdfEngine]);
+  }, [activeDocument, project, settings.safeMode, showToast, texPdfEngine]);
 
   const runPrimaryTask = useCallback(() => {
     if (activeDocument?.sourceType === 'python') return runActivePython('run');
+    if (activeDocument?.sourceType === 'latex' && activeProjectTasks.length && projectBuildTask) return runProjectTask(projectBuildTask);
     return runActiveBuild();
-  }, [activeDocument?.sourceType, runActiveBuild, runActivePython]);
+  }, [activeDocument?.sourceType, activeProjectTasks.length, projectBuildTask, runActiveBuild, runActivePython, runProjectTask]);
 
   const actions = useMemo(() => [
     { id: 'new-project', label: 'New project', hint: '⌘⇧N', group: 'File', run: newProject },
     { id: 'open-file', label: 'Open file…', hint: '⌘O', group: 'File', run: openStandaloneFile },
+    { id: 'quick-open', label: 'Quick Open…', hint: '⌘P', group: 'Navigate', run: () => { setQuickOpenQuery(''); setQuickOpenOpen(true); } },
     { id: 'open-project', label: 'Open folder…', hint: '⌘⇧O', group: 'File', run: openProject },
     { id: 'open-recents', label: 'Open recent…', hint: '', group: 'File', run: () => setRecentProjectsOpen(true) },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
@@ -2332,11 +2850,12 @@ function App() {
     })),
     { id: 'save', label: 'Save active file', hint: '⌘S', group: 'File', run: () => saveDocument(false) },
     { id: 'save-as', label: 'Save active file as…', hint: '⌘⇧S', group: 'File', run: () => saveDocument(true) },
+    { id: 'encoding', label: `Text encoding: ${encodingLabel(activeDocument?.encoding)}`, hint: '', group: 'File', run: openEncodingDialog },
     {
       id: 'render',
-      label: activeDocument?.sourceType === 'python' ? 'Show Python source preview' : 'Render active preview',
+      label: activeDocument?.sourceType === 'python' ? 'Show Python source preview' : taskManagedLatex ? `Run project preview${projectPreviewTask ? `: ${projectPreviewTask.label}` : ''}` : 'Render active preview',
       hint: '⌘↵',
-      group: activeDocument?.sourceType === 'python' ? 'Python' : 'Diagram',
+      group: activeDocument?.sourceType === 'python' ? 'Python' : taskManagedLatex ? 'Project' : 'Diagram',
       run: () => {
         if (!activeDocument) return;
         if (activeDocument.sourceType === 'python') {
@@ -2344,10 +2863,10 @@ function App() {
           setPythonInspectorView('source');
           return;
         }
-        void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf');
+        renderActivePreview();
       },
     },
-    ...(activeDocument?.sourceType === 'latex' ? [
+    ...(activeDocument?.sourceType === 'latex' && !taskManagedLatex ? [
       ...TEX_PDF_ENGINES.map((engine) => ({
         id: `render-latex-${engine.id}-pdf`,
         label: `Preview LaTeX PDF with ${engine.label}`,
@@ -2374,8 +2893,30 @@ function App() {
         void renderDocument(activeDocument, 'pdf', engine.id);
       },
     })) : []),
+    ...(projectBuildTask ? [{
+      id: 'project-task-intent-build',
+      label: `Project Build: ${projectBuildTask.label}`,
+      hint: '⌘⇧B',
+      group: 'Project',
+      run: () => void runProjectTask(projectBuildTask),
+    }] : []),
+    ...(projectPreviewTask && projectPreviewTask.id !== projectBuildTask?.id ? [{
+      id: 'project-task-intent-preview',
+      label: `Project Preview: ${projectPreviewTask.label}`,
+      hint: '',
+      group: 'Project',
+      run: () => void runProjectTask(projectPreviewTask),
+    }] : []),
+    ...availableProjectTasks.map((task) => ({
+      id: `project-task-${task.id}`,
+      label: `Run project task: ${task.label}`,
+      hint: '',
+      group: 'Project',
+      run: () => void runProjectTask(task),
+    })),
+    ...(project ? [{ id: 'project-task-file', label: 'Create or open yedit.tasks.json', hint: '', group: 'Project', run: () => void createProjectTaskConfig() }] : []),
     { id: 'export', label: 'Export active output…', hint: '⌘E', group: 'Diagram', run: () => setExportOpen(true) },
-    { id: 'build', label: activeDocument?.sourceType === 'python' ? 'Run active Python source' : activeDocument?.sourceType === 'metafont' ? 'Convert MetaFont to TTF build profile' : activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active source build profile', hint: '⌘⇧B', group: activeDocument?.sourceType === 'python' ? 'Python' : 'Diagram', run: () => void runPrimaryTask() },
+    { id: 'build', label: activeDocument?.sourceType === 'python' ? 'Run active Python source' : taskManagedLatex ? `Run project build${projectBuildTask ? `: ${projectBuildTask.label}` : ''}` : activeDocument?.sourceType === 'metafont' ? 'Convert MetaFont to TTF build profile' : activeDocument?.sourceType === 'latex' ? `Run LaTeX ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : activeDocument?.sourceType === 'tikz' ? `Run TikZ ${texPdfEngineLabel(texPdfEngine)} PDF build profile` : 'Run active source build profile', hint: '⌘⇧B', group: activeDocument?.sourceType === 'python' ? 'Python' : taskManagedLatex ? 'Project' : 'Diagram', run: () => void runPrimaryTask() },
     ...(activeDocument?.sourceType === 'python' ? [
       { id: 'python-test', label: 'Test active Python source', hint: '', group: 'Python', run: () => void runActivePython('test') },
       { id: 'python-output', label: 'Show Python output', hint: '', group: 'Python', run: () => {
@@ -2383,7 +2924,7 @@ function App() {
         setPythonInspectorView('output');
       } },
     ] : []),
-    ...(activeDocument?.sourceType === 'latex' ? [
+    ...(activeDocument?.sourceType === 'latex' && !taskManagedLatex ? [
       ...TEX_PDF_ENGINES.map((engine) => ({
         id: `build-latex-${engine.id}-pdf`,
         label: `Compile LaTeX to PDF with ${engine.label}`,
@@ -2422,8 +2963,12 @@ function App() {
     { id: 'search-project', label: 'Find in project…', hint: '⌘⇧F', group: 'Project', run: () => setProjectSearchOpen(true) },
     { id: 'git', label: 'Open Git status', hint: '', group: 'Project', run: openGitPanel },
     { id: 'diff', label: 'Show active Git diff', hint: '', group: 'Project', run: showActiveDiff },
+    { id: 'refresh-project', label: 'Refresh project files', hint: '', group: 'Project', run: () => void refreshProject() },
     { id: 'zen', label: zenMode ? 'Exit Zen mode' : 'Enter Zen mode', hint: '⌘⇧Z', group: 'View', run: () => setZenMode((current) => !current) },
     { id: 'auto-render', label: settings.previewAutoRender ? 'Disable automatic preview' : 'Enable automatic preview', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, previewAutoRender: !current.previewAutoRender })) },
+    { id: 'editor-minimap', label: settings.editorMinimap ? 'Hide editor minimap' : 'Show editor minimap', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, editorMinimap: !current.editorMinimap })) },
+    { id: 'navigation-bottom', label: 'Show navigation controls in bottom bar', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, navigationPlacement: 'bottom' })) },
+    { id: 'navigation-left', label: 'Show navigation controls in left rail', hint: '', group: 'View', run: () => setSettings((current) => ({ ...current, navigationPlacement: 'left' })) },
     { id: 'explorer', label: 'Toggle Explorer', hint: '', group: 'View', run: () => togglePanel('explorerOpen') },
     { id: 'preview', label: activeDocument?.sourceType === 'python' ? 'Toggle Python output' : 'Toggle live preview', hint: '', group: 'View', run: () => togglePanel('previewOpen') },
     { id: 'output-viewer', label: 'Open live output viewer', hint: '', group: 'View', run: openOutputViewer },
@@ -2441,7 +2986,7 @@ function App() {
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableTemplateSourceTypes.length, createBlankScratchpad, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, prettyPrintActiveJson, renderDocument, resetPanelLayout, runActivePython, runPrimaryTask, saveDocument, settings.previewAutoRender, showActiveDiff, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -2452,7 +2997,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = window.diagramApi.onMenuAction((action) => {
+    const unsubscribe = desktop.onMenuAction((action) => {
       if (action === 'palette') { setPaletteOpen(true); return; }
       const requestedType = /^(?:new|select)-(.+)$/.exec(action)?.[1];
       if (requestedType && isKnownSourceType(requestedType) && !isSourceTypeEnabled(requestedType)) {
@@ -2462,7 +3007,7 @@ function App() {
       const selected = actionRef.current.find((entry) => entry.id === action);
       selected?.run();
     });
-    window.diagramApi.rendererReady();
+    desktop.rendererReady();
     return unsubscribe;
   }, [isSourceTypeEnabled, showToast]);
 
@@ -2483,6 +3028,12 @@ function App() {
         return;
       }
       const shortcut = shortcutFromEvent(event);
+      if (shortcut === shortcutBindings.quickOpen) {
+        event.preventDefault();
+        setQuickOpenQuery('');
+        setQuickOpenOpen(true);
+        return;
+      }
       if (shortcut === shortcutBindings.palette) {
         event.preventDefault();
         setPaletteOpen(true);
@@ -2513,6 +3064,23 @@ function App() {
         void runPrimaryTask();
         return;
       }
+      if (event.metaKey || event.ctrlKey) {
+        if (event.key === '-') {
+          event.preventDefault();
+          changeEditorFontSize(-1);
+          return;
+        }
+        if (event.key === '+' || event.key === '=') {
+          event.preventDefault();
+          changeEditorFontSize(1);
+          return;
+        }
+        if (event.key === '0') {
+          event.preventDefault();
+          setSettings((current) => ({ ...current, editorFontSize: 14 }));
+          return;
+        }
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
         setSettingsOpen(true);
@@ -2520,7 +3088,7 @@ function App() {
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [recordingShortcut, runPrimaryTask, shortcutBindings, showToast]);
+  }, [changeEditorFontSize, recordingShortcut, runPrimaryTask, shortcutBindings, showToast]);
 
   useEffect(() => {
     if (!aboutOpen) return undefined;
@@ -2580,6 +3148,57 @@ function App() {
 
   const activeOutline = useMemo(() => activeDocument ? documentOutline(activeDocument.sourceType, activeDocument.value) : [], [activeDocument]);
   const activeJsonInspection = useMemo(() => activeDocument?.sourceType === 'json' ? inspectJson(activeDocument.value) : undefined, [activeDocument]);
+  const activeTextStatistics = useMemo(() => activeDocument ? textStatistics(activeDocument.value) : { lines: 0, words: 0, characters: 0 }, [activeDocument]);
+  const quickOpenResults = useMemo(() => {
+    const query = quickOpenQuery.trim();
+    if (query.startsWith(':')) {
+      const requestedLine = Number.parseInt(query.slice(1), 10);
+      return Number.isFinite(requestedLine) && requestedLine > 0 && activeDocument
+        ? [{ id: `line-${requestedLine}`, label: `Go to line ${requestedLine}`, detail: activeDocument.name, kind: 'line' as const, run: () => revealEditorLine(requestedLine) }]
+        : [];
+    }
+    if (query.startsWith('@')) {
+      const needle = query.slice(1).trim();
+      return activeOutline
+        .map((entry) => ({ entry, score: fuzzyScore(entry.label, needle) }))
+        .filter(({ score }) => score > Number.NEGATIVE_INFINITY)
+        .sort((left, right) => right.score - left.score || left.entry.line - right.entry.line)
+        .slice(0, 80)
+        .map(({ entry }) => ({
+          id: `symbol-${entry.id}`,
+          label: entry.label,
+          detail: `Symbol · line ${entry.line}`,
+          kind: 'symbol' as const,
+          run: () => revealEditorLine(entry.line),
+        }));
+    }
+    const entries: QuickOpenResult[] = [
+      ...documents.map((document) => ({
+        id: `tab-${document.id}`,
+        label: document.name,
+        detail: `${document.pinned ? 'Pinned · ' : ''}Open tab · ${SOURCE_META[document.sourceType].label}`,
+        kind: 'tab' as const,
+        run: () => setActiveId(document.id),
+      })),
+      ...(project
+        ? flattenFiles(project.tree)
+          .filter((node) => node.kind === 'file' && node.supported)
+          .map((node) => ({
+            id: `file-${node.relativePath}`,
+            label: node.name,
+            detail: compactPath(node.relativePath, 82),
+            kind: 'file' as const,
+            run: () => { void openFile(node); },
+          }))
+        : []),
+    ];
+    return entries
+      .map((entry) => ({ entry, score: fuzzyScore(`${entry.label} ${entry.detail}`, query) }))
+      .filter(({ score }) => score > Number.NEGATIVE_INFINITY)
+      .sort((left, right) => right.score - left.score || left.entry.label.localeCompare(right.entry.label))
+      .slice(0, 100)
+      .map(({ entry }) => entry);
+  }, [activeDocument, activeOutline, documents, openFile, project, quickOpenQuery, revealEditorLine]);
   const activePythonTask = activeDocument?.sourceType === 'python' && pythonTask.documentId === activeDocument.id
     ? pythonTask
     : EMPTY_PYTHON_TASK;
@@ -2610,6 +3229,7 @@ function App() {
   // width so larger interface scales never push it past the window edge.
   const appShellStyle: React.CSSProperties = {
     '--ui-scale': String(interfaceScale),
+    '--titlebar-leading-inset': `${Math.ceil(MACOS_TITLEBAR_LEADING_INSET / interfaceScale)}px`,
     width: `${100 / interfaceScale}%`,
     height: `${100 / interfaceScale}%`,
   } as React.CSSProperties;
@@ -2617,7 +3237,7 @@ function App() {
     '--editor-background-color': editorCanvasColor(settings.editorBackgroundColor, effectiveAppearance),
   } as React.CSSProperties;
   const appBodyStyle: React.CSSProperties = {
-    gridTemplateColumns: `${zenMode ? '0px' : `${WORKBENCH_RAIL_WIDTH}px`} ${renderedWorkbenchColumns.explorerWidth}px minmax(0px, 1fr) ${renderedWorkbenchColumns.inspectorWidth}px`,
+    gridTemplateColumns: `${navigationRailWidth}px ${renderedWorkbenchColumns.explorerWidth}px minmax(0px, 1fr) ${renderedWorkbenchColumns.inspectorWidth}px`,
   };
   const inspectorStyle: React.CSSProperties = {
     gridTemplateRows: panelLayout.previewOpen && panelLayout.referenceOpen
@@ -2820,7 +3440,7 @@ function App() {
           {project && <aside className="empty-workspace-project" aria-label={`${project.name} file navigator`}>
             <div className="empty-workspace-project-head">
               <div><p className="eyebrow">Opened folder</p><strong>{project.name}</strong></div>
-              <button className="icon-button" onClick={() => void window.diagramApi.shell.reveal(project.root).catch(() => showToast('Could not reveal this project folder.', 'error'))} title="Reveal project folder in Finder" aria-label="Reveal project folder in Finder">↗</button>
+              <button className="icon-button" onClick={() => void desktop.shell.reveal(project.root).catch(() => showToast('Could not reveal this project folder.', 'error'))} title="Reveal project folder in Finder" aria-label="Reveal project folder in Finder">↗</button>
             </div>
             <button className="empty-workspace-root" onClick={() => { setSelectedFolderPath(''); setCollapsedPaths(new Set()); }} title={`Navigate to ${project.root}`}><span>⌂</span><span>{selectedFolderPath ? `${project.name}/${selectedFolderPath}` : project.root}</span></button>
             <div className="empty-workspace-tree">
@@ -2886,15 +3506,19 @@ function App() {
         onDrop={handleSourceDrop}
       >
         {dragActive && <div className="source-drop-overlay" role="status"><span>↓</span><strong>Open source as a new tab</strong><small>TikZ · LaTeX · SVG · Mermaid · Markdown · Text</small></div>}
-        <nav className="activity-rail" aria-label="Workbench sections">
-          <button className={`activity ${panelLayout.explorerOpen ? 'active' : ''}`} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'}><span>▦</span></button>
-          <button className={`activity ${panelLayout.previewOpen ? 'active' : ''}`} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'}><span>{activeDocument.sourceType === 'python' ? '›_' : '◉'}</span></button>
-          <button className={`activity ${panelLayout.referenceOpen ? 'active' : ''}`} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'}><span>⌘</span></button>
-          <button className="activity" onClick={() => setPromptOpen(true)} title="Prompt Studio"><span>✦</span></button>
+        {navigationRailVisible && <nav className="activity-rail" aria-label="Workbench navigation">
+          <button className="activity" onClick={() => setProjectSearchOpen(true)} title="Find in project" aria-label="Find in project"><span>⌕</span></button>
+          <button className="activity" onClick={openGitPanel} title="Open Git status" aria-label="Open Git status"><span>⎇</span></button>
+          <button className={`activity ${zenMode ? 'active' : ''}`} onClick={() => setZenMode((current) => !current)} title={zenMode ? 'Exit Zen mode' : 'Enter Zen mode'} aria-label={zenMode ? 'Exit Zen mode' : 'Enter Zen mode'} aria-pressed={zenMode}><span>◐</span></button>
+          <button className={`activity ${panelLayout.explorerOpen ? 'active' : ''}`} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-label={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-pressed={panelLayout.explorerOpen}><span>▦</span></button>
+          <button className={`activity ${panelLayout.previewOpen ? 'active' : ''}`} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-label={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-pressed={panelLayout.previewOpen}><span>{activeDocument.sourceType === 'python' ? '›_' : '◉'}</span></button>
+          <button className={`activity ${panelLayout.referenceOpen ? 'active' : ''}`} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-label={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-pressed={panelLayout.referenceOpen}><span>⌘</span></button>
+          <button className="activity" onClick={() => setPromptOpen(true)} title="Prompt Studio" aria-label="Open Prompt Studio"><span>✦</span></button>
+          <button className="activity activity-palette" onClick={() => setPaletteOpen(true)} title="Command Palette" aria-label="Open Command Palette"><span>⌘P</span></button>
           <div className="activity-spacer" />
-          <button className="activity" onClick={() => setSettingsOpen(true)} title="Settings"><span>⚙</span></button>
-          <button className="activity" onClick={refreshProject} title="Refresh project"><span>↻</span></button>
-        </nav>
+          <button className="activity" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Open Settings"><span>⚙</span></button>
+          <button className="activity" onClick={() => void refreshProject()} title="Refresh project" aria-label="Refresh project"><span>↻</span></button>
+        </nav>}
 
         {explorerVisible && <aside className="explorer-panel">
           <div className="panel-heading">
@@ -2915,6 +3539,7 @@ function App() {
             <button onClick={() => setProjectSearchOpen(true)} title="Find in project">⌕ Find</button>
             <button onClick={openGitPanel} title="Git status and history">⌘ Git</button>
             <button onClick={() => setTaskConsoleOpen(true)} title="Local build output">›_ Tasks</button>
+            {projectTasks.length > 0 && <button className="project-pipeline-indicator" onClick={() => setTaskConsoleOpen(true)} title={`Project pipeline: ${projectTasks.map((task) => task.script || task.label).join(', ')}`}>⚙ Pipeline · {projectTasks[0].script || `${projectTasks.length} task${projectTasks.length === 1 ? '' : 's'}`}</button>}
             <button onClick={() => setTemplateGalleryOpen(true)} disabled={!availableTemplateSourceTypes.length} title={availableTemplateSourceTypes.length ? 'Starter templates' : 'Enable a template-capable source type in Settings'}>▦ Templates</button>
             <button onClick={() => setRecentProjectsOpen(true)} title="Recently opened folders and files">↺ Recents{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
           </div>
@@ -2927,7 +3552,7 @@ function App() {
                   title={`Navigate to ${project.root}`}
                   aria-current={selectedFolderPath ? undefined : 'location'}
                 ><span>⌂</span><strong>{project.name}</strong></button>
-                <button onClick={() => void window.diagramApi.shell.reveal(project.root).catch(() => showToast('Could not reveal this project folder.', 'error'))} title="Reveal project folder in Finder" aria-label="Reveal project folder in Finder">↗</button>
+                <button onClick={() => void desktop.shell.reveal(project.root).catch(() => showToast('Could not reveal this project folder.', 'error'))} title="Reveal project folder in Finder" aria-label="Reveal project folder in Finder">↗</button>
                 <small className={selectedFolderPath ? 'is-folder' : ''} title={selectedFolderPath ? `${project.root}/${selectedFolderPath}` : project.root}>{selectedFolderPath ? `${project.name}/${selectedFolderPath}` : project.root}</small>
               </div>
               <div className="tree-caption"><span>FILES</span><span className="tree-location" title={selectedFolderPath || 'Project root'}>{selectedFolderPath || 'Project root'}</span><div className="tree-caption-actions">
@@ -2964,7 +3589,10 @@ function App() {
             <button onClick={() => openNewSource()}>＋ New source</button>
             <button onClick={() => setPromptOpen(true)}>✦ Draft with LLM</button>
             {recentProjects.length > 0 && <button onClick={openLatestRecentEntry}>↺ Reopen latest</button>}
-            <button onClick={() => void runPrimaryTask()} title={activeDocument.sourceType === 'python' ? 'Run the current Python editor buffer' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'python' ? 'Run Python' : activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>
+            {projectToolbarTasks.length > 0 ? <>
+              {projectToolbarTasks.map((task) => <button key={task.id} className="project-task-button" onClick={() => void runProjectTask(task)} disabled={isTaskRunning} title={projectTaskTooltip(task)}>▶ {task.label}</button>)}
+              {projectTasks.length > projectToolbarTasks.length && <button onClick={() => setTaskConsoleOpen(true)} title="Show all project tasks">›_ More tasks</button>}
+            </> : <button onClick={() => void runPrimaryTask()} title={activeDocument.sourceType === 'python' ? 'Run the current Python editor buffer' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont source to TTF' : activeDocument.sourceType === 'latex' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run the active source build'}>▶ {activeDocument.sourceType === 'python' ? 'Run Python' : activeDocument.sourceType === 'metafont' ? 'Convert TTF' : activeDocument.sourceType === 'latex' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Build ${texPdfEngineLabel(texPdfEngine)}` : 'Run build'}</button>}
           </div>
           <div className="panel-resizer explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" onPointerDown={(event) => startPanelResize('explorer', event)} />
         </aside>
@@ -2976,11 +3604,13 @@ function App() {
               {documents.map((document) => (
                 <button
                   key={document.id}
-                  className={`editor-tab ${document.id === activeDocument.id ? 'selected' : ''}`}
+                  className={`editor-tab ${document.id === activeDocument.id ? 'selected' : ''}${document.pinned ? ' pinned' : ''}`}
                   onClick={() => setActiveId(document.id)}
+                  title={document.pinned ? `${document.name} · pinned` : document.name}
                 >
                   <span className={`file-badge ${SOURCE_META[document.sourceType].color}`}>{SOURCE_META[document.sourceType].short}</span>
                   <span className="tab-name">{document.name}</span>
+                  {document.pinned && <span className="tab-pin" aria-label="Pinned tab" title="Pinned tab">⌖</span>}
                   {document.dirty && <span className="dirty-dot" title="Unsaved changes"></span>}
                   <span className="tab-close" onClick={(event) => closeDocument(document, event)} title="Close tab">×</span>
                 </button>
@@ -2989,11 +3619,11 @@ function App() {
             <button className="new-tab" onClick={() => openNewSource()} title="New source tab — choose a format" aria-label="New source tab">＋</button>
             <div className="tab-tools">
               <button className="compact-button" onClick={formatActive} title="Format source (⌥⇧F)">Format</button>
-              {activeDocument.sourceType === 'latex' && <div className="latex-preview-mode" role="group" aria-label="LaTeX preview format">
+              {activeDocument.sourceType === 'latex' && !taskManagedLatex && <div className="latex-preview-mode" role="group" aria-label="LaTeX preview format">
                 <button className={latexPreviewMode === 'pdf' ? 'selected' : ''} type="button" aria-pressed={latexPreviewMode === 'pdf'} onClick={() => { setLatexPreviewMode('pdf'); void renderDocument(activeDocument, 'pdf'); }} title="Compile and preview PDF">PDF</button>
                 <button className={latexPreviewMode === 'dvi' ? 'selected' : ''} type="button" aria-pressed={latexPreviewMode === 'dvi'} onClick={() => { setLatexPreviewMode('dvi'); void renderDocument(activeDocument, 'dvi'); }} title="Compile with classic latex and preview the DVI as SVG when dvisvgm is available">DVI</button>
               </div>}
-              {(activeDocument.sourceType === 'tikz' || (activeDocument.sourceType === 'latex' && latexPreviewMode === 'pdf')) && <label className="tex-engine-select" title="PDF compiler. Choose XeLaTeX or LuaLaTeX for Unicode and fontspec workflows.">
+              {(activeDocument.sourceType === 'tikz' || (activeDocument.sourceType === 'latex' && !taskManagedLatex && latexPreviewMode === 'pdf')) && <label className="tex-engine-select" title="PDF compiler. Choose XeLaTeX or LuaLaTeX for Unicode and fontspec workflows.">
                 <span>Engine</span>
                 <select value={texPdfEngine} aria-label="TeX PDF engine" onChange={(event) => {
                   const engine = event.target.value as TexPdfEngine;
@@ -3003,11 +3633,13 @@ function App() {
                   {TEX_PDF_ENGINES.map((engine) => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
                 </select>
               </label>}
-              {activeDocument.sourceType === 'latex' && latexPreviewMode === 'dvi' && <span className="tex-classic-engine" title="DVI always uses classic latex; XeLaTeX and LuaLaTeX produce PDF only.">classic latex</span>}
+              {activeDocument.sourceType === 'latex' && !taskManagedLatex && latexPreviewMode === 'dvi' && <span className="tex-classic-engine" title="DVI always uses classic latex; XeLaTeX and LuaLaTeX produce PDF only.">classic latex</span>}
               {activeDocument.sourceType === 'python' ? <div className="python-run-controls" role="group" aria-label="Python execution controls">
                 <button className="compact-button python-run-button" onClick={() => void runActivePython('run')} disabled={isTaskRunning} title="Run the active Python editor buffer locally">▶ Run</button>
                 <button className="compact-button python-test-button" onClick={() => void runActivePython('test')} disabled={isTaskRunning} title="Test the active Python editor buffer locally">✓ Test</button>
                 <button className="compact-button" onClick={() => { if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true); setPythonInspectorView('output'); }} title="Show Python output in the right panel">› Output</button>
+              </div> : taskManagedLatex ? <div className="project-task-toolbar" role="group" aria-label="Project build and preview tasks">
+                {isProjectTasksLoading ? <span className="project-task-pending">Project pipeline…</span> : projectToolbarTasks.map((task) => <button key={task.id} className="compact-button project-task-button" onClick={() => void runProjectTask(task)} disabled={isTaskRunning} title={projectTaskTooltip(task)}>▶ {task.label}</button>)}
               </div> : <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'}>▶ {activeDocument.sourceType === 'metafont' ? 'Render proof' : 'Render'}</button>}
             </div>
           </div>
@@ -3015,9 +3647,18 @@ function App() {
           <div className="editor-meta">
             <div className="type-chip"><span className={SOURCE_META[activeDocument.sourceType].color}></span>{SOURCE_META[activeDocument.sourceType].label} source</div>
             {activeJsonInspection && <button className={`json-health ${activeJsonInspection.valid ? 'valid' : 'invalid'}`} onClick={validateActiveJson} title={activeJsonInspection.message}>{activeJsonInspection.valid ? '✓ Valid JSON' : '! Invalid JSON'}</button>}
+            {settings.safeMode && <span className="safe-mode-chip" title="Project tasks, native compilers, and Python runs are blocked until Safe Mode is disabled in Settings.">Safe Mode</span>}
             <div className="editor-meta-actions">
+              <div className="editor-font-controls" role="group" aria-label="Editor font size">
+                <button type="button" onClick={() => changeEditorFontSize(-1)} disabled={settings.editorFontSize <= 11} title="Decrease editor font size (⌘−)" aria-label="Decrease editor font size">−</button>
+                <output aria-label={`Editor font size ${settings.editorFontSize} pixels`}>{settings.editorFontSize}px</output>
+                <button type="button" onClick={() => changeEditorFontSize(1)} disabled={settings.editorFontSize >= 24} title="Increase editor font size (⌘+)" aria-label="Increase editor font size">+</button>
+              </div>
               <button onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)">☷ Outline</button>
+              {activeDocument.sourceType === 'markdown' && <button onClick={insertMarkdownTableOfContents} title="Insert or refresh a generated Markdown table of contents">☷ ToC</button>}
               <button onClick={() => setHistoryOpen(true)} title="Local version history">◴ History</button>
+              <button onClick={openEncodingDialog} title="Choose the opening and saving character encoding">⌁ {encodingLabel(activeDocument.encoding)}</button>
+              <button className={activeDocument.pinned ? 'active' : ''} onClick={toggleActiveTabPin} title={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-pressed={activeDocument.pinned}>{activeDocument.pinned ? '⌖ Unpin' : '⌖ Pin'}</button>
               <button onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)}>↶ Undo</button>
               <button onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)}>↷ Redo</button>
               <button onClick={() => saveDocument(false)}>Save <kbd>⌘S</kbd></button>
@@ -3121,7 +3762,7 @@ function App() {
                   : undefined}
                 background={previewBackground}
                 onBackgroundChange={setPreviewBackground}
-                onRender={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')}
+                onRender={renderActivePreview}
                 onCopyOutput={preview.kind === 'pdf' ? undefined : copyPreviewOutput}
                 onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
                 onExport={() => setExportOpen(true)}
@@ -3159,19 +3800,27 @@ function App() {
       </section>
 
       <footer className="statusbar">
-        <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
-        <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
-        <span>{activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
-        <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + Chromium PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + Chromium exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + Chromium PDF/PNG/HTML'}</span>
+        <div className="status-readout">
+          <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
+          <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
+          {(activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text') && <span title={`${activeTextStatistics.characters.toLocaleString()} characters across ${activeTextStatistics.lines.toLocaleString()} lines`}>{activeTextStatistics.words.toLocaleString()} words</span>}
+          <span>{activeDocument.sourceType === 'latex' && taskManagedLatex ? 'Project pipeline' : activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
+          <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? taskManagedLatex ? 'Project pipeline PDF view' : latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + native WebKit PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + native WebKit exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + native WebKit PDF/PNG/HTML'}</span>
+        </div>
         <span className="status-spacer"></span>
         <span className="cursor-location" title="Current cursor position">Row {cursorLocation.line} · Col {cursorLocation.column}</span>
-        <button onClick={() => setProjectSearchOpen(true)}>Find</button>
-        <button onClick={openGitPanel}>Git</button>
-        <button onClick={() => setZenMode((current) => !current)}>{zenMode ? 'Exit Zen' : 'Zen'}</button>
-        <button className={panelLayout.explorerOpen ? 'active' : ''} onClick={() => togglePanel('explorerOpen')} aria-pressed={panelLayout.explorerOpen}>Explorer</button>
-        <button className={panelLayout.previewOpen ? 'active' : ''} onClick={() => togglePanel('previewOpen')} aria-pressed={panelLayout.previewOpen}>{activeDocument.sourceType === 'python' ? 'Output' : 'Preview'}</button>
-        <button className={panelLayout.referenceOpen ? 'active' : ''} onClick={() => togglePanel('referenceOpen')} aria-pressed={panelLayout.referenceOpen}>References</button>
-        <button onClick={() => setPaletteOpen(true)}>⌘⇧P</button>
+        {navigationPlacement === 'bottom' && <nav className="status-navigation" aria-label="Workbench navigation">
+          <button onClick={() => setProjectSearchOpen(true)} title="Find in project">Find</button>
+          <button onClick={openGitPanel} title="Open Git status">Git</button>
+          <button onClick={() => setZenMode((current) => !current)} title={zenMode ? 'Exit Zen mode' : 'Enter Zen mode'} aria-pressed={zenMode}>{zenMode ? 'Exit Zen' : 'Zen'}</button>
+          <button className={panelLayout.explorerOpen ? 'active' : ''} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-pressed={panelLayout.explorerOpen}>Explorer</button>
+          <button className={panelLayout.previewOpen ? 'active' : ''} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-pressed={panelLayout.previewOpen}>{activeDocument.sourceType === 'python' ? 'Output' : 'Preview'}</button>
+          <button className={panelLayout.referenceOpen ? 'active' : ''} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-pressed={panelLayout.referenceOpen}>References</button>
+          <button onClick={() => setPromptOpen(true)} title="Open Prompt Studio">Prompt</button>
+          <button onClick={() => setPaletteOpen(true)} title="Open Command Palette">⌘⇧P</button>
+          <button onClick={() => setSettingsOpen(true)} title="Open Settings">Settings</button>
+          <button onClick={() => void refreshProject()} title="Refresh project">Refresh</button>
+        </nav>}
       </footer>
 
       {toast && <div className={`toast ${toast.tone}`} role="status"><span>{toast.tone === 'success' ? '✓' : toast.tone === 'error' ? '!' : 'i'}</span>{toast.text}</div>}
@@ -3221,6 +3870,22 @@ function App() {
       {aboutDialog}
 
       {recentProjectsDialog}
+
+      {encodingOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setEncodingOpen(false)}>
+          <section className="workbench-modal encoding-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Text encoding">
+            <div className="modal-title"><div><p className="eyebrow">Local byte representation</p><h2>Text encoding</h2></div><button className="icon-button" onClick={() => setEncodingOpen(false)}>×</button></div>
+            <p className="modal-copy">Choose how Yedit reads a file and how it writes its bytes. It never substitutes unsupported characters on save: choose a capable encoding instead.</p>
+            <label className="settings-field">Character encoding
+              <select value={encodingChoice} onChange={(event) => setEncodingChoice(event.target.value)}>
+                {CHARACTER_ENCODINGS.map((encoding) => <option key={encoding.value} value={encoding.value}>{encoding.label}</option>)}
+              </select>
+            </label>
+            <div className="encoding-current"><strong>{activeDocument.name}</strong><span>Current: {encodingLabel(activeDocument.encoding)}{activeDocument.relativePath || activeDocument.fileHandle ? ' · saved local file' : ' · scratchpad'}</span></div>
+            <footer className="settings-footer"><span>Auto detects a UTF BOM, then valid UTF-8, otherwise Windows-1252. The selected codec also applies to the next Open File and recent-file opening.</span><div><button className="outline-button" onClick={() => { setOpeningEncoding(encodingChoice); setEncodingOpen(false); showToast(`Next file will open as ${encodingLabel(encodingChoice)}.`, 'success'); }}>Use for next open</button><button className="outline-button" onClick={setActiveDocumentEncoding}>Use for save</button><button className="accent-button" onClick={() => void reopenActiveWithEncoding()}>{activeDocument.relativePath || activeDocument.fileHandle ? 'Reopen with encoding' : 'Set scratchpad encoding'}</button></div></footer>
+          </section>
+        </div>
+      )}
 
       {settingsOpen && (
         <div className="modal-backdrop settings-backdrop" onMouseDown={() => setSettingsOpen(false)}>
@@ -3311,6 +3976,7 @@ function App() {
               <div className="settings-switch-grid">
                 <label><input type="checkbox" checked={settings.autoSave} onChange={(event) => setSettings((current) => ({ ...current, autoSave: event.target.checked }))} /><span><strong>Auto-save saved files</strong><small>Write project and individually opened files after a brief idle pause; scratchpad tabs stay unsaved.</small></span></label>
                 <label><input type="checkbox" checked={settings.previewAutoRender} onChange={(event) => setSettings((current) => ({ ...current, previewAutoRender: event.target.checked }))} /><span><strong>Automatic preview</strong><small>Render after source changes; use Render for manual builds anytime.</small></span></label>
+                <label><input type="checkbox" checked={settings.safeMode} onChange={(event) => setSettings((current) => ({ ...current, safeMode: event.target.checked }))} /><span><strong>Safe Mode</strong><small>Keep projects passive: block local builds, project tasks, and Python runs until you explicitly trust the folder.</small></span></label>
               </div>
             </div>
             <div className="settings-section shortcut-settings">
@@ -3322,6 +3988,13 @@ function App() {
             </div>
             <div className="settings-section panel-settings">
               <div className="settings-section-head"><span>Workspace panels</span><small>Turn each panel fully on or off. Drag the cyan dividers to resize visible panels.</small></div>
+              <label className="settings-field">Navigation controls
+                <select value={navigationPlacement} aria-label="Navigation controls placement" onChange={(event) => setSettings((current) => ({ ...current, navigationPlacement: event.target.value as AppSettings['navigationPlacement'] }))}>
+                  <option value="bottom">Bottom status bar</option>
+                  <option value="left">Left activity rail</option>
+                </select>
+              </label>
+              <small className="navigation-placement-note">The selected surface contains Find, Git, Zen, panels, Prompt Studio, Command Palette, Settings, and Refresh. Status and row/column stay below the editor.</small>
               <div className="panel-toggle-grid">
                 <button className={panelLayout.explorerOpen ? 'selected' : ''} aria-pressed={panelLayout.explorerOpen} onClick={() => togglePanel('explorerOpen')}><span>▦</span><strong>Explorer</strong><small>{panelLayout.explorerOpen ? 'Visible' : 'Hidden'}</small></button>
                 <button className={panelLayout.previewOpen ? 'selected' : ''} aria-pressed={panelLayout.previewOpen} onClick={() => togglePanel('previewOpen')}><span>◉</span><strong>Live preview</strong><small>{panelLayout.previewOpen ? 'Visible' : 'Hidden'}</small></button>
@@ -3366,6 +4039,31 @@ function App() {
         </div>
       )}
 
+      {quickOpenOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setQuickOpenOpen(false)}>
+          <section className="workbench-modal quick-open-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Quick Open">
+            <div className="modal-title"><div><p className="eyebrow">Fast local navigation</p><h2>Quick Open</h2></div><button className="icon-button" onClick={() => setQuickOpenOpen(false)} aria-label="Close Quick Open">×</button></div>
+            <form className="project-search-form" onSubmit={(event) => {
+              event.preventDefault();
+              const result = quickOpenResults[0];
+              if (!result) return;
+              result.run();
+              setQuickOpenOpen(false);
+            }}>
+              <input autoFocus value={quickOpenQuery} onChange={(event) => setQuickOpenQuery(event.target.value)} onKeyDown={(event) => {
+                if (event.key === 'Escape') { event.preventDefault(); setQuickOpenOpen(false); }
+              }} placeholder="Files and tabs · @ symbols · : line" />
+              <button className="accent-button" type="submit" disabled={!quickOpenResults.length}>Open</button>
+            </form>
+            <p className="quick-open-help"><kbd>@</kbd> current-document symbols <span>·</span><kbd>:</kbd> line number <span>·</span> fuzzy-match tabs and project files</p>
+            <div className="workbench-list search-results quick-open-results">
+              {quickOpenResults.map((result) => <button key={result.id} onClick={() => { result.run(); setQuickOpenOpen(false); }}><span><strong>{result.label}</strong><code>{result.detail}</code></span><small>{result.kind === 'tab' ? 'Tab' : result.kind === 'file' ? 'File' : result.kind === 'symbol' ? 'Symbol' : 'Line'}</small></button>)}
+              {!quickOpenResults.length && <div className="empty-workbench-state">{quickOpenQuery ? 'No local file, tab, symbol, or line matches that query.' : 'Open a file or folder to start navigating.'}</div>}
+            </div>
+          </section>
+        </div>
+      )}
+
       {projectSearchOpen && (
         <div className="modal-backdrop" onMouseDown={() => setProjectSearchOpen(false)}>
           <section className="workbench-modal project-search-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Find in project">
@@ -3399,15 +4097,17 @@ function App() {
       {gitOpen && (
         <div className="modal-backdrop" onMouseDown={() => setGitOpen(false)}>
           <section className="workbench-modal git-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Git status">
-            <div className="modal-title"><div><p className="eyebrow">Read-only repository context</p><h2>Git status {gitInfo?.branch ? `· ${gitInfo.branch}` : ''}</h2></div><div><button className="compact-button" onClick={() => void openGitPanel()}>↻ Refresh</button><button className="icon-button" onClick={() => setGitOpen(false)}>×</button></div></div>
+            <div className="modal-title"><div><p className="eyebrow">Local repository workspace</p><h2>Git status {gitInfo?.branch ? `· ${gitInfo.branch}` : ''}</h2></div><div><button className="compact-button" onClick={() => void openGitPanel()} disabled={isGitLoading || isGitMutating}>↻ Refresh</button><button className="icon-button" onClick={() => setGitOpen(false)}>×</button></div></div>
             {isGitLoading && <div className="empty-workbench-state">Inspecting this project locally…</div>}
             {!isGitLoading && !gitInfo?.available && <div className="empty-workbench-state">{gitInfo?.message || 'This folder is not a Git repository.'}</div>}
             {!isGitLoading && gitInfo?.available && <>
-              <div className="git-toolbar"><span>{gitInfo.files?.length ? `${gitInfo.files.length} changed file${gitInfo.files.length === 1 ? '' : 's'}` : 'Working tree clean'}</span><button onClick={showActiveDiff}>View active diff</button></div>
+              <div className="git-toolbar"><span>{gitInfo.files?.length ? `${gitInfo.files.length} changed file${gitInfo.files.length === 1 ? '' : 's'}` : 'Working tree clean'}</span><div className="git-toolbar-actions">{gitInfo.branches?.length ? <label className="git-branch-picker">Branch <select value={gitInfo.branch || ''} onChange={(event) => { const branch = event.target.value; if (project && branch && branch !== gitInfo.branch) void runGitMutation(`Switched to ${branch}.`, () => desktop.git.switchBranch(project.root, branch)); }} disabled={settings.safeMode || isGitMutating}><option value="" disabled>Select branch</option>{gitInfo.branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}</select></label> : null}<button onClick={showActiveDiff}>View active diff</button></div></div>
+              {settings.safeMode && <div className="git-safe-mode-note">Safe Mode is on: staging, unstaging, commits, and branch switches are disabled.</div>}
               <div className="git-grid">
-                <div><h3>Changes</h3><div className="workbench-list git-changes">{gitInfo.files?.map((file) => <span key={file.path}><b>{file.status || `${file.index || ' '} ${file.workingTree || ' '}`}</b><code>{file.path}</code></span>)}{!gitInfo.files?.length && <div className="empty-workbench-state">No uncommitted project files.</div>}</div></div>
+                <div><h3>Changes</h3><div className="workbench-list git-changes">{gitInfo.files?.map((file) => { const staged = Boolean(file.index && file.index !== ' ' && file.index !== '?'); const canStage = !staged || Boolean(file.workingTree && file.workingTree !== ' '); return <article key={file.path}><div className="git-change-main"><b>{file.status || `${file.index || ' '} ${file.workingTree || ' '}`}</b><code>{file.path}</code></div><div className="git-change-actions"><button onClick={() => void showGitDiff(file.path)} disabled={isGitMutating}>Diff</button>{staged && <button onClick={() => void showGitDiff(file.path, true)} disabled={isGitMutating}>Staged</button>}{canStage && <button onClick={() => project && void runGitMutation(`Staged ${file.path}.`, () => desktop.git.stage(project.root, file.path))} disabled={settings.safeMode || isGitMutating}>Stage</button>}{staged && <button onClick={() => project && void runGitMutation(`Unstaged ${file.path}.`, () => desktop.git.unstage(project.root, file.path))} disabled={settings.safeMode || isGitMutating}>Unstage</button>}</div></article>; })}{!gitInfo.files?.length && <div className="empty-workbench-state">No uncommitted project files.</div>}</div></div>
                 <div><h3>Recent commits</h3><div className="workbench-list git-commits">{gitInfo.commits?.map((commit) => <span key={commit.hash}><b>{commit.hash}</b><strong>{commit.subject}</strong><small>{commit.author} · {commit.date ? new Date(commit.date).toLocaleDateString() : ''}</small></span>)}{!gitInfo.commits?.length && <div className="empty-workbench-state">No commits are available yet.</div>}</div></div>
               </div>
+              <div className="git-commit-box"><label htmlFor="git-commit-message">Commit staged changes</label><div><input id="git-commit-message" value={gitCommitMessage} maxLength={240} onChange={(event) => setGitCommitMessage(event.target.value)} placeholder="Describe this local change" disabled={settings.safeMode || isGitMutating} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitGitChanges(); } }} /><button className="accent-button" onClick={commitGitChanges} disabled={settings.safeMode || isGitMutating || !gitCommitMessage.trim() || !gitInfo.files?.some((file) => Boolean(file.index && file.index !== ' ' && file.index !== '?'))}>Commit</button></div><small>Only staged files are committed. Yedit does not run Git hooks or signing prompts.</small></div>
             </>}
           </section>
         </div>
@@ -3417,10 +4117,11 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setTaskConsoleOpen(false)}>
           <section className="workbench-modal task-console-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Task Console">
             <div className="modal-title"><div><p className="eyebrow">Local build and inspection output</p><h2>Task Console</h2></div><button className="icon-button" onClick={() => setTaskConsoleOpen(false)}>×</button></div>
-            <div className="task-console-actions">{activeDocument.sourceType === 'python' ? <>
+            {projectTasks.length > 0 && <div className="task-console-pipeline"><span>Project pipeline{projectTasks[0].script ? ` · ${projectTasks[0].script}` : ''}</span><small>{projectTasks.map((task) => task.label).join(' · ')}</small></div>}
+            <div className="task-console-actions">{projectTasks.map((task) => <button key={task.id} className="outline-button project-task-button" onClick={() => void runProjectTask(task)} disabled={isTaskRunning} title={projectTaskTooltip(task)}>▶ {task.label}</button>)}{activeDocument.sourceType === 'python' ? <>
               <button className="accent-button" onClick={() => void runActivePython('run')} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : 'Run Python'}</button>
               <button className="outline-button" onClick={() => void runActivePython('test')} disabled={isTaskRunning}>Test Python</button>
-            </> : <><button className="accent-button" onClick={() => void runPrimaryTask()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont to TTF' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active source build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}</>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
+            </> : taskManagedLatex ? null : <><button className="accent-button" onClick={() => void runPrimaryTask()} disabled={isTaskRunning}>{isTaskRunning ? 'Running…' : activeDocument.sourceType === 'metafont' ? 'Convert MetaFont to TTF' : activeDocument.sourceType === 'latex' ? `Compile LaTeX PDF with ${texPdfEngineLabel(texPdfEngine)}` : activeDocument.sourceType === 'tikz' ? `Compile TikZ PDF with ${texPdfEngineLabel(texPdfEngine)}` : 'Run active source build'}</button>{activeDocument.sourceType === 'latex' && <button className="outline-button" onClick={() => void runActiveBuild('dvi')} disabled={isTaskRunning} title="DVI always uses classic latex">Compile DVI · classic latex</button>}</>}<button className="outline-button" onClick={showActiveDiff} disabled={isTaskRunning}>Show Git diff</button></div>
             <pre className="task-console-output">{taskOutput}</pre>
           </section>
         </div>
@@ -3469,6 +4170,18 @@ function App() {
                 </div>
               </div>
             </div>
+          </section>
+        </div>
+      )}
+
+      {pendingAiReview && (
+        <div className="modal-backdrop prompt-backdrop" onMouseDown={() => setPendingAiReview(null)}>
+          <section className="workbench-modal ai-review-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Review proposed AI source change">
+            <div className="modal-title"><div><p className="eyebrow">Explicit local review</p><h2>Review proposed source change</h2></div><button className="icon-button" onClick={() => setPendingAiReview(null)} aria-label="Cancel AI source review">×</button></div>
+            <p className="modal-copy">Nothing is applied automatically. This review compares the selected change for <code>{pendingAiReview.documentName}</code> before it reaches your editor.</p>
+            <div className="ai-review-summary"><span className={`source-label ${SOURCE_META[pendingAiReview.sourceType].color}`}>{SOURCE_META[pendingAiReview.sourceType].label}</span><strong>{pendingAiReview.mode === 'new' ? 'New draft' : pendingAiReview.mode === 'insert' ? 'Insert at the captured cursor position' : 'Replace the reviewed source range'}</strong><small>− current source · + proposed source</small></div>
+            <pre className="ai-review-diff" aria-label="Proposed source diff">{sourceReviewDiff(pendingAiReview.before, pendingAiReview.source).map((line, index) => <span key={`${line.kind}-${index}`} className={line.kind}>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}{line.text || ' '}</span>)}</pre>
+            <footer className="ai-review-footer"><span>Review remains local; Prompt Studio only handles text you paste into it.</span><div><button className="outline-button" onClick={() => setPendingAiReview(null)}>Cancel</button><button className="accent-button" onClick={applyReviewedAiSource}>Apply reviewed source</button></div></footer>
           </section>
         </div>
       )}
@@ -3523,7 +4236,7 @@ function App() {
               onPresentationModeChange={setOutputViewerFullscreen}
               presentationStyle="inline"
               presentationLabel="Full screen"
-              onRender={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')}
+              onRender={renderActivePreview}
               onCopyOutput={preview.kind === 'pdf' ? undefined : copyPreviewOutput}
               onCopyImage={preview.kind === 'svg' ? copyPreviewPng : undefined}
               onExport={() => { closeOutputViewer(); setExportOpen(true); }}

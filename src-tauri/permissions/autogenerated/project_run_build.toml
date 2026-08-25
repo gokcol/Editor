@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-run-build"
+description = "Enables the project_run_build command without any pre-configured scope."
+commands.allow = ["project_run_build"]
+
+[[permission]]
+identifier = "deny-project-run-build"
+description = "Denies the project_run_build command without any pre-configured scope."
+commands.deny = ["project_run_build"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-duplicate-file"
+description = "Enables the project_duplicate_file command without any pre-configured scope."
+commands.allow = ["project_duplicate_file"]
+
+[[permission]]
+identifier = "deny-project-duplicate-file"
+description = "Denies the project_duplicate_file command without any pre-configured scope."
+commands.deny = ["project_duplicate_file"]

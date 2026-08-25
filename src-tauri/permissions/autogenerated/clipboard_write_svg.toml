@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clipboard-write-svg"
+description = "Enables the clipboard_write_svg command without any pre-configured scope."
+commands.allow = ["clipboard_write_svg"]
+
+[[permission]]
+identifier = "deny-clipboard-write-svg"
+description = "Denies the clipboard_write_svg command without any pre-configured scope."
+commands.deny = ["clipboard_write_svg"]

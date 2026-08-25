@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-run-python"
+description = "Enables the project_run_python command without any pre-configured scope."
+commands.allow = ["project_run_python"]
+
+[[permission]]
+identifier = "deny-project-run-python"
+description = "Denies the project_run_python command without any pre-configured scope."
+commands.deny = ["project_run_python"]

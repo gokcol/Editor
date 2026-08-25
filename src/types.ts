@@ -44,6 +44,11 @@ export type EditorDiagnostic = {
 
 export type Appearance = 'system' | 'dark' | 'light';
 export type EditorBackgroundPattern = 'none' | 'grid' | 'dots' | 'lines';
+/** Where the primary workbench commands live. The status readout stays below
+ * the editor in either mode; only one command surface is shown at a time. */
+export type NavigationPlacement = 'bottom' | 'left';
+/** Canonical label for one of the locally supported character codecs. */
+export type CharacterEncoding = string;
 
 export type AppSettings = {
   appearance: Appearance;
@@ -62,11 +67,14 @@ export type AppSettings = {
   enabledSourceTypes: SourceType[];
   referenceFontSize: number;
   autoSave: boolean;
+  /** Keeps opened projects passive: no task, build, or runner execution. */
+  safeMode: boolean;
   formatOnSave: boolean;
   previewAutoRender: boolean;
   editorWordWrap: boolean;
   editorMinimap: boolean;
   editorTabSize: number;
+  navigationPlacement: NavigationPlacement;
   explorerOpen: boolean;
   previewOpen: boolean;
   referenceOpen: boolean;
@@ -102,6 +110,10 @@ export type DocumentModel = {
   relativePath?: string;
   /** Opaque main-process permission for a file opened outside a project. */
   fileHandle?: string;
+  /** Codec used to decode the file and to preserve its byte representation on save. */
+  encoding?: CharacterEncoding;
+  /** Pinned tabs stay open until explicitly unpinned. */
+  pinned?: boolean;
   dirty: boolean;
   revision: number;
 };
@@ -110,6 +122,7 @@ export type OpenedProjectSourceFile = {
   name: string;
   sourceType: SourceType;
   content: string;
+  encoding: CharacterEncoding;
   /** A file within the currently opened project retains its project binding. */
   relativePath: string;
 };
@@ -118,11 +131,17 @@ export type OpenedStandaloneSourceFile = {
   name: string;
   sourceType: SourceType;
   content: string;
+  encoding: CharacterEncoding;
   /** Opaque handle used to save this independently opened file in place. */
   fileHandle: string;
 };
 
 export type OpenedSourceFile = OpenedProjectSourceFile | OpenedStandaloneSourceFile;
+
+export type DecodedSourceFile = {
+  content: string;
+  encoding: CharacterEncoding;
+};
 
 /** A locally remembered folder or standalone source file. */
 export type RecentEntry = {
@@ -176,6 +195,36 @@ export type BuildProfile = {
   engine?: TexPdfEngine | 'latex';
 };
 
+/**
+ * A project-owned build or preview entry discovered by the local desktop
+ * backend. Tasks deliberately remain descriptive rather than exposing an
+ * arbitrary command line to the renderer.
+ */
+export type ProjectTask = {
+  id: string;
+  label: string;
+  description: string;
+  /** Display-only source for the task, such as `build.sh`. */
+  script?: string;
+  /** Display-only argv for a checked `yedit.tasks.json` task. */
+  command?: string;
+  /** Backend-classified intent used to surface build and preview tasks first. */
+  kind?: 'build' | 'preview' | 'test' | 'run' | 'lint' | 'format';
+};
+
+/** Result returned by a guarded project task run. */
+export type ProjectTaskResult = {
+  ok: boolean;
+  taskId: string;
+  label: string;
+  output?: string;
+  error?: string;
+  outputPath?: string;
+  outputRelativePath?: string;
+  /** A PDF data URI when the task generated a previewable document. */
+  dataUri?: string;
+};
+
 /** A deliberately small, local-only contract for running the active Python buffer. */
 export type PythonRunOptions = {
   mode?: 'run' | 'test';
@@ -217,83 +266,19 @@ export type GitLogResponse = {
   entries?: Array<{ hash: string; shortHash: string; author: string; date: string; subject: string }>;
 };
 
-declare global {
-  interface Window {
-    diagramApi: {
-      project: {
-        open: () => Promise<Project | { canceled: true }>;
-        openFile: (projectRoot?: string) => Promise<OpenedSourceFile | { canceled: true }>;
-        create: (name: string) => Promise<Project | { canceled: true }>;
-        refresh: (root: string) => Promise<Project>;
-        readFile: (root: string, relativePath: string) => Promise<string>;
-        writeFile: (root: string, relativePath: string, content: string) => Promise<{ relativePath: string }>;
-        createFile: (root: string, relativePath: string, content: string) => Promise<{ relativePath: string }>;
-        renameFile: (root: string, fromRelativePath: string, toRelativePath: string) => Promise<{ relativePath: string; previousRelativePath: string }>;
-        duplicateFile: (root: string, fromRelativePath: string, toRelativePath: string) => Promise<{ relativePath: string; sourceRelativePath: string }>;
-        deleteFile: (root: string, relativePath: string) => Promise<{ relativePath: string }>;
-        watch: (root: string) => Promise<{ watchId: string; root: string; recursive: boolean }>;
-        unwatch: (watchId: string) => Promise<{ stopped: boolean }>;
-        onChanged: (callback: (update: ProjectWatchUpdate) => void) => () => void;
-        buildProfiles: () => Promise<BuildProfile[]>;
-        runBuild: (root: string, relativePath: string, profileId: string) => Promise<{ ok: boolean; profile: string; outputPath?: string; outputRelativePath?: string; error?: string }>;
-        /** Runs the editor's current Python buffer locally; no source must be saved first. */
-        runPython?: (source: string, name: string, options?: PythonRunOptions) => Promise<PythonRunResult>;
-        writeOpenedFile: (fileHandle: string, content: string) => Promise<{ name: string }>;
-        saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; canceled?: boolean }>;
-      };
-      recents: {
-        list: () => Promise<RecentEntry[]>;
-        /** Imports folders remembered by pre-Yedit renderer builds once. */
-        migrateLegacyProjects: (projects: Array<{ root: string; name: string }>) => Promise<RecentEntry[]>;
-        open: (id: string, projectRoot?: string) => Promise<OpenRecentResult>;
-        remove: (id: string) => Promise<RecentEntry[]>;
-        clear: () => Promise<RecentEntry[]>;
-      };
-      render: {
-        tikz: (source: string, name: string, engine?: TexPdfEngine) => Promise<
-          | { ok: true; dataUri: string; pdfPath: string; directory: string; engine: TexPdfEngine }
-          | { ok: false; error: string }
-        >;
-        latex: (source: string, name: string, mode?: 'pdf' | 'dvi', engine?: TexPdfEngine) => Promise<
-          | { ok: true; format: 'pdf'; dataUri: string; pdfPath: string; directory: string; engine: TexPdfEngine }
-          | { ok: true; format: 'dvi'; dviPath: string; directory: string; engine: 'latex'; previewKind: 'svg'; svg: string }
-          | { ok: true; format: 'dvi'; dviPath: string; directory: string; engine: 'latex'; previewKind: 'none'; warning: string }
-          | { ok: false; error: string }
-        >;
-        metafont: (source: string, name: string) => Promise<
-          | { ok: true; svg: string }
-          | { ok: false; error: string }
-        >;
-        export: (payload: {
-          sourceType: SourceType;
-          source: string;
-          svg?: string;
-          html?: string;
-          format: ExportFormat;
-          suggestedName: string;
-          scale?: 1 | 2 | 4;
-          /** Applies to TikZ and LaTeX PDF-family exports; DVI always uses classic latex. */
-          engine?: TexPdfEngine;
-        }) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
-      };
-      settings: {
-        load: () => Promise<AppSettings>;
-        save: (settings: AppSettings) => Promise<AppSettings>;
-      };
-      git: {
-        status: (root: string) => Promise<GitStatusResponse>;
-        diff: (root: string, relativePath?: string, options?: { staged?: boolean }) => Promise<{ available: boolean; isRepository: boolean; root: string; error?: string; diff?: string; hasChanges?: boolean }>;
-        log: (root: string, relativePath?: string, options?: { limit?: number }) => Promise<GitLogResponse>;
-      };
-      clipboard: {
-        writeSvg: (svg: string) => Promise<{ ok: boolean }>;
-        writeDataUriImage: (dataUri: string) => Promise<{ ok: boolean; size?: { width: number; height: number } }>;
-      };
-      shell: {
-        reveal: (path: string) => Promise<void>;
-      };
-      onMenuAction: (callback: (action: string) => void) => () => void;
-      rendererReady: () => void;
-    };
-  }
-}
+export type GitMutationResponse = {
+  ok: boolean;
+  available: boolean;
+  isRepository: boolean;
+  root: string;
+  error?: string;
+};
+
+export type GitBranchesResponse = {
+  available: boolean;
+  isRepository: boolean;
+  root: string;
+  current?: string;
+  branches?: string[];
+  error?: string;
+};

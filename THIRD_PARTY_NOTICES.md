@@ -8,7 +8,8 @@ components. Their own licence terms apply to those components.
 
 | Component | Version in this build | Declared licence | Purpose |
 | --- | ---: | --- | --- |
-| Electron | 37.10.3 | MIT | macOS desktop shell |
+| Tauri / tauri-build / Tauri plugins | 2.x | MIT OR Apache-2.0 | Native Rust desktop host, macOS menus, dialogs, lifecycle, and local IPC |
+| WebKit / WKWebView | macOS system framework | Apple platform licence | Native webview and HTML/PDF/PNG export surface |
 | React / React DOM | 19.2.8 | MIT | Interface runtime |
 | Monaco Editor | 0.52.2 | MIT | Code editor |
 | @monaco-editor/react | 4.7.0 | MIT | React editor integration |

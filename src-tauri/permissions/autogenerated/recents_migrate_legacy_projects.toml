@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recents-migrate-legacy-projects"
+description = "Enables the recents_migrate_legacy_projects command without any pre-configured scope."
+commands.allow = ["recents_migrate_legacy_projects"]
+
+[[permission]]
+identifier = "deny-recents-migrate-legacy-projects"
+description = "Denies the recents_migrate_legacy_projects command without any pre-configured scope."
+commands.deny = ["recents_migrate_legacy_projects"]

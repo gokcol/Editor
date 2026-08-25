@@ -1,6 +1,10 @@
 # Yedit
 
-Yedit is a local, source-first macOS workbench for diagrams, documents, structured data, and everyday programming. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets.
+For quick `.txt` and Markdown editing, the same workspace also contains the
+separate lightweight native app in [`7txt`](7txt/README.md). It is intentionally
+independent from Yedit, so neither app changes the other.
+
+Yedit is a local, source-first macOS workbench for diagrams, documents, structured data, and everyday programming. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets. The desktop edition is a native Tauri + WKWebView application.
 
 ## What is included
 
@@ -17,21 +21,26 @@ Yedit is a local, source-first macOS workbench for diagrams, documents, structur
 - Plain text → escaped, preformatted reading preview; its source is never interpreted as HTML.
 - JSON → strict local validation, lossless pretty/minify operations, schema inference, and copy/paste-only AI prompt modes for creating or analyzing JSON.
 - Python → Run and standard-library `unittest` Test run the current editor buffer locally without saving; stdout, stderr, status, and the executed command appear in the right-hand Output panel.
-- Export to PNG, SVG, and PDF, plus DVI for LaTeX and TTF for MetaFont. TikZ and LaTeX use the selected local TeX PDF engine plus Poppler; MetaFont uses `mf2pt1` + FontForge for TTF; SVG/Mermaid use librsvg; Markdown and plain text export HTML, PNG, or PDF through the local desktop renderer.
-- Searchable, insertable command references for the diagram and document formats, plus language-aware snippets, outline, formatting, and diagnostics for data and code.
+- Project pipelines → when an opened folder has a root-level `build.sh` and/or `build-preview.sh`, Yedit exposes them as explicit local Build project / Build preview tasks. A project can additionally define checked no-shell tasks in `yedit.tasks.json` for build, test, run, lint, or format commands. This is for assembled, multi-file documents such as books: Yedit saves the active source, runs the selected project task, shows its log, and opens a produced PDF in Live Output without trying to compile a chapter fragment by itself.
+- Export to PNG, SVG, and PDF, plus DVI for LaTeX and TTF for MetaFont. TikZ and LaTeX use the selected local TeX PDF engine plus Poppler; MetaFont uses `mf2pt1` + FontForge for TTF; SVG/Mermaid use librsvg; Markdown, HTML, plain text, and code/data views export HTML, PNG, or PDF through Yedit's bundled native WebKit exporter.
+- Quick Open (`⌘P`) for tabs, project files, symbols (`@query`), and a line (`:42`); project search; searchable, insertable command references; language-aware snippets; outline; formatting; and diagnostics for data and code.
+- Session-oriented editing: pin a tab to protect it from accidental closure, restore scratch tabs after restart, and recover one of 32 local source snapshots per file. Markdown also includes a word/character count and an updateable table of contents.
+- Local Git workflow: inspect status, diffs, history, and branches; stage or unstage individual files; create a local commit; and switch a listed local branch. Destructive Git operations such as reset, discard, merge, and push are intentionally absent.
 - A native-menu-backed command palette, formatting commands, keyboard shortcuts, and local source beautifiers.
-- Compact local settings for macOS System/Dark/Light appearance, editor font/size, independent Command deck helper-text size, editor background color and pattern, enabled source types, persistent panel visibility, and panel sizes.
+- Local character-encoding controls for opening and saving: Unicode, ISO-8859, Windows, Mac, Cyrillic, and East Asian codecs are handled without silent character substitution.
+- Compact local settings for macOS System/Dark/Light appearance, editor font/size, independent Command deck helper-text size, editor background color and pattern, enabled source types, persistent panel visibility and panel sizes, navigation controls in either the bottom status bar or left activity rail, and an optional editor minimap (off by default).
 - Fully toggleable Explorer, Live Preview, and Command deck panels, with draggable dividers and a layout reset control available from Settings, the command palette, and the View menu.
-- Prompt Studio: create a precise LLM prompt, copy it to any model, and paste its source-only response back into the editor. No API key or remote service is required.
+- Prompt Studio: create a precise LLM prompt, copy it to any model, and paste its source-only response back into the editor. The returned source is shown as a local review diff before it can replace or insert anything. No API key or remote service is required.
+- Safe Mode blocks native compilers, Python, project tasks, and Git changes until the project is explicitly trusted in Settings.
 
 ## Run locally
 
 ```bash
 npm install
-npm run dev
+npm run tauri:dev
 ```
 
-`npm run dev` builds the renderer and opens Yedit. For a production renderer build without opening the app:
+`npm run tauri:dev` starts the native Yedit app. For a production renderer build without opening the app:
 
 ```bash
 npm run build
@@ -40,9 +49,13 @@ npm run build
 To generate an unpacked macOS app bundle or distributable artifacts:
 
 ```bash
-npm run package:dir
-npm run package:mac
+npm run tauri:dir
+npm run tauri:mac
 ```
+
+The first Tauri build compiles the native macOS host; subsequent builds reuse
+the Rust build cache. The app bundle is configured for Developer ID signing and
+does not submit for notarization.
 
 ## Local renderer prerequisites
 
@@ -57,16 +70,18 @@ The app discovers common macOS installation locations automatically. For full ex
 | MetaFont TTF | `mf2pt1` from TeX Live or MacTeX, plus the FontForge CLI (`brew install fontforge`) |
 | SVG | `rsvg-convert` for PNG/PDF export |
 | Mermaid | No separate CLI — Mermaid is bundled; `rsvg-convert` handles PNG/PDF export |
-| Markdown | No separate CLI — the bundled renderer creates PNG/PDF exports |
-| Plain text | No separate CLI — the bundled renderer creates HTML, PNG, and PDF exports |
+| Markdown / HTML / code / data / text | No separate CLI — the bundled macOS WebKit exporter creates HTML, PNG, and PDF exports |
 
-PDF TeX compilation is run with `-no-shell-escape` in a temporary directory. Choose `XeLaTeX` or `LuaLaTeX` when a document needs Unicode-first typesetting, `fontspec`, or installed system/OpenType fonts; choose `pdfLaTeX` for conventional PDF workflows. DVI output deliberately uses the classic `latex` engine. MetaFont TTF conversion is best for `mf2pt1`-compatible fonts made from closed `fill`/`unfill` outlines; arbitrary legacy MF programs may need a raster-tracing toolchain instead. The app never changes a source file while rendering.
+PDF TeX compilation is run with `-no-shell-escape` in a temporary directory. Choose `XeLaTeX` or `LuaLaTeX` when a document needs Unicode-first typesetting, `fontspec`, or installed system/OpenType fonts; choose `pdfLaTeX` for conventional PDF workflows. DVI output deliberately uses the classic `latex` engine. MetaFont TTF conversion is best for `mf2pt1`-compatible fonts made from closed `fill`/`unfill` outlines; arbitrary legacy MF programs may need a raster-tracing toolchain instead. The standalone renderers never change a source file.
+
+Project tasks are intentionally not a generic shell runner: Yedit discovers regular, non-symlinked `build.sh` and `build-preview.sh` files at the opened folder's root, and invokes the selected one with `/bin/bash` in that folder. A task is limited to 30 minutes and 24 MB of captured output. Its PDF result is picked from `build/preview`, `build`, or `dist`. `yedit.tasks.json` is a safer alternative for common development commands: each task uses an allow-listed executable plus an argv array—never a shell string, arbitrary executable path, environment override, or project hook. The allowed commands include Node/package-manager, Python/test, Rust, Go, Java, make/just, formatter/linter, TeX, and Fortran tools. Safe Mode disables both forms. Use a project's own documented compiler stack—such as Tectonic for an assembled XeLaTeX book—when it has one.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
 | `⌘⇧P` | Command palette |
+| `⌘P` | Quick Open tabs, files, symbols, or line |
 | `⌘S` / `⌘⇧S` | Save / Save as |
 | `⌘↵` | Render active source |
 | `⌘⇧B` | Run the active Python buffer (or the active source build profile) |
@@ -80,3 +95,29 @@ PDF TeX compilation is run with `-no-shell-escape` in a temporary directory. Cho
 ## Project format
 
 Projects are plain folders. Creating a project adds only empty `diagrams/`, `documents/`, and `notes/` folders plus a tiny optional `.yedit.json` manifest. Use the explicit Template Gallery when you want starter content; nothing proprietary is required to reopen or edit a project elsewhere.
+
+Create or open **File → Project Tasks…** to add a `yedit.tasks.json` file. The command palette and Task Console refresh it after saving. Example:
+
+```json
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "test",
+      "label": "Run tests",
+      "kind": "test",
+      "command": "python3",
+      "args": ["-m", "pytest"]
+    },
+    {
+      "id": "lint",
+      "label": "Lint source",
+      "kind": "lint",
+      "command": "ruff",
+      "args": ["check", "."]
+    }
+  ]
+}
+```
+
+Task IDs begin with a lowercase letter and may contain lowercase letters, digits, `-`, and `_`. Optional `cwd` is a project-relative regular directory. Invalid tasks are not exposed for execution.

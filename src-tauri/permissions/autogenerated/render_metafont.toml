@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-render-metafont"
+description = "Enables the render_metafont command without any pre-configured scope."
+commands.allow = ["render_metafont"]
+
+[[permission]]
+identifier = "deny-render-metafont"
+description = "Denies the render_metafont command without any pre-configured scope."
+commands.deny = ["render_metafont"]

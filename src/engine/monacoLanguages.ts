@@ -506,6 +506,10 @@ export function registerFoundryLanguages(monaco: Monaco) {
       'editor.background': '#111622',
       'editor.foreground': '#d9e3f8',
       'editor.lineHighlightBackground': '#1a2232',
+      // Monaco's default line-outline paints vertical edges all the way to
+      // the viewport. Keep the active-line fill, but avoid colliding with
+      // the workbench frame at either side of the editor.
+      'editor.lineHighlightBorder': '#00000000',
       'editorCursor.foreground': '#83f1e8',
       'editor.selectionBackground': '#31466599',
       'editor.inactiveSelectionBackground': '#27394f99',
@@ -538,6 +542,7 @@ export function registerFoundryLanguages(monaco: Monaco) {
       'editor.background': '#fbfcff',
       'editor.foreground': '#1c2635',
       'editor.lineHighlightBackground': '#edf3fb',
+      'editor.lineHighlightBorder': '#00000000',
       'editorCursor.foreground': '#087d82',
       'editor.selectionBackground': '#bcdcf199',
       'editor.inactiveSelectionBackground': '#d7e5f099',

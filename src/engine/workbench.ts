@@ -14,8 +14,122 @@ export type SearchResult = {
   excerpt: string;
 };
 
+export type TextStatistics = {
+  lines: number;
+  words: number;
+  characters: number;
+};
+
+export type SourceDiffLine = {
+  kind: 'context' | 'added' | 'removed';
+  text: string;
+};
+
 function cleanLabel(value: string) {
   return value.replace(/\s+/g, ' ').replace(/[{}]/g, '').trim().slice(0, 96) || 'Untitled';
+}
+
+/**
+ * Small, deterministic fuzzy score for local navigation. It keeps Quick Open
+ * responsive without pulling in a search package: contiguous matches and
+ * filename/path-boundary matches rank above scattered characters.
+ */
+export function fuzzyScore(value: string, query: string): number {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return 0;
+  const haystack = value.toLocaleLowerCase();
+  let position = 0;
+  let score = 0;
+  let previous = -2;
+
+  for (const character of needle) {
+    const next = haystack.indexOf(character, position);
+    if (next < 0) return Number.NEGATIVE_INFINITY;
+    score += 8;
+    if (next === previous + 1) score += 12;
+    if (next === 0 || /[\\/_.\-\s]/.test(haystack[next - 1])) score += 7;
+    score -= Math.min(5, next - position);
+    previous = next;
+    position = next + 1;
+  }
+
+  return score - Math.min(12, haystack.length / 24);
+}
+
+export function textStatistics(source: string): TextStatistics {
+  return {
+    lines: source ? source.split('\n').length : 0,
+    words: (source.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) ?? []).length,
+    characters: [...source].length,
+  };
+}
+
+/** Build a stable, portable Markdown TOC enclosed in replaceable markers. */
+export function upsertMarkdownTableOfContents(source: string): { source: string; count: number } {
+  const lines = source.split('\n');
+  const headings: Array<{ depth: number; label: string; slug: string }> = [];
+  const seenSlugs = new Map<string, number>();
+  let fence: string | undefined;
+
+  for (const line of lines) {
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      if (!fence) fence = fenceMatch[1][0];
+      else if (fence === fenceMatch[1][0]) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+    const match = /^(#{2,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (!match) continue;
+    const label = match[2].replace(/[`*_~]/g, '').trim();
+    if (!label) continue;
+    const base = label
+      .toLocaleLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s-]/gu, '')
+      .trim()
+      .replace(/[\s-]+/g, '-') || 'section';
+    const occurrence = (seenSlugs.get(base) ?? 0) + 1;
+    seenSlugs.set(base, occurrence);
+    headings.push({ depth: match[1].length, label, slug: occurrence === 1 ? base : `${base}-${occurrence}` });
+  }
+
+  const toc = [
+    '<!-- yedit:toc:start -->',
+    ...headings.map((heading) => `${'  '.repeat(Math.max(0, heading.depth - 2))}- [${heading.label}](#${heading.slug})`),
+    '<!-- yedit:toc:end -->',
+  ].join('\n');
+  const marker = /<!-- yedit:toc:start -->[\s\S]*?<!-- yedit:toc:end -->/;
+  if (marker.test(source)) return { source: source.replace(marker, toc), count: headings.length };
+
+  const firstHeading = lines.findIndex((line) => /^#\s+/.test(line));
+  const insertAt = firstHeading >= 0 ? firstHeading + 1 : 0;
+  const next = [...lines.slice(0, insertAt), '', toc, '', ...lines.slice(insertAt)].join('\n');
+  return { source: next, count: headings.length };
+}
+
+/**
+ * A compact review diff. Long documents retain unchanged leading/trailing
+ * context while the changed middle remains explicit and copyable.
+ */
+export function sourceReviewDiff(before: string, after: string, context = 3): SourceDiffLine[] {
+  if (before === after) return [{ kind: 'context', text: 'No source changes proposed.' }];
+  const left = before.split('\n');
+  const right = after.split('\n');
+  let prefix = 0;
+  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < left.length - prefix
+    && suffix < right.length - prefix
+    && left[left.length - suffix - 1] === right[right.length - suffix - 1]
+  ) suffix += 1;
+  const leading = left.slice(Math.max(0, prefix - context), prefix).map((text) => ({ kind: 'context' as const, text }));
+  const removed = left.slice(prefix, left.length - suffix).map((text) => ({ kind: 'removed' as const, text }));
+  const added = right.slice(prefix, right.length - suffix).map((text) => ({ kind: 'added' as const, text }));
+  const trailing = right.slice(right.length - suffix, Math.min(right.length, right.length - suffix + context)).map((text) => ({ kind: 'context' as const, text }));
+  return [...leading, ...removed, ...added, ...trailing];
 }
 
 export function documentOutline(type: SourceType, source: string): OutlineEntry[] {
