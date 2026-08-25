@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { resolve } from 'node:path';
 
 export default defineConfig({
   clearScreen: false,
@@ -9,5 +10,11 @@ export default defineConfig({
   build: {
     target: 'es2022',
     outDir: 'dist',
+    rollupOptions: {
+      input: {
+        index: resolve(__dirname, 'index.html'),
+        boot: resolve(__dirname, '7txt-0.1.7.html'),
+      },
+    },
   },
 });

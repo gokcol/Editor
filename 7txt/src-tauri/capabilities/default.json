@@ -8,6 +8,7 @@
     "allow-open-file",
     "allow-open-recent",
     "allow-open-folder",
+    "allow-browse-folder",
     "allow-refresh-folder",
     "allow-save-as",
     "allow-write-file"

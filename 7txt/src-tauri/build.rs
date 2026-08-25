@@ -2,6 +2,7 @@ const COMMANDS: &[&str] = &[
     "open_file",
     "open_recent",
     "open_folder",
+    "browse_folder",
     "refresh_folder",
     "save_as",
     "write_file",

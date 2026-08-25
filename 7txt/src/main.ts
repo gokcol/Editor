@@ -16,8 +16,8 @@ type OpenedTextFile = { name: string; path: string; content: string; isMarkdown:
 type SavedTextFile = { name: string; path: string; encoding: string };
 type RecentEntry = { name: string; path: string; isMarkdown: boolean; openedAt: number };
 type DocumentHistory = { entries: string[]; index: number };
-type FolderEntry = { name: string; path: string; kind: 'file' | 'directory'; children: FolderEntry[] };
-type ProjectFolder = { name: string; path: string; entries: FolderEntry[]; truncated: boolean };
+type FolderEntry = { name: string; path: string; kind: 'file' | 'directory' };
+type ProjectFolder = { name: string; path: string; parentPath?: string; homePath: string; documentsPath: string; entries: FolderEntry[]; truncated: boolean };
 
 const RECENTS_KEY = '7txt:recent-files:v1';
 const PROJECT_FOLDER_KEY = '7txt:open-folder:v1';
@@ -41,10 +41,7 @@ app.innerHTML = `
     <header class="titlebar">
       <div class="brand"><span class="brand-mark">7</span><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
       <div class="document-title"><span class="dirty-dot" aria-hidden="true"></span><strong></strong><small></small></div>
-      <div class="window-actions">
-        <button data-action="find" title="Find (⌘F)">Find</button>
-        <button data-action="save" class="primary" title="Save (⌘S)">Save</button>
-      </div>
+      <div aria-hidden="true"></div>
     </header>
     <nav class="document-tabs" aria-label="Open documents">
       <div class="tab-list" role="tablist"></div>
@@ -52,14 +49,17 @@ app.innerHTML = `
     </nav>
     <section class="toolbar" aria-label="Document controls">
       <div class="file-actions">
-        <button data-action="new-text">New text</button>
-        <button data-action="new-markdown">New MD</button>
-        <button data-action="open">Open</button>
-        <button data-action="open-folder">Folder</button>
-        <button data-action="save-as">Save As</button>
+        <button class="toolbar-icon-button" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg></button>
+        <button class="toolbar-icon-button" data-action="new-markdown" title="New Markdown tab (⇧⌘N)" aria-label="New Markdown tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8.5 16v-5l2 2.7L12.5 11v5M15 11v5"/></svg></button>
+        <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
+        <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l3 3v15H5zM8 3v6h8V3M8 20v-6h8v6"/></svg></button>
       </div>
-      <label class="encoding-control" title="Choose how this document is decoded when opening or encoded when saving."><span>Encoding</span><select data-encoding>${CHARACTER_ENCODINGS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
-      <button data-action="reopen-encoding" class="reopen-encoding" title="Reload this saved document using the selected encoding">↻ Reopen</button>
+      <div class="quick-actions" aria-label="Quick actions">
+        <button class="toolbar-icon-button" data-action="save" title="Save (⌘S)" aria-label="Save"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l3 3v15H5zM8 3v6h8V3M8 20v-6h8v6"/></svg></button>
+        <button class="toolbar-icon-button" data-action="find" title="Find (⌘F)" aria-label="Find"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg></button>
+      </div>
+      <label class="encoding-control" title="Text encoding — click to choose how this document is opened or saved."><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12"/></svg><select data-encoding aria-label="Text encoding">${CHARACTER_ENCODINGS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+      <button data-action="reopen-encoding" class="toolbar-icon-button reopen-encoding" title="Reload this saved document using the selected encoding" aria-label="Reload using selected encoding"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5M20 5v6h-6"/></svg></button>
       <div class="view-switch" role="group" aria-label="View mode">
         <button data-mode-button="edit" title="Edit view (⌘1)">Edit</button>
         <button data-mode-button="split" title="Split view (⌘2)">Split</button>
@@ -70,14 +70,14 @@ app.innerHTML = `
       <button data-action="redo" title="Redo (⇧⌘Z)">↷</button>
     </section>
     <section class="findbar" hidden>
-      <label>Find <input type="search" placeholder="Search this document" spellcheck="false" /></label>
+      <span class="find-input"><svg class="find-input-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg><input type="search" placeholder="Search this document" aria-label="Find in document" spellcheck="false" /></span>
       <button data-action="find-next">Next</button>
       <button data-action="close-find" aria-label="Close Find">×</button>
     </section>
     <section class="workspace">
       <aside class="sidebar">
         <section class="sidebar-section project-section">
-          <div class="section-head"><span>PROJECT</span><span class="section-actions"><button data-action="open-folder" title="Open a folder">Open</button><button data-action="refresh-folder" title="Refresh the open folder" aria-label="Refresh folder">↻</button></span></div>
+          <div class="section-head"><span>FILES</span><span class="section-actions"><button data-action="browser-up" title="Go to parent folder" aria-label="Go up">↑</button><button data-action="browser-home" title="Go to your home folder">Home</button><button data-action="browser-documents" title="Go to Documents">Docs</button><button data-action="open-folder" title="Choose any folder or disk">Choose</button><button data-action="refresh-folder" title="Refresh this folder" aria-label="Refresh folder">↻</button></span></div>
           <div class="project-tree"></div>
         </section>
         <section class="sidebar-section outline-section">
@@ -235,7 +235,7 @@ function storedProjectPath() {
 function renderProjectTree() {
   projectTree.replaceChildren();
   if (!projectFolder) {
-    projectTree.append(makeEmpty('Open a folder to browse its text and Markdown files.'));
+    projectTree.append(makeEmpty('Loading your Documents folder…'));
     return;
   }
   const root = document.createElement('div');
@@ -248,42 +248,34 @@ function renderProjectTree() {
   root.append(name, path);
   projectTree.append(root);
   if (!projectFolder.entries.length) {
-    projectTree.append(makeEmpty('No supported files found in this folder.'));
+    projectTree.append(makeEmpty('This folder has no visible folders or supported text files.'));
   } else {
     const entries = document.createElement('div');
     entries.className = 'folder-entries';
-    for (const entry of projectFolder.entries) entries.append(makeFolderEntry(entry, 0));
+    for (const entry of projectFolder.entries) entries.append(makeFolderEntry(entry));
     projectTree.append(entries);
   }
   if (projectFolder.truncated) {
-    const notice = makeEmpty('The tree is limited to the first 3,000 matching files.');
+    const notice = makeEmpty('The folder view is limited to the first 8,000 items.');
     notice.classList.add('folder-truncated');
     projectTree.append(notice);
   }
 }
 
-function makeFolderEntry(entry: FolderEntry, depth: number): HTMLElement {
+function makeFolderEntry(entry: FolderEntry): HTMLButtonElement {
+  const button = document.createElement('button');
   if (entry.kind === 'file') {
-    const button = document.createElement('button');
     button.className = 'folder-file';
     button.textContent = entry.name;
     button.title = entry.path;
-    button.style.setProperty('--tree-depth', String(depth));
     button.addEventListener('click', () => void openProjectFile(entry.path));
     return button;
   }
-  const details = document.createElement('details');
-  details.className = 'folder-directory';
-  details.open = depth < 1;
-  const summary = document.createElement('summary');
-  summary.textContent = entry.name;
-  summary.title = entry.path;
-  summary.style.setProperty('--tree-depth', String(depth));
-  const children = document.createElement('div');
-  children.className = 'folder-children';
-  for (const child of entry.children) children.append(makeFolderEntry(child, depth + 1));
-  details.append(summary, children);
-  return details;
+  button.className = 'folder-directory';
+  button.textContent = entry.name;
+  button.title = `Browse ${entry.path}`;
+  button.addEventListener('click', () => void browseFolder(entry.path));
+  return button;
 }
 
 async function selectProjectFolder() {
@@ -297,24 +289,45 @@ async function selectProjectFolder() {
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
 
+async function browseFolder(path?: string, quiet = false) {
+  try {
+    const result = await invoke<ProjectFolder>('browse_folder', { path: path || null });
+    projectFolder = result;
+    localStorage.setItem(PROJECT_FOLDER_KEY, result.path);
+    renderProjectTree();
+    if (!quiet) showToast(`Browsing ${result.name}.`, 'success');
+  } catch (error) {
+    if (!quiet) showToast(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
 async function refreshProjectFolder(quiet = false) {
   const path = projectFolder?.path || storedProjectPath();
-  if (!path) {
-    if (!quiet) showToast('Open a project folder first.');
-    return;
-  }
+  if (!path) { await browseFolder(undefined, quiet); return; }
   try {
     const result = await invoke<ProjectFolder>('refresh_folder', { path });
     projectFolder = result;
     localStorage.setItem(PROJECT_FOLDER_KEY, result.path);
     renderProjectTree();
-    if (!quiet) showToast('Project folder refreshed.', 'success');
+    if (!quiet) showToast('Folder refreshed.', 'success');
   } catch (error) {
-    projectFolder = null;
     localStorage.removeItem(PROJECT_FOLDER_KEY);
-    renderProjectTree();
+    await browseFolder(undefined, quiet);
     if (!quiet) showToast(error instanceof Error ? error.message : String(error), 'error');
   }
+}
+
+function browseUp() {
+  if (projectFolder?.parentPath) void browseFolder(projectFolder.parentPath);
+}
+
+function browseHome() {
+  if (projectFolder) void browseFolder(projectFolder.homePath);
+}
+
+function browseDocuments() {
+  if (projectFolder) void browseFolder(projectFolder.documentsPath);
+  else void browseFolder();
 }
 
 function commitDocument(next: TextDocument, resetHistory = true) {
@@ -690,6 +703,9 @@ function handleAction(action?: string) {
     case 'open': void openFile(); break;
     case 'open-folder': void selectProjectFolder(); break;
     case 'refresh-folder': void refreshProjectFolder(); break;
+    case 'browser-up': browseUp(); break;
+    case 'browser-home': browseHome(); break;
+    case 'browser-documents': browseDocuments(); break;
     case 'save': void save(); break;
     case 'save-as': void saveAs(); break;
     case 'close': closeDocument(); break;

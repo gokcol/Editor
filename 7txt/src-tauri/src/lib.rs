@@ -1,7 +1,7 @@
 mod text_encoding;
 
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -13,22 +13,7 @@ use tauri::{
 };
 
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_FOLDER_ENTRIES: usize = 3_000;
-const MAX_FOLDER_DEPTH: usize = 18;
-const IGNORED_FOLDER_NAMES: &[&str] = &[
-    ".git",
-    ".hg",
-    ".svn",
-    ".idea",
-    ".vscode",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "__pycache__",
-    ".venv",
-    "venv",
-];
+const MAX_BROWSER_ENTRIES: usize = 8_000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,14 +39,16 @@ struct FolderEntry {
     name: String,
     path: String,
     kind: String,
-    children: Vec<FolderEntry>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectFolder {
+struct FileBrowser {
     name: String,
     path: String,
+    parent_path: Option<String>,
+    home_path: String,
+    documents_path: String,
     entries: Vec<FolderEntry>,
     truncated: bool,
 }
@@ -86,6 +73,9 @@ fn text_file_name(path: &Path) -> String {
 }
 
 fn folder_name(path: &Path) -> String {
+    if path.parent().is_none() {
+        return "/".to_owned();
+    }
     path.file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
@@ -93,31 +83,45 @@ fn folder_name(path: &Path) -> String {
         .to_owned()
 }
 
-fn is_ignored_folder(name: &str) -> bool {
-    name.starts_with('.') || IGNORED_FOLDER_NAMES.contains(&name)
+fn home_directory() -> Result<PathBuf, String> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| "Your home folder is unavailable.".to_owned())
 }
 
-fn collect_folder_entries(
-    folder: &Path,
-    depth: usize,
-    count: &mut usize,
-    truncated: &mut bool,
-) -> Vec<FolderEntry> {
-    if depth >= MAX_FOLDER_DEPTH || *count >= MAX_FOLDER_ENTRIES {
-        *truncated = true;
-        return Vec::new();
+fn documents_directory(home: &Path) -> PathBuf {
+    let documents = home.join("Documents");
+    if documents.is_dir() {
+        documents
+    } else {
+        home.to_path_buf()
     }
-    let Ok(entries) = fs::read_dir(folder) else {
-        return Vec::new();
-    };
+}
+
+fn read_browser_directory(path: PathBuf) -> Result<FileBrowser, String> {
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| "That folder is unavailable.".to_owned())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Choose a regular folder to browse its contents.".to_owned());
+    }
+    let real_path =
+        fs::canonicalize(&path).map_err(|_| "That folder is unavailable.".to_owned())?;
+    let home = fs::canonicalize(home_directory()?)
+        .map_err(|_| "Your home folder is unavailable.".to_owned())?;
+    let documents = fs::canonicalize(documents_directory(&home)).unwrap_or_else(|_| home.clone());
+    let directory_entries =
+        fs::read_dir(&real_path).map_err(|_| "That folder cannot be read.".to_owned())?;
     let mut collected = Vec::new();
-    for entry in entries.flatten() {
-        if *count >= MAX_FOLDER_ENTRIES {
-            *truncated = true;
+    for entry in directory_entries.flatten() {
+        if collected.len() >= MAX_BROWSER_ENTRIES {
             break;
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
         let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
@@ -125,26 +129,16 @@ fn collect_folder_entries(
             continue;
         }
         if metadata.is_dir() {
-            if is_ignored_folder(&name) {
-                continue;
-            }
-            let children = collect_folder_entries(&path, depth + 1, count, truncated);
-            if !children.is_empty() {
-                *count += 1;
-                collected.push(FolderEntry {
-                    name,
-                    path: path.to_string_lossy().into_owned(),
-                    kind: "directory".to_owned(),
-                    children,
-                });
-            }
+            collected.push(FolderEntry {
+                name,
+                path: path.to_string_lossy().into_owned(),
+                kind: "directory".to_owned(),
+            });
         } else if metadata.is_file() && is_supported_text_path(&path) {
-            *count += 1;
             collected.push(FolderEntry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 kind: "file".to_owned(),
-                children: Vec::new(),
             });
         }
     }
@@ -155,24 +149,16 @@ fn collect_folder_entries(
             _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
         },
     );
-    collected
-}
-
-fn read_project_folder(path: PathBuf) -> Result<ProjectFolder, String> {
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|_| "That folder is unavailable.".to_owned())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err("Choose a regular folder to browse its text and Markdown files.".to_owned());
-    }
-    let real_path =
-        fs::canonicalize(&path).map_err(|_| "That folder is unavailable.".to_owned())?;
-    let mut count = 0;
-    let mut truncated = false;
-    let entries = collect_folder_entries(&real_path, 0, &mut count, &mut truncated);
-    Ok(ProjectFolder {
+    let truncated = collected.len() == MAX_BROWSER_ENTRIES;
+    Ok(FileBrowser {
         name: folder_name(&real_path),
         path: real_path.to_string_lossy().into_owned(),
-        entries,
+        parent_path: real_path
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned()),
+        home_path: home.to_string_lossy().into_owned(),
+        documents_path: documents.to_string_lossy().into_owned(),
+        entries: collected,
         truncated,
     })
 }
@@ -258,16 +244,25 @@ fn open_recent(path: String, encoding: Option<String>) -> Result<OpenedTextFile,
 }
 
 #[tauri::command]
-fn open_folder() -> Result<Option<ProjectFolder>, String> {
+fn open_folder() -> Result<Option<FileBrowser>, String> {
     FileDialog::new()
         .pick_folder()
-        .map(read_project_folder)
+        .map(read_browser_directory)
         .transpose()
 }
 
 #[tauri::command]
-fn refresh_folder(path: String) -> Result<ProjectFolder, String> {
-    read_project_folder(PathBuf::from(path))
+fn browse_folder(path: Option<String>) -> Result<FileBrowser, String> {
+    let target = match path {
+        Some(path) => PathBuf::from(path),
+        None => documents_directory(&home_directory()?),
+    };
+    read_browser_directory(target)
+}
+
+#[tauri::command]
+fn refresh_folder(path: String) -> Result<FileBrowser, String> {
+    read_browser_directory(PathBuf::from(path))
 }
 
 #[tauri::command]
@@ -389,6 +384,7 @@ pub fn run() {
             open_file,
             open_recent,
             open_folder,
+            browse_folder,
             refresh_folder,
             save_as,
             write_file
@@ -402,27 +398,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_tree_keeps_supported_files_and_ignores_generated_directories() {
-        let folder = std::env::temp_dir().join(format!("7txt-project-tree-{}", std::process::id()));
+    fn file_browser_lists_folders_and_supported_files() {
+        let folder = std::env::temp_dir().join(format!("7txt-file-browser-{}", std::process::id()));
         fs::create_dir_all(folder.join("notes")).expect("create notes folder");
-        fs::create_dir_all(folder.join("node_modules")).expect("create ignored folder");
+        fs::create_dir_all(folder.join("node_modules")).expect("create nested folder");
         fs::write(folder.join("readme.md"), "# Read me").expect("create Markdown file");
         fs::write(folder.join("notes").join("draft.txt"), "Draft").expect("create text file");
         fs::write(folder.join("notes").join("image.png"), "not text")
             .expect("create unsupported file");
-        fs::write(folder.join("node_modules").join("ignored.md"), "Ignored")
-            .expect("create ignored file");
-        let result = read_project_folder(folder.clone());
+        let result = read_browser_directory(folder.clone());
         let _ = fs::remove_dir_all(&folder);
-        let tree = result.expect("project folder should be readable");
-        assert_eq!(tree.entries.len(), 2);
-        assert!(tree.entries.iter().any(|entry| entry.name == "readme.md"));
-        let notes = tree
+        let browser = result.expect("folder should be readable");
+        assert_eq!(browser.entries.len(), 3);
+        assert!(browser.entries.iter().any(|entry| entry.name == "notes"));
+        assert!(browser
             .entries
             .iter()
-            .find(|entry| entry.name == "notes")
-            .unwrap();
-        assert_eq!(notes.children.len(), 1);
-        assert_eq!(notes.children[0].name, "draft.txt");
+            .any(|entry| entry.name == "node_modules"));
+        assert!(browser
+            .entries
+            .iter()
+            .any(|entry| entry.name == "readme.md"));
     }
 }
