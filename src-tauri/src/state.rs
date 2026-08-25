@@ -4,7 +4,10 @@ use notify::RecommendedWatcher;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 use tauri::AppHandle;
 
@@ -15,6 +18,39 @@ pub struct ProjectWatcher {
     /// Keeping this value alive keeps notify's OS watcher registered.
     #[allow(dead_code)]
     pub watcher: RecommendedWatcher,
+}
+
+/// Finder may deliver files before the React workbench has installed its
+/// event listener. Keep those native paths briefly, then turn them into
+/// opaque standalone-file permissions only when the intended webview asks.
+#[derive(Default)]
+pub struct PendingExternalFiles {
+    paths: Mutex<Vec<PathBuf>>,
+    frontend_ready: AtomicBool,
+}
+
+impl PendingExternalFiles {
+    pub fn push(&self, paths: Vec<PathBuf>) -> bool {
+        let mut pending = self
+            .paths
+            .lock()
+            .expect("external file queue lock poisoned");
+        for path in paths {
+            if !pending.contains(&path) {
+                pending.push(path);
+            }
+        }
+        self.frontend_ready.load(Ordering::Acquire)
+    }
+
+    pub fn take(&self) -> Vec<PathBuf> {
+        self.frontend_ready.store(true, Ordering::Release);
+        let mut pending = self
+            .paths
+            .lock()
+            .expect("external file queue lock poisoned");
+        std::mem::take(&mut *pending)
+    }
 }
 
 /// State deliberately keeps renderer-issued capabilities narrow:

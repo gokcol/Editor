@@ -7,13 +7,13 @@
 use crate::{
     models::{
         extension_for_source_type, is_supported_source, source_type_for_path, AppSettings,
-        Canceled, DecodedSourceFile, DuplicatedFileResult, FileNode, LegacyProjectInput,
-        OpenRecentResult, OpenedSourceFile, OpenedSourceOrCanceled, Project, ProjectChange,
-        ProjectOrCanceled, ProjectSourceFile, ProjectWatchUpdate, RecentEntry, RelativePathResult,
-        RenamedFileResult, SaveAsResult, StandaloneSourceFile, UnwatchResponse, WatchResponse,
-        WriteOpenedFileResult, MAX_PROJECT_TREE_DEPTH, MAX_RECENT_ENTRIES, SOURCE_EXTENSIONS,
+        Canceled, DecodedSourceFile, DuplicatedFileResult, ExternalOpenFilesResult, FileNode,
+        LegacyProjectInput, OpenRecentResult, OpenedSourceFile, OpenedSourceOrCanceled, Project,
+        ProjectChange, ProjectOrCanceled, ProjectSourceFile, ProjectWatchUpdate, RecentEntry,
+        RelativePathResult, RenamedFileResult, SaveAsResult, StandaloneSourceFile, UnwatchResponse,
+        WatchResponse, WriteOpenedFileResult, MAX_PROJECT_TREE_DEPTH, MAX_RECENT_ENTRIES,
     },
-    state::{CoreState, ProjectWatcher},
+    state::{CoreState, PendingExternalFiles, ProjectWatcher},
     text_encoding,
 };
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -331,6 +331,12 @@ fn write_no_follow(target: &Path, content: &str, create_new: bool) -> Result<(),
 fn decode_source(target: &Path, encoding: Option<&str>) -> Result<DecodedSourceFile, String> {
     let bytes = fs::read(target)
         .map_err(|cause| error(format!("Could not read that source file: {cause}")))?;
+    if !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]) && bytes.contains(&0)
+    {
+        return Err(error(
+            "That file appears to be binary data. Yedit can open text in any filename extension.",
+        ));
+    }
     let decoded = text_encoding::decode(&bytes, encoding)?;
     Ok(DecodedSourceFile {
         content: decoded.content,
@@ -808,9 +814,6 @@ fn standalone_source_payload(
     encoding: Option<&str>,
 ) -> Result<OpenedSourceFile, String> {
     let target = absolute_path(&path_text(file_path))?;
-    if !is_supported_source(&target) {
-        return Err(error("Choose a supported Yedit source file."));
-    }
     regular_standalone_file(&target)?;
     let decoded = decode_source(&target, encoding)?;
     let name = target
@@ -883,8 +886,7 @@ async fn pick_source_file(window: &WebviewWindow) -> Result<Option<PathBuf>, Str
     window
         .dialog()
         .file()
-        .set_title("Open a Yedit source file")
-        .add_filter("Yedit source files", SOURCE_EXTENSIONS)
+        .set_title("Open a file in Yedit")
         .pick_file(move |selected| {
             let _ = sender.send(finish_dialog_path(selected));
         });
@@ -938,8 +940,8 @@ pub async fn project_open(
     )?))
 }
 
-/// Opens an individual supported source file. It retains a project-relative
-/// binding when the picker result lives in the currently opened workspace.
+/// Opens an individual regular text file. Known source extensions receive
+/// their specialised editor mode; all other text opens as plain text.
 #[tauri::command]
 pub async fn project_open_file(
     window: WebviewWindow,
@@ -970,6 +972,44 @@ pub async fn project_open_file(
         }
     }
     Ok(OpenedSourceOrCanceled::Source(source))
+}
+
+/// Drains Finder-delivered file paths. Paths never cross the webview boundary:
+/// the native side validates and decodes each one before returning the normal
+/// opaque opened-file payload used by the Open command.
+#[tauri::command]
+pub fn take_pending_external_files(
+    window: WebviewWindow,
+    state: State<'_, CoreState>,
+    pending: State<'_, PendingExternalFiles>,
+    project_root: Option<String>,
+) -> Result<ExternalOpenFilesResult, String> {
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    for path in pending.take() {
+        match standalone_source_payload(
+            state.inner(),
+            window.label(),
+            &path,
+            project_root.as_deref(),
+            None,
+        ) {
+            Ok(source) => {
+                if let OpenedSourceFile::Standalone(file) = &source {
+                    remember_recent_entry_best_effort(state.inner(), "file", &path, &file.name);
+                }
+                files.push(source);
+            }
+            Err(cause) => {
+                let name = path
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "That file".to_owned());
+                errors.push(format!("{name}: {cause}"));
+            }
+        }
+    }
+    Ok(ExternalOpenFilesResult { files, errors })
 }
 
 /// Creates Yedit's intentionally empty, predictable folder structure.

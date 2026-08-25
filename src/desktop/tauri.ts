@@ -8,6 +8,7 @@ type RenderApi = DesktopApi['render'];
 type SettingsApi = DesktopApi['settings'];
 type GitApi = DesktopApi['git'];
 type ClipboardApi = DesktopApi['clipboard'];
+type ExternalFilesApi = DesktopApi['externalFiles'];
 type PythonRunner = NonNullable<ProjectApi['runPython']>;
 type EmptyArgs = Record<string, never>;
 
@@ -42,6 +43,7 @@ type RawProjectTaskRun = {
 /** Native-to-renderer event names shared with the Tauri backend. */
 export const TAURI_PROJECT_CHANGED_EVENT = 'project-changed';
 export const TAURI_MENU_ACTION_EVENT = 'menu-action';
+export const TAURI_EXTERNAL_OPEN_FILES_EVENT = 'external-open-files';
 
 /**
  * Every native command that the Tauri adapter is allowed to invoke. Keeping
@@ -92,6 +94,7 @@ type TauriCommandArgs = {
   clipboard_write_svg: { svg: Parameters<ClipboardApi['writeSvg']>[0] };
   clipboard_write_data_uri_image: { dataUri: Parameters<ClipboardApi['writeDataUriImage']>[0] };
   shell_reveal: { target: Parameters<DesktopApi['shell']['reveal']>[0] };
+  take_pending_external_files: { projectRoot?: Parameters<ExternalFilesApi['takePending']>[0] };
   renderer_ready: EmptyArgs;
 };
 
@@ -138,6 +141,7 @@ type TauriCommandResult = {
   clipboard_write_svg: Awaited<ReturnType<ClipboardApi['writeSvg']>>;
   clipboard_write_data_uri_image: Awaited<ReturnType<ClipboardApi['writeDataUriImage']>>;
   shell_reveal: Awaited<ReturnType<DesktopApi['shell']['reveal']>>;
+  take_pending_external_files: Awaited<ReturnType<ExternalFilesApi['takePending']>>;
   renderer_ready: { ok: true };
 };
 
@@ -319,6 +323,10 @@ export function createTauriDesktopApi(): DesktopApi {
     },
     shell: {
       reveal: (target) => invokeCommand('shell_reveal', { target }),
+    },
+    externalFiles: {
+      takePending: (projectRoot) => invokeCommand('take_pending_external_files', { projectRoot }),
+      onOpen: (callback) => subscribe<void>(TAURI_EXTERNAL_OPEN_FILES_EVENT, () => callback()).unsubscribe,
     },
     onMenuAction: (callback) => {
       const subscription = subscribe(TAURI_MENU_ACTION_EVENT, callback);

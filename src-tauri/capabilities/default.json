@@ -49,6 +49,7 @@
     "allow-settings-load",
     "allow-settings-save",
     "allow-shell-reveal",
-    "allow-renderer-ready"
+    "allow-renderer-ready",
+    "allow-take-pending-external-files"
   ]
 }

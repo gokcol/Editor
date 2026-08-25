@@ -42,6 +42,7 @@ const COMMANDS: &[&str] = &[
     "settings_save",
     "shell_reveal",
     "renderer_ready",
+    "take_pending_external_files",
 ];
 
 fn main() {

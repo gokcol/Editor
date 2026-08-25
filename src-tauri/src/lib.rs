@@ -10,20 +10,74 @@ mod state;
 mod text_encoding;
 mod tools;
 
-use tauri::Manager;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
+
+use state::PendingExternalFiles;
+
+fn is_regular_external_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn initial_open_paths() -> Vec<PathBuf> {
+    env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .filter(|path| is_regular_external_file(path))
+        .collect()
+}
+
+fn paths_from_instance_arguments(args: Vec<String>, cwd: &str) -> Vec<PathBuf> {
+    let cwd = PathBuf::from(cwd);
+    args.into_iter()
+        .skip(1)
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
+        })
+        .filter(|path| is_regular_external_file(path))
+        .collect()
+}
+
+fn queue_external_open_paths<R: Runtime>(
+    app: &AppHandle<R>,
+    paths: impl IntoIterator<Item = PathBuf>,
+) {
+    let paths = paths
+        .into_iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .collect::<Vec<_>>();
+    if !paths.is_empty() {
+        let frontend_ready = app.state::<PendingExternalFiles>().push(paths);
+        if frontend_ready {
+            let _ = app.emit_to("main", "external-open-files", ());
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .manage(PendingExternalFiles::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_log::Builder::default().build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            queue_external_open_paths(app, paths_from_instance_arguments(args, &cwd));
         }))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -85,7 +139,18 @@ pub fn run() {
             core::settings_save,
             tools::shell_reveal,
             core::renderer_ready,
+            core::take_pending_external_files,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Yedit");
+        .build(tauri::generate_context!())
+        .expect("error while building Yedit");
+    queue_external_open_paths(app.handle(), initial_open_paths());
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = event {
+            queue_external_open_paths(
+                app,
+                urls.into_iter().filter_map(|url| url.to_file_path().ok()),
+            );
+        }
+    });
 }

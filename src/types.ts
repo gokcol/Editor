@@ -138,6 +138,12 @@ export type OpenedStandaloneSourceFile = {
 
 export type OpenedSourceFile = OpenedProjectSourceFile | OpenedStandaloneSourceFile;
 
+/** Files passed to Yedit by Finder after the native window is already live. */
+export type ExternalOpenFilesResult = {
+  files: OpenedSourceFile[];
+  errors: string[];
+};
+
 export type DecodedSourceFile = {
   content: string;
   encoding: CharacterEncoding;

@@ -158,7 +158,7 @@ fn read_browser_directory(path: PathBuf, show_hidden: bool) -> Result<FileBrowse
                 path: path.to_string_lossy().into_owned(),
                 kind: "directory".to_owned(),
             });
-        } else if metadata.is_file() && is_supported_text_path(&path) {
+        } else if metadata.is_file() {
             collected.push(FolderEntry {
                 name,
                 path: path.to_string_lossy().into_owned(),
@@ -188,11 +188,6 @@ fn read_browser_directory(path: PathBuf, show_hidden: bool) -> Result<FileBrowse
 }
 
 fn read_text_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedTextFile, String> {
-    if !is_supported_text_path(&path) {
-        return Err(
-            "7TXT opens plain text (.txt) and Markdown (.md, .markdown) files only.".to_owned(),
-        );
-    }
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -203,6 +198,13 @@ fn read_text_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedTextF
     }
     let real_path = fs::canonicalize(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     let bytes = fs::read(&real_path).map_err(|_| "That file is unavailable.".to_owned())?;
+    if !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]) && bytes.contains(&0)
+    {
+        return Err(
+            "That file appears to be binary data. 7TXT can open text in any filename extension."
+                .to_owned(),
+        );
+    }
     let decoded = text_encoding::decode(&bytes, encoding.as_deref())?;
     Ok(OpenedTextFile {
         name: text_file_name(&real_path),
@@ -222,9 +224,6 @@ fn read_text_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedTextF
 }
 
 fn reveal_text_file_folder(path: PathBuf, show_hidden: bool) -> Result<FileBrowser, String> {
-    if !is_supported_text_path(&path) {
-        return Err("7TXT can reveal plain text and Markdown files only.".to_owned());
-    }
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -241,7 +240,7 @@ fn initial_open_paths() -> Vec<PathBuf> {
     env::args_os()
         .skip(1)
         .map(PathBuf::from)
-        .filter(|path| path.is_file() && is_supported_text_path(path))
+        .filter(|path| path.is_file())
         .collect()
 }
 
@@ -251,7 +250,7 @@ fn queue_external_open_paths<R: Runtime>(
 ) {
     let paths = paths
         .into_iter()
-        .filter(|path| path.is_file() && is_supported_text_path(path))
+        .filter(|path| path.is_file())
         .filter_map(|path| fs::canonicalize(path).ok())
         .map(|path| path.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
@@ -295,9 +294,6 @@ fn save_text_file(
     encoding: Option<String>,
 ) -> Result<SavedTextFile, String> {
     checked_content(&content)?;
-    if !is_supported_text_path(&path) {
-        return Err("Save as .txt, .md, or .markdown.".to_owned());
-    }
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
             return Err("That save target is not a regular file.".to_owned());
@@ -316,9 +312,9 @@ fn save_text_file(
 
 #[tauri::command]
 fn open_file(encoding: Option<String>) -> Result<Option<OpenedTextFile>, String> {
-    let path = FileDialog::new()
-        .add_filter("Text & Markdown", &["txt", "md", "markdown"])
-        .pick_file();
+    // Do not filter by extension: a text editor should be able to open a
+    // `.conf`, `.log`, extensionless file, or any other text document.
+    let path = FileDialog::new().pick_file();
     path.map(|path| read_text_file(path, encoding)).transpose()
 }
 
@@ -519,15 +515,13 @@ fn save_as(
     encoding: Option<String>,
 ) -> Result<Option<SavedTextFile>, String> {
     checked_content(&content)?;
-    let fallback_name = if is_supported_text_path(Path::new(&suggested_name)) {
+    let suggested_name = text_file_name(Path::new(suggested_name.trim()));
+    let fallback_name = if Path::new(&suggested_name).extension().is_some() {
         suggested_name
     } else {
-        format!("{}.txt", suggested_name.trim().trim_end_matches('.'))
+        format!("{}.txt", suggested_name.trim_end_matches('.'))
     };
-    let path = FileDialog::new()
-        .add_filter("Text & Markdown", &["txt", "md", "markdown"])
-        .set_file_name(&fallback_name)
-        .save_file();
+    let path = FileDialog::new().set_file_name(&fallback_name).save_file();
     path.map(|path| save_text_file(path, content, encoding))
         .transpose()
 }
@@ -688,18 +682,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_browser_lists_folders_and_supported_files() {
+    fn file_browser_lists_folders_and_files() {
         let folder = std::env::temp_dir().join(format!("7txt-file-browser-{}", std::process::id()));
         fs::create_dir_all(folder.join("notes")).expect("create notes folder");
         fs::create_dir_all(folder.join("node_modules")).expect("create nested folder");
         fs::write(folder.join("readme.md"), "# Read me").expect("create Markdown file");
+        fs::write(folder.join("image.png"), "not text").expect("create arbitrary file");
         fs::write(folder.join("notes").join("draft.txt"), "Draft").expect("create text file");
-        fs::write(folder.join("notes").join("image.png"), "not text")
-            .expect("create unsupported file");
         let result = read_browser_directory(folder.clone(), false);
         let _ = fs::remove_dir_all(&folder);
         let browser = result.expect("folder should be readable");
-        assert_eq!(browser.entries.len(), 3);
+        assert_eq!(browser.entries.len(), 4);
         assert!(browser.entries.iter().any(|entry| entry.name == "notes"));
         assert!(browser
             .entries
@@ -709,6 +702,10 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.name == "readme.md"));
+        assert!(browser
+            .entries
+            .iter()
+            .any(|entry| entry.name == "image.png"));
     }
 
     #[test]
@@ -725,5 +722,18 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.name == "notes.txt"));
+    }
+
+    #[test]
+    fn opens_text_regardless_of_filename_extension() {
+        let path =
+            std::env::temp_dir().join(format!("7txt-any-extension-{}.conf", std::process::id()));
+        fs::write(&path, "setting = true").expect("create arbitrary text file");
+        let result = read_text_file(path.clone(), None);
+        let _ = fs::remove_file(&path);
+        let document = result.expect("arbitrary text should open");
+        assert_eq!(document.name, path.file_name().unwrap().to_string_lossy());
+        assert!(!document.is_markdown);
+        assert_eq!(document.content, "setting = true");
     }
 }

@@ -59,7 +59,10 @@ pub fn source_type_for_path(path: &Path) -> String {
         "sql" | "ddl" => "sql",
         "html" | "htm" | "xhtml" => "html",
         "css" => "css",
-        _ => "tikz",
+        // An unrecognised filename is still an ordinary text document.  It
+        // should never be interpreted as TikZ merely because it lacks one of
+        // Yedit's first-class extensions.
+        _ => "text",
     }
     .to_owned()
 }
@@ -404,6 +407,17 @@ pub enum OpenedSourceFile {
     Standalone(StandaloneSourceFile),
 }
 
+/// Files forwarded by Finder after the native application has finished
+/// launching. Each payload is opened through the same opaque-file capability
+/// path as the normal Open command; errors are kept alongside successful
+/// files so a mixed Finder selection can still open what is readable.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalOpenFilesResult {
+    pub files: Vec<OpenedSourceFile>,
+    pub errors: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecodedSourceFile {
@@ -522,8 +536,9 @@ pub struct ProjectWatchUpdate {
 
 #[cfg(test)]
 mod settings_tests {
-    use super::AppSettings;
+    use super::{source_type_for_path, AppSettings};
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn navigation_defaults_to_bottom_and_minimap_defaults_off() {
@@ -543,5 +558,11 @@ mod settings_tests {
 
         let invalid = AppSettings::normalize(&json!({ "navigationPlacement": "floating" }));
         assert_eq!(invalid.navigation_placement, "bottom");
+    }
+
+    #[test]
+    fn unknown_filename_extensions_open_as_plain_text() {
+        assert_eq!(source_type_for_path(Path::new("settings.conf")), "text");
+        assert_eq!(source_type_for_path(Path::new("README")), "text");
     }
 }

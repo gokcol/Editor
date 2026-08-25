@@ -770,6 +770,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const documentsRef = useRef(documents);
   const localWritePathsRef = useRef(new Map<string, number>());
   const pendingRevealLineRef = useRef<number | null>(null);
+  const externalOpenQueueRef = useRef(Promise.resolve());
 
   useEffect(() => {
     // Monaco rejects an internal cancellation promise while disposing a model
@@ -1466,6 +1467,31 @@ function App({ desktop }: { desktop: DesktopApi }) {
       showToast(error instanceof Error ? error.message : 'Could not open that source file.', 'error');
     }
   }, [activateOpenedSource, openingEncoding, project?.root, refreshRecentProjects, showToast]);
+
+  const drainFinderOpenedFiles = useCallback(() => {
+    // Finder can send paths while the React app is mounting or while another
+    // file is still decoding. Serialize the drains to keep tab activation and
+    // recent-file updates deterministic.
+    externalOpenQueueRef.current = externalOpenQueueRef.current.then(async () => {
+      try {
+        const opened = await desktop.externalFiles.takePending(project?.root);
+        for (const file of opened.files) activateOpenedSource(file);
+        if (opened.files.length) {
+          void refreshRecentProjects();
+          showToast(`Opened ${opened.files.length === 1 ? opened.files[0].name : `${opened.files.length} files`} from Finder.`, 'success');
+        }
+        if (opened.errors.length) showToast(opened.errors[0], 'error');
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Could not open the file Finder sent to Yedit.', 'error');
+      }
+    });
+  }, [activateOpenedSource, desktop.externalFiles, project?.root, refreshRecentProjects, showToast]);
+
+  useEffect(() => {
+    const unsubscribe = desktop.externalFiles.onOpen(drainFinderOpenedFiles);
+    drainFinderOpenedFiles();
+    return unsubscribe;
+  }, [desktop.externalFiles, drainFinderOpenedFiles]);
 
   const openEncodingDialog = useCallback(() => {
     setEncodingChoice(activeDocument?.encoding ?? 'utf-8');

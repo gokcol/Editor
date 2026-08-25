@@ -3,6 +3,7 @@ import type {
   BuildProfile,
   CharacterEncoding,
   DecodedSourceFile,
+  ExternalOpenFilesResult,
   ExportFormat,
   GitLogResponse,
   GitBranchesResponse,
@@ -109,6 +110,11 @@ export interface DesktopApi {
   };
   shell: {
     reveal: (path: string) => Promise<void>;
+  };
+  externalFiles: {
+    /** Drains regular files that Finder delivered to the running native app. */
+    takePending: (projectRoot?: string) => Promise<ExternalOpenFilesResult>;
+    onOpen: (callback: () => void) => () => void;
   };
   onMenuAction: (callback: (action: string) => void) => () => void;
   rendererReady: () => void;

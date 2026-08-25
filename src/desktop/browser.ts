@@ -108,6 +108,10 @@ export function createBrowserDesktopApi(): DesktopApi {
       writeDataUriImage: async () => { throw new Error('Copy Image requires the local desktop shell.'); },
     },
     shell: { reveal: async () => undefined },
+    externalFiles: {
+      takePending: async () => ({ files: [], errors: [] }),
+      onOpen: () => () => undefined,
+    },
     onMenuAction: () => () => undefined,
     rendererReady: () => undefined,
   };
