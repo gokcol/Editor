@@ -115,7 +115,7 @@ if (!app) throw new Error('7TXT could not create its editor window.');
 app.innerHTML = `
   <main class="app-shell" data-mode="split">
     <header class="titlebar">
-      <div class="brand"><button class="brand-mark-button" data-action="show-sidebar" title="Show Files sidebar" aria-label="Show Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
+      <div class="brand"><button class="brand-mark-button" data-action="toggle-sidebar" title="Hide Files sidebar" aria-label="Hide Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
       <div class="document-title"><span class="dirty-dot" aria-hidden="true"></span><strong></strong><small></small></div>
       <div aria-hidden="true"></div>
     </header>
@@ -262,7 +262,8 @@ const editorTabSizeSelect = required<HTMLSelectElement>('[data-editor-tab-size]'
 const editorLineEndingSelect = required<HTMLSelectElement>('[data-editor-line-ending]');
 const editorSpellLanguageSelect = required<HTMLSelectElement>('[data-editor-spell-language]');
 const folderBookmarkToggle = required<HTMLButtonElement>('[data-action="toggle-folder-bookmark"]');
-const sidebarToggle = required<HTMLButtonElement>('[data-action="toggle-sidebar"]');
+const sidebarToggle = required<HTMLButtonElement>('.sidebar-toggle');
+const brandSidebarToggle = required<HTMLButtonElement>('.brand-mark-button');
 const themePicker = required<HTMLDetailsElement>('.theme-picker');
 const folderFilter = required<HTMLInputElement>('.folder-filter');
 const workspace = required<HTMLElement>('.workspace');
@@ -437,6 +438,9 @@ function applySidebarLayout() {
   sidebarToggle.title = `${visibleLabel} (⇧⌘B)`;
   sidebarToggle.setAttribute('aria-label', visibleLabel);
   sidebarToggle.setAttribute('aria-expanded', String(shown));
+  brandSidebarToggle.title = visibleLabel;
+  brandSidebarToggle.setAttribute('aria-label', visibleLabel);
+  brandSidebarToggle.setAttribute('aria-expanded', String(shown));
   sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
 }
 
@@ -458,17 +462,6 @@ function scheduleSidebarAutoHide() {
     sidebarAutoHidden = true;
     applySidebarLayout();
   }, 3000);
-}
-
-function showSidebar() {
-  const wasShown = sidebarIsShown();
-  cancelSidebarAutoHide();
-  sidebarVisible = true;
-  sidebarAutoHidden = false;
-  localStorage.setItem(SIDEBAR_VISIBLE_KEY, 'true');
-  applySidebarLayout();
-  if (!wasShown) showToast('Files sidebar shown. It hides three seconds after you leave it.');
-  scheduleSidebarAutoHide();
 }
 
 function setSidebarWidth(width: number, persist = true) {
@@ -2202,7 +2195,6 @@ function handleAction(action?: string) {
     case 'media-previous-page': changePdfPage(-1); break;
     case 'media-next-page': changePdfPage(1); break;
     case 'toggle-sidebar': toggleSidebar(); break;
-    case 'show-sidebar': showSidebar(); break;
     case 'close': closeDocument(); break;
     case 'reopen-encoding': reopenWithEncoding(); break;
     case 'undo': undo(); break;
