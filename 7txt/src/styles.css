@@ -57,8 +57,8 @@ button { border: 0; cursor: pointer; }
 .brand { gap: 8px; letter-spacing: -.02em; white-space: nowrap; }
 .brand strong { font-size: 16px; }
 .brand-mark {
-  display: inline-grid; place-items: center; width: 25px; height: 25px; border-radius: 8px;
-  color: #fff9f1; font-weight: 850; font-size: 17px; background: linear-gradient(135deg, #df7657, #f3bd68); box-shadow: 0 4px 12px rgba(210, 108, 75, .28);
+  display: block; width: 25px; height: 25px; flex: 0 0 25px; object-fit: contain;
+  border-radius: 8px; box-shadow: 0 4px 12px rgba(48, 113, 180, .24);
 }
 .brand-subtitle { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .01em; }
 .document-title { justify-content: center; min-width: 0; gap: 7px; flex-direction: column; line-height: 1.1; }

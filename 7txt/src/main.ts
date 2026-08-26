@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import brandIconUrl from '../src-tauri/icons/7txt-icon.svg?url';
 import './styles.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
@@ -114,7 +115,7 @@ if (!app) throw new Error('7TXT could not create its editor window.');
 app.innerHTML = `
   <main class="app-shell" data-mode="split">
     <header class="titlebar">
-      <div class="brand"><span class="brand-mark">7</span><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
+      <div class="brand"><img class="brand-mark" src="${brandIconUrl}" alt="" /><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
       <div class="document-title"><span class="dirty-dot" aria-hidden="true"></span><strong></strong><small></small></div>
       <div aria-hidden="true"></div>
     </header>
