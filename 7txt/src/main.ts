@@ -144,8 +144,8 @@ app.innerHTML = `
       </details>
       <button class="toolbar-icon-button" data-action="toggle-editor-split" title="Split editor" aria-label="Split editor"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM12 4v16"/></svg></button>
       <button class="toolbar-icon-button" data-action="zen" title="Zen mode" aria-label="Zen mode"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M12 4v16M7 7l10 10M17 7 7 17"/></svg></button>
-      <button data-action="undo" title="Undo (⌘Z)">↶</button>
-      <button data-action="redo" title="Redo (⇧⌘Z)">↷</button>
+      <button class="toolbar-icon-button" data-action="undo" title="Undo (⌘Z)" aria-label="Undo"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-4 4 4 4M5 11h7a6 6 0 0 1 6 6"/></svg></button>
+      <button class="toolbar-icon-button" data-action="redo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 4 4-4 4M19 11h-7a6 6 0 0 0-6 6"/></svg></button>
     </section>
     <section class="findbar" hidden>
       <span class="find-input"><svg class="find-input-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg><input type="search" placeholder="Search this document" aria-label="Find in document" spellcheck="false" /></span>

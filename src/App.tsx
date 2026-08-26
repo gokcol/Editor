@@ -641,6 +641,28 @@ function sourceFilenameForDrop(name: string, type: SourceType) {
   return name.trim() || `untitled.${SOURCE_META[type].extension}`;
 }
 
+type UniversalIconName = 'outline' | 'table-of-contents' | 'history' | 'encoding' | 'pin' | 'undo' | 'redo' | 'save' | 'save-as' | 'format' | 'render';
+
+function UniversalIcon({ name }: { name: UniversalIconName }) {
+  const common = { fill: 'none', stroke: 'currentColor', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, strokeWidth: 1.8 };
+  const paths = (() => {
+    switch (name) {
+      case 'outline': return <><path {...common} d="M6 6h2M11 6h7M6 12h2M11 12h7M6 18h2M11 18h7" /></>;
+      case 'table-of-contents': return <><path {...common} d="M5 5h14v14H5zM5 10h14M5 15h14M10 5v14M15 5v14" /></>;
+      case 'history': return <><circle {...common} cx="12" cy="12" r="7" /><path {...common} d="M12 8v4l3 2M5 8V4m0 0h4M5 4a9 9 0 1 1-1 10" /></>;
+      case 'encoding': return <><path {...common} d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12" /></>;
+      case 'pin': return <><path {...common} d="M8 4h8l-1.5 5 3.5 3H6l3-3zM12 12v8" /></>;
+      case 'undo': return <><path {...common} d="m9 7-4 4 4 4M5 11h7a6 6 0 0 1 6 6" /></>;
+      case 'redo': return <><path {...common} d="m15 7 4 4-4 4M19 11h-7a6 6 0 0 0-6 6" /></>;
+      case 'save': return <><path className="universal-icon-fill" d="M5 3h12l3 3v15H5z" /><path {...common} d="M5 3h12l3 3v15H5zM8 3v6h8V3M8 20v-6h8v6" /></>;
+      case 'save-as': return <><path {...common} d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z" /></>;
+      case 'format': return <><path {...common} d="M5 6h14M5 10h9M5 14h14M5 18h9M16 9l1 1 2-2" /></>;
+      case 'render': return <path d="m8 5 11 7-11 7z" fill="currentColor" stroke="none" />;
+    }
+  })();
+  return <svg className="universal-icon" viewBox="0 0 24 24" aria-hidden="true">{paths}</svg>;
+}
+
 function lineFromRenderMessage(message?: string) {
   if (!message) return undefined;
   const match = /(?:line\s*|l\.\s*)(\d+)/i.exec(message) || /:(\d+):(?:\d+:)?/.exec(message);
@@ -3712,17 +3734,18 @@ function App({ desktop }: { desktop: DesktopApi }) {
                 <output aria-label={`Editor font size ${settings.editorFontSize} pixels`}>{settings.editorFontSize}px</output>
                 <button type="button" onClick={() => changeEditorFontSize(1)} disabled={settings.editorFontSize >= 24} title="Increase editor font size (⌘+)" aria-label="Increase editor font size">+</button>
               </div>
-              <button className="editor-command-icon" onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)" aria-label="Document outline">☷</button>
-              {activeDocument.sourceType === 'markdown' && <button className="editor-command-icon" onClick={insertMarkdownTableOfContents} title="Insert or refresh a generated Markdown table of contents" aria-label="Insert or refresh table of contents">≣</button>}
-              <button className="editor-command-icon" onClick={() => setHistoryOpen(true)} title="Local version history" aria-label="Local version history">◴</button>
-              <button className="editor-command-icon" onClick={openEncodingDialog} title={`Text encoding: ${encodingLabel(activeDocument.encoding)}`} aria-label={`Text encoding: ${encodingLabel(activeDocument.encoding)}`}>⌁</button>
-              <button className={`editor-command-icon ${activeDocument.pinned ? 'active' : ''}`} onClick={toggleActiveTabPin} title={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-label={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-pressed={activeDocument.pinned}>⌖</button>
-              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)} title="Undo (⌘Z)" aria-label="Undo">↶</button>
-              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)} title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
-              <button className="editor-command-icon save-button" onClick={() => saveDocument(false)} title="Save (⌘S)" aria-label="Save">▣</button>
+              <button className="editor-command-icon" onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)" aria-label="Document outline"><UniversalIcon name="outline" /></button>
+              {activeDocument.sourceType === 'markdown' && <button className="editor-command-icon" onClick={insertMarkdownTableOfContents} title="Insert or refresh a generated Markdown table of contents" aria-label="Insert or refresh table of contents"><UniversalIcon name="table-of-contents" /></button>}
+              <button className="editor-command-icon" onClick={() => setHistoryOpen(true)} title="Local version history" aria-label="Local version history"><UniversalIcon name="history" /></button>
+              <button className="editor-command-icon" onClick={openEncodingDialog} title={`Text encoding: ${encodingLabel(activeDocument.encoding)}`} aria-label={`Text encoding: ${encodingLabel(activeDocument.encoding)}`}><UniversalIcon name="encoding" /></button>
+              <button className={`editor-command-icon ${activeDocument.pinned ? 'active' : ''}`} onClick={toggleActiveTabPin} title={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-label={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-pressed={activeDocument.pinned}><UniversalIcon name="pin" /></button>
+              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)} title="Undo (⌘Z)" aria-label="Undo"><UniversalIcon name="undo" /></button>
+              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)} title="Redo (⇧⌘Z)" aria-label="Redo"><UniversalIcon name="redo" /></button>
+              <button className="editor-command-icon save-button" onClick={() => saveDocument(false)} title="Save (⌘S)" aria-label="Save"><UniversalIcon name="save" /></button>
+              <button className="editor-command-icon" onClick={() => saveDocument(true)} title="Save As (⇧⌘S)" aria-label="Save As"><UniversalIcon name="save-as" /></button>
               <span className="editor-command-separator" aria-hidden="true"></span>
-              <button className="editor-command-icon" onClick={formatActive} title="Format source (⌥⇧F)" aria-label="Format source">≋</button>
-              {activeDocument.sourceType !== 'python' && !taskManagedLatex && <button className="editor-command-icon render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'} aria-label={activeDocument.sourceType === 'metafont' ? 'Render MetaFont glyph proof' : 'Render preview'}>▶</button>}
+              <button className="editor-command-icon" onClick={formatActive} title="Format source (⌥⇧F)" aria-label="Format source"><UniversalIcon name="format" /></button>
+              {activeDocument.sourceType !== 'python' && !taskManagedLatex && <button className="editor-command-icon render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'} aria-label={activeDocument.sourceType === 'metafont' ? 'Render MetaFont glyph proof' : 'Render preview'}><UniversalIcon name="render" /></button>}
             </div>
           </div>
 
