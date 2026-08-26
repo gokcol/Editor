@@ -46,6 +46,18 @@
         "name": "Markdown Document",
         "role": "Editor",
         "mimeType": "text/markdown"
+      },
+      {
+        "ext": ["pdf"],
+        "name": "PDF Document",
+        "role": "Viewer",
+        "mimeType": "application/pdf"
+      },
+      {
+        "ext": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"],
+        "name": "Image Document",
+        "role": "Viewer",
+        "mimeType": "image/*"
       }
     ],
     "icon": [

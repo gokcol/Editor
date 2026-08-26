@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{
@@ -17,16 +18,21 @@ use tauri::{
 };
 
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ANNOTATION_BYTES: u64 = 1024 * 1024;
 const MAX_BROWSER_ENTRIES: usize = 8_000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenedTextFile {
+struct OpenedDocument {
     name: String,
     path: String,
     content: String,
     is_markdown: bool,
     encoding: String,
+    kind: String,
+    media_data: Option<String>,
+    mime_type: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -176,53 +182,126 @@ fn read_browser_directory(path: PathBuf, show_hidden: bool) -> Result<FileBrowse
     })
 }
 
-fn read_text_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedTextFile, String> {
+fn is_markdown_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "md" | "markdown"
+    )
+}
+
+fn media_kind_and_mime(path: &Path, bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(b"%PDF-") {
+        return Some(("pdf", "application/pdf"));
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(("image", "image/png"));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(("image", "image/jpeg"));
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(("image", "image/gif"));
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some(("image", "image/webp"));
+    }
+    if bytes.starts_with(b"BM") {
+        return Some(("image", "image/bmp"));
+    }
+    if bytes.starts_with(&[0, 0, 1, 0]) {
+        return Some(("image", "image/x-icon"));
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "svg" {
+        let prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+        if prefix.contains("<svg") {
+            return Some(("image", "image/svg+xml"));
+        }
+    }
+    None
+}
+
+fn read_document_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedDocument, String> {
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err("Only regular text files can be opened here.".to_owned());
+        return Err("Only regular files can be opened here.".to_owned());
     }
-    if metadata.len() > MAX_TEXT_BYTES {
-        return Err("That text file is larger than 16 MB.".to_owned());
+    if metadata.len() > MAX_MEDIA_BYTES {
+        return Err("That file is larger than 64 MB.".to_owned());
     }
     let real_path = fs::canonicalize(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     let bytes = fs::read(&real_path).map_err(|_| "That file is unavailable.".to_owned())?;
+    if let Some((kind, mime_type)) = media_kind_and_mime(&real_path, &bytes) {
+        return Ok(OpenedDocument {
+            name: text_file_name(&real_path),
+            path: real_path.to_string_lossy().into_owned(),
+            content: String::new(),
+            is_markdown: false,
+            encoding: "utf-8".to_owned(),
+            kind: kind.to_owned(),
+            media_data: Some(BASE64.encode(bytes)),
+            mime_type: Some(mime_type.to_owned()),
+        });
+    }
+    if metadata.len() > MAX_TEXT_BYTES {
+        return Err(
+            "That text file is larger than 16 MB. PDFs and standard images can be up to 64 MB."
+                .to_owned(),
+        );
+    }
     if !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]) && bytes.contains(&0)
     {
         return Err(
-            "That file appears to be binary data. 7TXT can open text in any filename extension."
+            "That file appears to be binary data. 7TXT can open text, PDFs, and standard images."
                 .to_owned(),
         );
     }
     let decoded = text_encoding::decode(&bytes, encoding.as_deref())?;
-    Ok(OpenedTextFile {
+    Ok(OpenedDocument {
         name: text_file_name(&real_path),
         path: real_path.to_string_lossy().into_owned(),
-        is_markdown: matches!(
-            real_path
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-                .as_str(),
-            "md" | "markdown"
-        ),
         content: decoded.content,
+        is_markdown: is_markdown_path(&real_path),
         encoding: decoded.encoding,
+        kind: "text".to_owned(),
+        media_data: None,
+        mime_type: None,
     })
 }
 
-fn reveal_text_file_folder(path: PathBuf, show_hidden: bool) -> Result<FileBrowser, String> {
+fn reveal_regular_file_folder(path: PathBuf, show_hidden: bool) -> Result<FileBrowser, String> {
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err("Only regular text files can be revealed here.".to_owned());
+        return Err("Only regular files can be revealed here.".to_owned());
     }
     let real_path = fs::canonicalize(&path).map_err(|_| "That file is unavailable.".to_owned())?;
     let parent = real_path
         .parent()
         .ok_or_else(|| "That file has no containing folder.".to_owned())?;
     read_browser_directory(parent.to_path_buf(), show_hidden)
+}
+
+fn media_annotation_path(path: PathBuf) -> Result<PathBuf, String> {
+    let source = regular_browser_path(path)?;
+    if !source.is_file() {
+        return Err("Annotations need a regular file.".to_owned());
+    }
+    let file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "That file has no usable name.".to_owned())?;
+    Ok(source.with_file_name(format!("{file_name}.7txt-annotations.json")))
 }
 
 fn initial_open_paths() -> Vec<PathBuf> {
@@ -300,16 +379,17 @@ fn save_text_file(
 }
 
 #[tauri::command]
-fn open_file(encoding: Option<String>) -> Result<Option<OpenedTextFile>, String> {
+fn open_file(encoding: Option<String>) -> Result<Option<OpenedDocument>, String> {
     // Do not filter by extension: a text editor should be able to open a
     // `.conf`, `.log`, extensionless file, or any other text document.
     let path = FileDialog::new().pick_file();
-    path.map(|path| read_text_file(path, encoding)).transpose()
+    path.map(|path| read_document_file(path, encoding))
+        .transpose()
 }
 
 #[tauri::command]
-fn open_recent(path: String, encoding: Option<String>) -> Result<OpenedTextFile, String> {
-    read_text_file(PathBuf::from(path), encoding)
+fn open_recent(path: String, encoding: Option<String>) -> Result<OpenedDocument, String> {
+    read_document_file(PathBuf::from(path), encoding)
 }
 
 #[tauri::command]
@@ -336,7 +416,37 @@ fn refresh_folder(path: String, show_hidden: Option<bool>) -> Result<FileBrowser
 
 #[tauri::command]
 fn reveal_file_folder(path: String, show_hidden: Option<bool>) -> Result<FileBrowser, String> {
-    reveal_text_file_folder(PathBuf::from(path), show_hidden.unwrap_or(false))
+    reveal_regular_file_folder(PathBuf::from(path), show_hidden.unwrap_or(false))
+}
+
+#[tauri::command]
+fn read_media_annotations(path: String) -> Result<Option<String>, String> {
+    let sidecar = media_annotation_path(PathBuf::from(path))?;
+    if !sidecar.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::symlink_metadata(&sidecar)
+        .map_err(|_| "The annotations file is unavailable.".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("The annotations file is not a regular file.".to_owned());
+    }
+    if metadata.len() > MAX_ANNOTATION_BYTES {
+        return Err("The annotations file is too large.".to_owned());
+    }
+    fs::read_to_string(&sidecar)
+        .map(Some)
+        .map_err(|_| "The annotations file cannot be read.".to_owned())
+}
+
+#[tauri::command]
+fn write_media_annotations(path: String, annotations: String) -> Result<(), String> {
+    if annotations.len() as u64 > MAX_ANNOTATION_BYTES {
+        return Err("Annotations are limited to 1 MB per file.".to_owned());
+    }
+    let _: serde_json::Value = serde_json::from_str(&annotations)
+        .map_err(|_| "Annotations could not be saved because their data is invalid.".to_owned())?;
+    let sidecar = media_annotation_path(PathBuf::from(path))?;
+    fs::write(&sidecar, annotations).map_err(|error| format!("Could not save annotations: {error}"))
 }
 
 #[tauri::command]
@@ -640,6 +750,8 @@ pub fn run() {
             browse_folder,
             refresh_folder,
             reveal_file_folder,
+            read_media_annotations,
+            write_media_annotations,
             take_pending_open_files,
             file_fingerprint,
             create_browser_entry,
@@ -695,15 +807,15 @@ mod tests {
     }
 
     #[test]
-    fn revealing_a_text_file_browses_its_containing_folder() {
+    fn revealing_a_file_browses_its_containing_folder() {
         let folder =
             std::env::temp_dir().join(format!("7txt-reveal-folder-{}", std::process::id()));
         fs::create_dir_all(&folder).expect("create reveal folder");
         let document = folder.join("notes.txt");
         fs::write(&document, "Notes").expect("create text file");
-        let result = reveal_text_file_folder(document, false);
+        let result = reveal_regular_file_folder(document, false);
         let _ = fs::remove_dir_all(&folder);
-        let browser = result.expect("text file parent should be browseable");
+        let browser = result.expect("file parent should be browseable");
         assert!(browser
             .entries
             .iter()
@@ -715,11 +827,30 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("7txt-any-extension-{}.conf", std::process::id()));
         fs::write(&path, "setting = true").expect("create arbitrary text file");
-        let result = read_text_file(path.clone(), None);
+        let result = read_document_file(path.clone(), None);
         let _ = fs::remove_file(&path);
         let document = result.expect("arbitrary text should open");
         assert_eq!(document.name, path.file_name().unwrap().to_string_lossy());
         assert!(!document.is_markdown);
         assert_eq!(document.content, "setting = true");
+        assert_eq!(document.kind, "text");
+    }
+
+    #[test]
+    fn opens_pdf_and_standard_images_as_media_documents() {
+        let folder = std::env::temp_dir().join(format!("7txt-media-{}", std::process::id()));
+        fs::create_dir_all(&folder).expect("create media folder");
+        let pdf = folder.join("sketch.pdf");
+        let png = folder.join("diagram.png");
+        fs::write(&pdf, b"%PDF-1.7\n% 7TXT test").expect("create PDF");
+        fs::write(&png, [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']).expect("create PNG");
+        let pdf_document = read_document_file(pdf, None).expect("PDF should open");
+        let image_document = read_document_file(png, None).expect("image should open");
+        let _ = fs::remove_dir_all(&folder);
+        assert_eq!(pdf_document.kind, "pdf");
+        assert_eq!(pdf_document.mime_type.as_deref(), Some("application/pdf"));
+        assert!(pdf_document.media_data.is_some());
+        assert_eq!(image_document.kind, "image");
+        assert_eq!(image_document.mime_type.as_deref(), Some("image/png"));
     }
 }

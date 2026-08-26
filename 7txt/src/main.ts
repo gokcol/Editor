@@ -1,9 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import './styles.css';
 
 type ViewMode = 'edit' | 'split' | 'preview';
+type DocumentKind = 'text' | 'pdf' | 'image';
+type AnnotationKind = 'highlight' | 'note';
+type MediaAnnotation = { id: string; kind: AnnotationKind; x: number; y: number; width?: number; height?: number; text?: string; color: string };
 type TextDocument = {
   id: string;
   name: string;
@@ -12,11 +17,25 @@ type TextDocument = {
   savedContent: string;
   isMarkdown: boolean;
   encoding: string;
+  kind: DocumentKind;
+  mediaData?: string;
+  mimeType?: string;
+  annotations?: MediaAnnotation[];
+  savedAnnotations?: string;
   cursor?: number;
 };
-type OpenedTextFile = { name: string; path: string; content: string; isMarkdown: boolean; encoding: string };
+type OpenedDocument = {
+  name: string;
+  path: string;
+  content: string;
+  isMarkdown: boolean;
+  encoding: string;
+  kind: DocumentKind;
+  mediaData?: string;
+  mimeType?: string;
+};
 type SavedTextFile = { name: string; path: string; encoding: string };
-type RecentEntry = { name: string; path: string; isMarkdown: boolean; openedAt: number };
+type RecentEntry = { name: string; path: string; isMarkdown: boolean; kind: DocumentKind; openedAt: number };
 type DocumentHistory = { entries: string[]; index: number };
 type FolderEntry = { name: string; path: string; kind: 'file' | 'directory' };
 type ProjectFolder = { name: string; path: string; parentPath?: string; homePath: string; documentsPath: string; entries: FolderEntry[]; truncated: boolean };
@@ -84,6 +103,8 @@ const CHARACTER_ENCODINGS = [
   ['shift_jis', 'Shift_JIS (Japanese)'], ['euc-jp', 'EUC-JP (Japanese)'], ['iso-2022-jp', 'ISO-2022-JP (Japanese)'], ['euc-kr', 'EUC-KR (Korean)'], ['big5', 'Big5 (Traditional Chinese)'], ['gbk', 'GBK (Simplified Chinese)'], ['gb18030', 'GB18030 (Chinese)'],
 ] as const;
 const app = document.querySelector<HTMLDivElement>('#app');
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 if (!app) throw new Error('7TXT could not create its editor window.');
 
@@ -184,6 +205,13 @@ app.innerHTML = `
         <div class="preview-heading"><span>PREVIEW</span><span class="preview-kind"></span></div>
         <article class="markdown-preview" aria-label="Document preview"></article>
       </section>
+      <section class="media-pane" hidden aria-label="Media viewer">
+        <div class="media-heading"><span class="media-kind-chip">PDF</span><span class="media-label">Media viewer</span><span class="media-page-status"></span><span class="toolbar-spacer"></span><button class="media-control" data-action="media-previous-page" title="Previous PDF page" aria-label="Previous PDF page">‹</button><span class="media-page-count"></span><button class="media-control" data-action="media-next-page" title="Next PDF page" aria-label="Next PDF page">›</button><span class="media-control-divider"></span><button class="media-control" data-action="media-zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button class="media-zoom-label" data-action="media-zoom-fit" title="Fit media to view" aria-label="Fit media to view">100%</button><button class="media-control" data-action="media-zoom-in" title="Zoom in" aria-label="Zoom in">+</button></div>
+        <div class="media-body">
+          <div class="media-scroller"><div class="media-stage" aria-label="Document or image canvas"><img class="media-image" alt="" hidden /><canvas class="pdf-canvas" hidden></canvas><div class="annotation-layer" aria-label="Media annotations"></div></div><div class="media-empty">Loading preview…</div></div>
+          <aside class="annotation-panel" aria-label="Annotations"><div class="annotation-panel-heading"><span>ANNOTATE</span><button data-action="clear-media-annotations" title="Clear all annotations" aria-label="Clear all annotations">Clear</button></div><div class="annotation-tools" role="group" aria-label="Annotation tool"><button data-annotation-tool="select" title="Select an annotation" aria-pressed="true">Select</button><button data-annotation-tool="highlight" title="Add highlight" aria-pressed="false">Highlight</button><button data-annotation-tool="note" title="Add note" aria-pressed="false">Note</button></div><div class="annotation-colors" role="group" aria-label="Annotation color"><button data-annotation-color="#f5c451" aria-label="Gold annotation"></button><button data-annotation-color="#4ac6bd" aria-label="Teal annotation"></button><button data-annotation-color="#8198ee" aria-label="Blue annotation"></button><button data-annotation-color="#e9899d" aria-label="Rose annotation"></button></div><div class="annotation-list"></div><div class="annotation-panel-footer"><button data-action="delete-media-annotation" title="Delete selected annotation">Delete selected</button><button data-action="save-media-annotations" title="Save annotations next to the original media">Save notes</button></div></aside>
+        </div>
+      </section>
     </section>
     <footer class="statusbar">
       <span class="status-file">Untitled</span>
@@ -201,6 +229,14 @@ const shell = required<HTMLElement>('.app-shell');
 const editor = required<HTMLTextAreaElement>('.editor');
 const secondaryEditor = required<HTMLTextAreaElement>('.editor-secondary');
 const preview = required<HTMLElement>('.markdown-preview');
+const mediaPane = required<HTMLElement>('.media-pane');
+const mediaScroller = required<HTMLElement>('.media-scroller');
+const mediaStage = required<HTMLElement>('.media-stage');
+const mediaImage = required<HTMLImageElement>('.media-image');
+const pdfCanvas = required<HTMLCanvasElement>('.pdf-canvas');
+const mediaEmpty = required<HTMLElement>('.media-empty');
+const annotationLayer = required<HTMLElement>('.annotation-layer');
+const annotationList = required<HTMLElement>('.annotation-list');
 const findbar = required<HTMLElement>('.findbar');
 const findInput = required<HTMLInputElement>('.findbar input');
 const replaceInput = required<HTMLInputElement>('.replace-input input');
@@ -257,6 +293,18 @@ let toastTimer: number | undefined;
 let recoveryTimer: number | undefined;
 let autosaveInFlight = false;
 let commandSelection = 0;
+let mediaPdf: PDFDocumentProxy | null = null;
+let mediaPdfPath: string | undefined;
+let mediaPage = 1;
+let mediaPageCount = 0;
+let mediaZoom = 1;
+let mediaRenderToken = 0;
+let mediaLastRenderKey = '';
+let annotationTool: 'select' | AnnotationKind = 'select';
+let annotationColor = '#f5c451';
+let selectedAnnotationId: string | null = null;
+let annotationSaveTimer: number | undefined;
+let annotationDrag: { id: string; pointerId: number; dx: number; dy: number } | null = null;
 
 function required<T extends Element>(selector: string): T {
   const value = app!.querySelector<T>(selector);
@@ -404,7 +452,18 @@ function blankDocument(isMarkdown = false): TextDocument {
     savedContent: '',
     isMarkdown,
     encoding: 'auto',
+    kind: 'text',
   };
+}
+
+function isMediaDocument(document: TextDocument) {
+  return document.kind === 'pdf' || document.kind === 'image';
+}
+
+function documentKindLabel(document: Pick<TextDocument, 'kind' | 'isMarkdown'>) {
+  if (document.kind === 'pdf') return 'PDF';
+  if (document.kind === 'image') return 'IMG';
+  return document.isMarkdown ? 'MD' : 'TXT';
 }
 
 function isMarkdownName(name: string) {
@@ -412,6 +471,7 @@ function isMarkdownName(name: string) {
 }
 
 function isDirty() {
+  if (isMediaDocument(documentState)) return annotationSnapshot(documentState) !== (documentState.savedAnnotations || '');
   return documentState.content !== documentState.savedContent;
 }
 
@@ -441,6 +501,7 @@ function activateDocument(id: string) {
   secondaryEditor.setSelectionRange(cursor, cursor);
   viewMode = next.isMarkdown ? 'split' : 'edit';
   render();
+  if (isMediaDocument(next)) return;
   window.requestAnimationFrame(() => {
     editor.setSelectionRange(cursor, cursor);
     secondaryEditor.setSelectionRange(cursor, cursor);
@@ -456,7 +517,7 @@ function addDocument(next: TextDocument) {
   secondaryEditor.value = next.content;
   viewMode = next.isMarkdown ? 'split' : 'edit';
   render();
-  window.requestAnimationFrame(() => editor.focus());
+  if (!isMediaDocument(next)) window.requestAnimationFrame(() => editor.focus());
 }
 
 function createDocument(isMarkdown = false) {
@@ -472,7 +533,7 @@ function showToast(message: string, tone: 'info' | 'error' | 'success' = 'info')
   toastTimer = window.setTimeout(() => { toast.hidden = true; }, 3000);
 }
 
-function updateRecent(file: Pick<OpenedTextFile, 'name' | 'path' | 'isMarkdown'>) {
+function updateRecent(file: Pick<OpenedDocument, 'name' | 'path' | 'isMarkdown' | 'kind'>) {
   const next = [{ ...file, openedAt: Date.now() }, ...readRecents().filter((entry) => entry.path !== file.path)].slice(0, MAX_RECENTS);
   localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   renderRecents();
@@ -488,7 +549,7 @@ function readRecents(): RecentEntry[] {
       && typeof (entry as RecentEntry).path === 'string'
       && typeof (entry as RecentEntry).isMarkdown === 'boolean'
       && typeof (entry as RecentEntry).openedAt === 'number',
-    )).slice(0, MAX_RECENTS);
+    )).map((entry) => ({ ...entry, kind: entry.kind === 'pdf' || entry.kind === 'image' ? entry.kind : 'text' as const })).slice(0, MAX_RECENTS);
   } catch {
     return [];
   }
@@ -673,7 +734,7 @@ function readSession(): RestoredSession | null {
       && typeof document.savedContent === 'string'
       && typeof document.isMarkdown === 'boolean'
       && typeof document.encoding === 'string',
-    ));
+    )).map((document) => ({ ...document, kind: 'text' as const }));
     return documents.length ? { documents, activeIndex: Math.max(0, Math.min(Number(session.activeIndex) || 0, documents.length - 1)), savedAt: Number(session.savedAt) || 0 } : null;
   } catch {
     return null;
@@ -681,9 +742,15 @@ function readSession(): RestoredSession | null {
 }
 
 function persistRecovery() {
+  const textDocuments = documents.filter((document) => document.kind === 'text');
+  if (!textDocuments.length) {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(RECOVERY_KEY);
+    return;
+  }
   const session: RestoredSession = {
-    documents: documents.map(({ id, ...document }) => ({ ...document, cursor: id === activeDocumentId ? editor.selectionStart : document.cursor })),
-    activeIndex: Math.max(0, documents.findIndex((document) => document.id === activeDocumentId)),
+    documents: textDocuments.map(({ id, ...document }) => ({ ...document, cursor: id === activeDocumentId ? editor.selectionStart : document.cursor })),
+    activeIndex: Math.max(0, textDocuments.findIndex((document) => document.id === activeDocumentId)),
     savedAt: Date.now(),
   };
   try {
@@ -699,7 +766,7 @@ function persistRecovery() {
 
 async function autosaveOpenDocuments() {
   if (autosaveInFlight) return;
-  const pending = documents.filter((document) => document.path && document.content !== document.savedContent);
+  const pending = documents.filter((document) => document.kind === 'text' && document.path && document.content !== document.savedContent);
   if (!pending.length) return;
   autosaveInFlight = true;
   let savedCurrent = false;
@@ -937,6 +1004,7 @@ function commitDocument(next: TextDocument, resetHistory = true) {
 }
 
 function recordContent(content: string) {
+  if (isMediaDocument(documentState)) return;
   if (content === documentState.content) return;
   setCurrentDocument({ ...documentState, content });
   if (editor.value !== content) editor.value = content;
@@ -962,38 +1030,344 @@ function restoreHistory(nextIndex: number) {
   scheduleRecovery();
 }
 
-function undo() { restoreHistory(historyFor(documentState).index - 1); }
-function redo() { restoreHistory(historyFor(documentState).index + 1); }
+function undo() { if (!isMediaDocument(documentState)) restoreHistory(historyFor(documentState).index - 1); }
+function redo() { if (!isMediaDocument(documentState)) restoreHistory(historyFor(documentState).index + 1); }
+
+function annotationSnapshot(document: TextDocument) {
+  return JSON.stringify({ version: 1, annotations: document.annotations || [] });
+}
+
+function validAnnotation(value: unknown): value is MediaAnnotation {
+  if (!value || typeof value !== 'object') return false;
+  const annotation = value as Partial<MediaAnnotation>;
+  return typeof annotation.id === 'string'
+    && (annotation.kind === 'highlight' || annotation.kind === 'note')
+    && typeof annotation.x === 'number'
+    && typeof annotation.y === 'number'
+    && typeof annotation.color === 'string';
+}
+
+function annotationsFromSidecar(raw: string | null) {
+  if (!raw) return [] as MediaAnnotation[];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return [] as MediaAnnotation[];
+    const annotations = (parsed as { annotations?: unknown }).annotations;
+    return Array.isArray(annotations) ? annotations.filter(validAnnotation) : [] as MediaAnnotation[];
+  } catch {
+    return [] as MediaAnnotation[];
+  }
+}
+
+function mediaDataUrl(document: TextDocument) {
+  return document.mediaData && document.mimeType ? `data:${document.mimeType};base64,${document.mediaData}` : '';
+}
+
+function base64Bytes(value: string) {
+  const decoded = atob(value);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index += 1) bytes[index] = decoded.charCodeAt(index);
+  return bytes;
+}
+
+function updateMediaDocument(next: TextDocument) {
+  setCurrentDocument(next);
+  render();
+}
+
+function setMediaAnnotations(annotations: MediaAnnotation[], autosave = true) {
+  if (!isMediaDocument(documentState)) return;
+  updateMediaDocument({ ...documentState, annotations });
+  if (!autosave || !documentState.path) return;
+  if (annotationSaveTimer) window.clearTimeout(annotationSaveTimer);
+  annotationSaveTimer = window.setTimeout(() => { void saveMediaAnnotations(false); }, 550);
+}
+
+async function saveMediaAnnotations(announce = true) {
+  const target = documentState;
+  if (!isMediaDocument(target) || !target.path) return;
+  const annotations = annotationSnapshot(target);
+  try {
+    await invoke('write_media_annotations', { path: target.path, annotations });
+    const latest = documents.find((document) => document.id === target.id);
+    if (latest && annotationSnapshot(latest) === annotations) {
+      const saved = { ...latest, savedAnnotations: annotations };
+      documents = documents.map((document) => document.id === saved.id ? saved : document);
+      if (activeDocumentId === saved.id) documentState = saved;
+      render();
+    }
+    if (announce) showToast('Annotations saved next to the original file.', 'success');
+  } catch (error) {
+    if (announce) showToast(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+async function loadMediaAnnotations(target: TextDocument) {
+  if (!isMediaDocument(target) || !target.path) return;
+  try {
+    const raw = await invoke<string | null>('read_media_annotations', { path: target.path });
+    const annotations = annotationsFromSidecar(raw);
+    const savedAnnotations = JSON.stringify({ version: 1, annotations });
+    const latest = documents.find((document) => document.id === target.id);
+    if (!latest || latest.path !== target.path) return;
+    const hydrated = { ...latest, annotations, savedAnnotations };
+    documents = documents.map((document) => document.id === hydrated.id ? hydrated : document);
+    if (activeDocumentId === hydrated.id) documentState = hydrated;
+    render();
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+function renderMediaAnnotations() {
+  annotationLayer.replaceChildren();
+  const annotations = documentState.annotations || [];
+  for (const annotation of annotations) {
+    const marker = document.createElement('button');
+    marker.type = 'button';
+    marker.className = `media-annotation ${annotation.kind}${annotation.id === selectedAnnotationId ? ' selected' : ''}`;
+    marker.dataset.annotationId = annotation.id;
+    marker.style.setProperty('--annotation-color', annotation.color);
+    marker.style.left = `${Math.max(0, Math.min(1, annotation.x)) * 100}%`;
+    marker.style.top = `${Math.max(0, Math.min(1, annotation.y)) * 100}%`;
+    if (annotation.kind === 'highlight') {
+      marker.style.width = `${Math.max(.02, Math.min(.95, annotation.width || .22)) * 100}%`;
+      marker.style.height = `${Math.max(.02, Math.min(.95, annotation.height || .07)) * 100}%`;
+      marker.title = annotation.text || 'Highlight';
+    } else {
+      marker.textContent = '•';
+      marker.title = annotation.text || 'Note';
+      marker.setAttribute('aria-label', marker.title);
+    }
+    annotationLayer.append(marker);
+  }
+  annotationList.replaceChildren();
+  if (!annotations.length) {
+    annotationList.append(makeEmpty('Choose Highlight or Note, then click the document.'));
+  } else {
+    annotations.forEach((annotation, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = annotation.id === selectedAnnotationId ? 'selected' : '';
+      item.dataset.annotationId = annotation.id;
+      item.innerHTML = `<span style="--annotation-color:${escapeHtml(annotation.color)}"></span><strong>${annotation.kind === 'highlight' ? 'Highlight' : 'Note'} ${index + 1}</strong><small>${escapeHtml(annotation.text || (annotation.kind === 'highlight' ? 'Colored overlay' : 'Untitled note'))}</small>`;
+      annotationList.append(item);
+    });
+  }
+  for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-annotation-tool]')) {
+    const selected = button.dataset.annotationTool === annotationTool;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-annotation-color]')) {
+    const selected = button.dataset.annotationColor === annotationColor;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function renderMediaChrome() {
+  const isPdf = documentState.kind === 'pdf';
+  required<HTMLElement>('.media-kind-chip').textContent = documentKindLabel(documentState);
+  required<HTMLElement>('.media-label').textContent = documentState.name;
+  required<HTMLElement>('.media-page-status').textContent = isPdf ? 'PDF document' : 'Image';
+  required<HTMLElement>('.media-page-count').textContent = isPdf && mediaPageCount ? `${mediaPage} / ${mediaPageCount}` : '';
+  required<HTMLButtonElement>('[data-action="media-previous-page"]').disabled = !isPdf || mediaPage <= 1;
+  required<HTMLButtonElement>('[data-action="media-next-page"]').disabled = !isPdf || mediaPage >= mediaPageCount;
+  required<HTMLButtonElement>('.media-zoom-label').textContent = `${Math.round(mediaZoom * 100)}%`;
+}
+
+function renderImageDocument(target: TextDocument) {
+  const source = mediaDataUrl(target);
+  mediaImage.hidden = false;
+  pdfCanvas.hidden = true;
+  if (mediaImage.dataset.path !== target.path || mediaImage.src !== source) {
+    mediaImage.dataset.path = target.path || '';
+    mediaImage.src = source;
+    mediaImage.onload = () => {
+      if (documentState.id !== target.id) return;
+      const availableWidth = Math.max(280, mediaScroller.clientWidth - 58);
+      const availableHeight = Math.max(260, mediaScroller.clientHeight - 58);
+      const fit = Math.min(1, availableWidth / mediaImage.naturalWidth, availableHeight / mediaImage.naturalHeight);
+      mediaImage.style.width = `${Math.max(120, Math.round(mediaImage.naturalWidth * fit * mediaZoom))}px`;
+      mediaImage.style.height = 'auto';
+      mediaEmpty.hidden = true;
+      renderMediaAnnotations();
+    };
+    mediaImage.onerror = () => { mediaEmpty.hidden = false; mediaEmpty.textContent = 'This image cannot be previewed.'; };
+  } else if (mediaImage.naturalWidth) {
+    const availableWidth = Math.max(280, mediaScroller.clientWidth - 58);
+    const availableHeight = Math.max(260, mediaScroller.clientHeight - 58);
+    const fit = Math.min(1, availableWidth / mediaImage.naturalWidth, availableHeight / mediaImage.naturalHeight);
+    mediaImage.style.width = `${Math.max(120, Math.round(mediaImage.naturalWidth * fit * mediaZoom))}px`;
+    mediaEmpty.hidden = true;
+  }
+  renderMediaChrome();
+  renderMediaAnnotations();
+}
+
+async function renderPdfDocument(target: TextDocument) {
+  const token = ++mediaRenderToken;
+  mediaImage.hidden = true;
+  pdfCanvas.hidden = false;
+  mediaEmpty.hidden = false;
+  mediaEmpty.textContent = 'Rendering PDF…';
+  try {
+    if (mediaPdfPath !== target.path || !mediaPdf) {
+      mediaPdf?.destroy();
+      mediaPdf = await getDocument({ data: base64Bytes(target.mediaData || '') }).promise;
+      mediaPdfPath = target.path;
+      mediaPage = 1;
+      mediaPageCount = mediaPdf.numPages;
+    }
+    if (token !== mediaRenderToken || documentState.id !== target.id || !mediaPdf) return;
+    mediaPage = Math.max(1, Math.min(mediaPage, mediaPdf.numPages));
+    const page = await mediaPdf.getPage(mediaPage);
+    if (token !== mediaRenderToken || documentState.id !== target.id) return;
+    const natural = page.getViewport({ scale: 1 });
+    const availableWidth = Math.max(320, mediaScroller.clientWidth - 58);
+    const availableHeight = Math.max(320, mediaScroller.clientHeight - 58);
+    const fit = Math.min(1.4, Math.max(.45, Math.min(availableWidth / natural.width, availableHeight / natural.height)));
+    const pixelRatio = window.devicePixelRatio || 1;
+    const viewport = page.getViewport({ scale: fit * mediaZoom * pixelRatio });
+    pdfCanvas.width = Math.max(1, Math.floor(viewport.width));
+    pdfCanvas.height = Math.max(1, Math.floor(viewport.height));
+    pdfCanvas.style.width = `${Math.round(viewport.width / pixelRatio)}px`;
+    pdfCanvas.style.height = `${Math.round(viewport.height / pixelRatio)}px`;
+    const context = pdfCanvas.getContext('2d');
+    if (!context) throw new Error('7TXT could not prepare the PDF canvas.');
+    await page.render({ canvasContext: context, viewport }).promise;
+    if (token !== mediaRenderToken || documentState.id !== target.id) return;
+    mediaEmpty.hidden = true;
+    renderMediaChrome();
+    renderMediaAnnotations();
+  } catch (error) {
+    if (token !== mediaRenderToken) return;
+    mediaEmpty.hidden = false;
+    mediaEmpty.textContent = `PDF preview unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    mediaPageCount = 0;
+    renderMediaChrome();
+  }
+}
+
+function renderMediaDocument() {
+  const target = documentState;
+  if (!isMediaDocument(target)) return;
+  mediaPane.hidden = false;
+  const key = `${target.id}:${target.kind}:${mediaPage}:${mediaZoom}:${mediaScroller.clientWidth}:${mediaScroller.clientHeight}`;
+  if (key === mediaLastRenderKey) {
+    renderMediaChrome();
+    renderMediaAnnotations();
+    return;
+  }
+  mediaLastRenderKey = key;
+  if (target.kind === 'pdf') void renderPdfDocument(target);
+  else renderImageDocument(target);
+}
+
+function setMediaZoom(next: number) {
+  if (!isMediaDocument(documentState)) return;
+  mediaZoom = Math.max(.5, Math.min(3, next));
+  mediaLastRenderKey = '';
+  renderMediaDocument();
+}
+
+function changePdfPage(delta: number) {
+  if (documentState.kind !== 'pdf' || !mediaPdf) return;
+  mediaPage = Math.max(1, Math.min(mediaPdf.numPages, mediaPage + delta));
+  mediaLastRenderKey = '';
+  renderMediaDocument();
+}
+
+function annotationPosition(event: PointerEvent) {
+  const bounds = mediaStage.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+  };
+}
+
+function mediaAnnotationById(id: string | null) {
+  return documentState.annotations?.find((annotation) => annotation.id === id);
+}
+
+function setAnnotationTool(next: string | undefined) {
+  if (next === 'select' || next === 'highlight' || next === 'note') annotationTool = next;
+  renderMediaAnnotations();
+}
+
+function addMediaAnnotation(event: PointerEvent) {
+  if (!isMediaDocument(documentState) || annotationTool === 'select') return;
+  const { x, y } = annotationPosition(event);
+  const isNote = annotationTool === 'note';
+  const text = isNote ? window.prompt('Note text (optional):') || '' : '';
+  const annotation: MediaAnnotation = {
+    id: `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind: annotationTool,
+    x: isNote ? x : Math.min(.95, x),
+    y: isNote ? y : Math.min(.94, y),
+    width: isNote ? undefined : .23,
+    height: isNote ? undefined : .075,
+    text,
+    color: annotationColor,
+  };
+  selectedAnnotationId = annotation.id;
+  setMediaAnnotations([...(documentState.annotations || []), annotation]);
+}
+
+function deleteSelectedMediaAnnotation() {
+  if (!isMediaDocument(documentState) || !selectedAnnotationId) return;
+  setMediaAnnotations((documentState.annotations || []).filter((annotation) => annotation.id !== selectedAnnotationId));
+  selectedAnnotationId = null;
+  renderMediaAnnotations();
+}
+
+function clearMediaAnnotations() {
+  if (!isMediaDocument(documentState) || !(documentState.annotations || []).length) return;
+  if (!window.confirm(`Clear all annotations from “${documentState.name}”? The original file will not be changed.`)) return;
+  selectedAnnotationId = null;
+  setMediaAnnotations([]);
+}
 
 function render() {
-  if (!documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
+  const isMedia = isMediaDocument(documentState);
+  if (!isMedia && !documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
   shell.dataset.mode = viewMode;
-  shell.classList.toggle('text-document', !documentState.isMarkdown);
+  shell.classList.toggle('text-document', documentState.kind === 'text' && !documentState.isMarkdown);
+  shell.classList.toggle('media-document', isMedia);
   shell.classList.toggle('editor-split', editorSplit);
   shell.classList.toggle('zen-mode', zenMode);
+  mediaPane.hidden = !isMedia;
   if (editor.value !== documentState.content) editor.value = documentState.content;
   if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
   document.title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
   required<HTMLElement>('.document-title strong').textContent = documentState.name;
   required<HTMLElement>('.document-title small').textContent = documentState.path || 'Unsaved document';
   required<HTMLElement>('.dirty-dot').classList.toggle('visible', isDirty());
-  required<HTMLElement>('.format-chip').textContent = documentState.isMarkdown ? 'MD' : 'TXT';
+  required<HTMLElement>('.format-chip').textContent = documentKindLabel(documentState);
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
-  required<HTMLElement>('.editor-mode-label').textContent = documentState.isMarkdown ? 'Markdown' : 'Plain text';
-  required<HTMLElement>('.editor-status').textContent = isDirty() ? 'Unsaved changes' : documentState.path ? 'Saved locally' : 'Ready';
+  required<HTMLElement>('.editor-mode-label').textContent = documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
+  required<HTMLElement>('.editor-status').textContent = isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved locally' : 'Ready';
   required<HTMLElement>('.status-file').textContent = documentState.path || documentState.name;
-  required<HTMLElement>('.status-stats').textContent = documentStats(documentState.content);
+  required<HTMLElement>('.status-stats').textContent = isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
   encodingSelect.value = documentState.encoding;
-  reopenEncodingButton.disabled = !documentState.path;
+  encodingSelect.closest<HTMLElement>('.encoding-control')?.toggleAttribute('hidden', isMedia);
+  reopenEncodingButton.hidden = isMedia;
+  reopenEncodingButton.disabled = isMedia || !documentState.path;
   for (const action of app!.querySelectorAll<HTMLElement>('.markdown-actions')) action.hidden = !documentState.isMarkdown;
   externalChangeBar.hidden = !externalChange;
   required<HTMLElement>('.external-change span').textContent = externalChange ? `${externalChange.name} changed on disk.` : '';
-  required<HTMLElement>('.status-help').textContent = documentState.isMarkdown ? '⌘1 Edit · ⌘2 Split · ⌘3 Preview' : '⌘O Open · ⌘S Save · ⌘F Find';
+  required<HTMLElement>('.status-help').textContent = isMedia ? 'Click Highlight or Note, then click the canvas · ⌘S Save notes' : documentState.isMarkdown ? '⌘1 Edit · ⌘2 Split · ⌘3 Preview' : '⌘O Open · ⌘S Save · ⌘F Find';
   for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-mode-button]')) {
-    button.classList.toggle('selected', button.dataset.modeButton === viewMode);
+    button.hidden = isMedia;
+    button.classList.toggle('selected', !isMedia && button.dataset.modeButton === viewMode);
   }
-  preview.innerHTML = documentState.isMarkdown ? renderMarkdown(documentState.content) : `<pre>${escapeHtml(documentState.content || 'Start writing…')}</pre>`;
+  if (!isMedia) {
+    preview.innerHTML = documentState.isMarkdown ? renderMarkdown(documentState.content) : `<pre>${escapeHtml(documentState.content || 'Start writing…')}</pre>`;
+  } else {
+    void renderMediaDocument();
+  }
   renderTabs();
   renderOutline();
   renderRecents();
@@ -1155,6 +1529,10 @@ function renderMarkdown(source: string) {
 }
 
 function updateCursor() {
+  if (isMediaDocument(documentState)) {
+    required<HTMLElement>('.status-cursor').textContent = 'Media view';
+    return;
+  }
   const source = activeEditor();
   const before = source.value.slice(0, source.selectionStart);
   const line = before.split('\n').length;
@@ -1167,6 +1545,7 @@ function updateCursor() {
 }
 
 function goToLine(line: number) {
+  if (isMediaDocument(documentState)) return;
   const lines = editor.value.split('\n');
   const start = lines.slice(0, Math.max(0, line - 1)).reduce((offset, current) => offset + current.length + 1, 0);
   const end = start + (lines[line - 1]?.length || 0);
@@ -1179,13 +1558,14 @@ function goToLine(line: number) {
 }
 
 function setViewMode(next: ViewMode) {
+  if (isMediaDocument(documentState)) return;
   viewMode = documentState.isMarkdown ? next : 'edit';
   render();
 }
 
 async function openFile() {
   try {
-    const result = await invoke<OpenedTextFile | null>('open_file', { encoding: documentState.encoding });
+    const result = await invoke<OpenedDocument | null>('open_file', { encoding: documentState.encoding });
     if (!result) return;
     openResultInTab(result);
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
@@ -1193,7 +1573,7 @@ async function openFile() {
 
 async function openRecent(entry: RecentEntry) {
   try {
-    const result = await invoke<OpenedTextFile>('open_recent', { path: entry.path, encoding: documentState.encoding });
+    const result = await invoke<OpenedDocument>('open_recent', { path: entry.path, encoding: documentState.encoding });
     openResultInTab(result);
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error), 'error');
@@ -1205,7 +1585,7 @@ async function openRecent(entry: RecentEntry) {
 
 async function openProjectFile(path: string) {
   try {
-    const result = await invoke<OpenedTextFile>('open_recent', { path, encoding: documentState.encoding });
+    const result = await invoke<OpenedDocument>('open_recent', { path, encoding: documentState.encoding });
     openResultInTab(result);
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
@@ -1224,7 +1604,7 @@ async function revealFileFolder(path: string, quiet = true) {
 
 async function openExternalFile(path: string) {
   try {
-    const result = await invoke<OpenedTextFile>('open_recent', { path, encoding: documentState.encoding });
+    const result = await invoke<OpenedDocument>('open_recent', { path, encoding: documentState.encoding });
     openResultInTab(result, true);
     await revealFileFolder(result.path);
   } catch (error) {
@@ -1250,7 +1630,7 @@ function enqueueExternalFiles(paths: string[]) {
   });
 }
 
-function openResultInTab(result: OpenedTextFile, replacePristineBlank = false) {
+function openResultInTab(result: OpenedDocument, replacePristineBlank = false) {
   const normalised = { ...result, content: normaliseLineEndings(result.content) };
   updateRecent(normalised);
   const alreadyOpen = documents.find((document) => document.path === normalised.path);
@@ -1259,7 +1639,13 @@ function openResultInTab(result: OpenedTextFile, replacePristineBlank = false) {
     showToast(`${normalised.name} is already open.`, 'info');
     return;
   }
-  const next = { id: `document-${nextDocumentId++}`, ...normalised, savedContent: normalised.content };
+  const next: TextDocument = {
+    id: `document-${nextDocumentId++}`,
+    ...normalised,
+    savedContent: normalised.content,
+    annotations: normalised.kind === 'text' ? undefined : [],
+    savedAnnotations: normalised.kind === 'text' ? undefined : JSON.stringify({ version: 1, annotations: [] }),
+  };
   const onlyPristineBlank = documents.length === 1
     && !documents[0].path
     && documents[0].content === ''
@@ -1273,22 +1659,28 @@ function openResultInTab(result: OpenedTextFile, replacePristineBlank = false) {
     editor.value = next.content;
     viewMode = next.isMarkdown ? 'split' : 'edit';
     render();
-    window.requestAnimationFrame(() => editor.focus());
+    if (!isMediaDocument(next)) window.requestAnimationFrame(() => editor.focus());
     void captureFingerprint(normalised.path);
+    void loadMediaAnnotations(next);
     showToast(`Opened ${normalised.name}.`, 'success');
     return;
   }
   addDocument(next);
   void captureFingerprint(normalised.path);
+  void loadMediaAnnotations(next);
   showToast(`Opened ${normalised.name} in a new tab.`, 'success');
 }
 
 async function saveAs() {
+  if (isMediaDocument(documentState)) {
+    await saveMediaAnnotations(true);
+    return;
+  }
   try {
     const result = await invoke<SavedTextFile | null>('save_as', { suggestedName: documentState.name, content: contentForSave(documentState.content), encoding: documentState.encoding });
     if (!result) return;
     setCurrentDocument({ ...documentState, ...result, savedContent: documentState.content, isMarkdown: isMarkdownName(result.name) });
-    updateRecent({ ...result, isMarkdown: documentState.isMarkdown });
+    updateRecent({ ...result, isMarkdown: documentState.isMarkdown, kind: 'text' });
     if (externalChange?.path === result.path) externalChange = null;
     render();
     await captureFingerprint(result.path);
@@ -1297,11 +1689,15 @@ async function saveAs() {
 }
 
 async function save() {
+  if (isMediaDocument(documentState)) {
+    await saveMediaAnnotations(true);
+    return;
+  }
   if (!documentState.path) { await saveAs(); return; }
   try {
     const result = await invoke<SavedTextFile>('write_file', { path: documentState.path, content: contentForSave(documentState.content), encoding: documentState.encoding });
     setCurrentDocument({ ...documentState, ...result, savedContent: documentState.content, isMarkdown: isMarkdownName(result.name) });
-    updateRecent({ ...result, isMarkdown: documentState.isMarkdown });
+    updateRecent({ ...result, isMarkdown: documentState.isMarkdown, kind: 'text' });
     if (externalChange?.path === result.path) externalChange = null;
     render();
     await captureFingerprint(result.path);
@@ -1312,7 +1708,10 @@ async function save() {
 function closeDocument(id = activeDocumentId) {
   const target = documents.find((document) => document.id === id);
   if (!target) return;
-  if (target.content !== target.savedContent && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
+  const targetDirty = isMediaDocument(target)
+    ? annotationSnapshot(target) !== (target.savedAnnotations || '')
+    : target.content !== target.savedContent;
+  if (targetDirty && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
   const index = documents.findIndex((document) => document.id === id);
   histories.delete(id);
   if (documents.length === 1) {
@@ -1342,11 +1741,12 @@ function closeDocument(id = activeDocumentId) {
 
 function reopenWithEncoding() {
   const target = documentState;
+  if (isMediaDocument(target)) return;
   if (!target.path) return;
   if (target.content !== target.savedContent && !window.confirm(`Reload “${target.name}” from disk and discard its unsaved changes?`)) return;
   void (async () => {
     try {
-      const result = await invoke<OpenedTextFile>('open_recent', { path: target.path, encoding: target.encoding });
+      const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
       const content = normaliseLineEndings(result.content);
       const reopened = { ...target, ...result, content, savedContent: content };
       if (documentState.id === target.id) commitDocument(reopened);
@@ -1362,6 +1762,10 @@ function reopenWithEncoding() {
 }
 
 function openFind() {
+  if (isMediaDocument(documentState)) {
+    showToast('Find is available for text and Markdown documents.', 'info');
+    return;
+  }
   findbar.hidden = false;
   shell.classList.add('find-open');
   findInput.focus();
@@ -1371,7 +1775,7 @@ function openFind() {
 function closeFind() {
   findbar.hidden = true;
   shell.classList.remove('find-open');
-  editor.focus();
+  if (!isMediaDocument(documentState)) editor.focus();
 }
 
 function searchExpression(global = true): RegExp | null {
@@ -1623,7 +2027,7 @@ function fingerprintsMatch(left: FileFingerprint, right: FileFingerprint) {
 async function watchFiles() {
   if (externalChange) return;
   for (const document of documents) {
-    if (!document.path) continue;
+    if (document.kind !== 'text' || !document.path) continue;
     try {
       const current = await invoke<FileFingerprint>('file_fingerprint', { path: document.path });
       const previous = fileFingerprints.get(document.path);
@@ -1647,7 +2051,7 @@ async function reloadExternalChange() {
   if (!target) { externalChange = null; render(); return; }
   if (target.content !== target.savedContent && !window.confirm(`Reload “${target.name}” and discard unsaved changes?`)) return;
   try {
-    const result = await invoke<OpenedTextFile>('open_recent', { path: target.path, encoding: target.encoding });
+    const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
     const reopened = { ...target, ...result, content: normaliseLineEndings(result.content), savedContent: normaliseLineEndings(result.content) };
     documents = documents.map((document) => document.id === target.id ? reopened : document);
     if (activeDocumentId === target.id) documentState = reopened;
@@ -1664,7 +2068,7 @@ async function compareExternalChange() {
   const target = documents.find((document) => document.path === externalChange!.path);
   if (!target) return;
   try {
-    const result = await invoke<OpenedTextFile>('open_recent', { path: target.path, encoding: target.encoding });
+    const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
     addDocument({ id: `document-${nextDocumentId++}`, ...result, name: `${result.name} — disk`, path: undefined, content: normaliseLineEndings(result.content), savedContent: normaliseLineEndings(result.content) });
     externalChange = null;
     await captureFingerprint(result.path);
@@ -1694,6 +2098,14 @@ function handleAction(action?: string) {
     case 'toggle-folder-bookmark': toggleFolderBookmark(); break;
     case 'save': void save(); break;
     case 'save-as': void saveAs(); break;
+    case 'save-media-annotations': void saveMediaAnnotations(true); break;
+    case 'clear-media-annotations': clearMediaAnnotations(); break;
+    case 'delete-media-annotation': deleteSelectedMediaAnnotation(); break;
+    case 'media-zoom-in': setMediaZoom(mediaZoom + .2); break;
+    case 'media-zoom-out': setMediaZoom(mediaZoom - .2); break;
+    case 'media-zoom-fit': setMediaZoom(1); break;
+    case 'media-previous-page': changePdfPage(-1); break;
+    case 'media-next-page': changePdfPage(1); break;
     case 'toggle-sidebar': toggleSidebar(); break;
     case 'close': closeDocument(); break;
     case 'reopen-encoding': reopenWithEncoding(); break;
@@ -1742,11 +2154,68 @@ app.addEventListener('click', (event) => {
     setUiScale(scaleChoice.dataset.uiScaleChoice);
     return;
   }
+  const annotationToolButton = event.target.closest<HTMLButtonElement>('[data-annotation-tool]');
+  if (annotationToolButton) {
+    setAnnotationTool(annotationToolButton.dataset.annotationTool);
+    return;
+  }
+  const annotationColorButton = event.target.closest<HTMLButtonElement>('[data-annotation-color]');
+  if (annotationColorButton?.dataset.annotationColor) {
+    annotationColor = annotationColorButton.dataset.annotationColor;
+    renderMediaAnnotations();
+    return;
+  }
+  const annotationEntry = event.target.closest<HTMLButtonElement>('.annotation-list [data-annotation-id]');
+  if (annotationEntry?.dataset.annotationId) {
+    selectedAnnotationId = annotationEntry.dataset.annotationId;
+    renderMediaAnnotations();
+    return;
+  }
   const target = event.target.closest<HTMLElement>('[data-action], [data-mode-button]');
   if (!target) return;
   if (target.dataset.modeButton) setViewMode(target.dataset.modeButton as ViewMode);
   else handleAction(target.dataset.action);
 });
+
+annotationLayer.addEventListener('pointerdown', (event) => {
+  if (!isMediaDocument(documentState) || event.button !== 0) return;
+  const marker = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-annotation-id]') : null;
+  if (!marker?.dataset.annotationId) {
+    addMediaAnnotation(event);
+    return;
+  }
+  const annotation = mediaAnnotationById(marker.dataset.annotationId);
+  if (!annotation) return;
+  event.preventDefault();
+  event.stopPropagation();
+  selectedAnnotationId = annotation.id;
+  const position = annotationPosition(event);
+  annotationDrag = { id: annotation.id, pointerId: event.pointerId, dx: position.x - annotation.x, dy: position.y - annotation.y };
+  annotationLayer.setPointerCapture(event.pointerId);
+  renderMediaAnnotations();
+});
+
+annotationLayer.addEventListener('pointermove', (event) => {
+  if (!annotationDrag || annotationDrag.pointerId !== event.pointerId || !isMediaDocument(documentState)) return;
+  const moving = mediaAnnotationById(annotationDrag.id);
+  if (!moving) return;
+  const position = annotationPosition(event);
+  const maxX = 1 - (moving.kind === 'highlight' ? moving.width || .02 : 0);
+  const maxY = 1 - (moving.kind === 'highlight' ? moving.height || .02 : 0);
+  const annotations = (documentState.annotations || []).map((annotation) => annotation.id === moving.id
+    ? { ...annotation, x: Math.max(0, Math.min(maxX, position.x - annotationDrag!.dx)), y: Math.max(0, Math.min(maxY, position.y - annotationDrag!.dy)) }
+    : annotation);
+  setMediaAnnotations(annotations);
+});
+
+function finishAnnotationDrag(event: PointerEvent) {
+  if (!annotationDrag || annotationDrag.pointerId !== event.pointerId) return;
+  if (annotationLayer.hasPointerCapture(event.pointerId)) annotationLayer.releasePointerCapture(event.pointerId);
+  annotationDrag = null;
+}
+
+annotationLayer.addEventListener('pointerup', finishAnnotationDrag);
+annotationLayer.addEventListener('pointercancel', finishAnnotationDrag);
 
 function handleEditorTab(event: KeyboardEvent, surface: HTMLTextAreaElement) {
   if (event.key !== 'Tab') return;
@@ -1836,6 +2305,12 @@ window.addEventListener('keydown', (event) => {
   else if (key === '1') { event.preventDefault(); setViewMode('edit'); }
   else if (key === '2') { event.preventDefault(); setViewMode('split'); }
   else if (key === '3') { event.preventDefault(); setViewMode('preview'); }
+});
+
+window.addEventListener('resize', () => {
+  if (!isMediaDocument(documentState)) return;
+  mediaLastRenderKey = '';
+  renderMediaDocument();
 });
 
 void listen<string>('menu-action', ({ payload }) => handleAction(payload));

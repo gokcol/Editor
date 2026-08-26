@@ -1,18 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="7TXT">
   <defs>
-    <linearGradient id="paper" x1="92" y1="76" x2="421" y2="431" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#F6C36D"/>
-      <stop offset="1" stop-color="#DF7657"/>
+    <linearGradient id="field" x1="52" y1="56" x2="456" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#49CBC5"/>
+      <stop offset=".52" stop-color="#559BDE"/>
+      <stop offset="1" stop-color="#666CEB"/>
     </linearGradient>
-    <linearGradient id="ink" x1="156" y1="128" x2="355" y2="373" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFF9EE"/>
-      <stop offset="1" stop-color="#FFE7CD"/>
+    <linearGradient id="seven" x1="178" y1="118" x2="337" y2="402" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E6FCFF" stop-opacity=".39"/>
+      <stop offset="1" stop-color="#DDE4FF" stop-opacity=".12"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="112" fill="#23314B"/>
-  <rect x="68" y="68" width="376" height="376" rx="82" fill="url(#paper)"/>
-  <path fill="url(#ink)" d="M142 138h220v48L259 376h-71l103-184H142z"/>
-  <rect x="289" y="280" width="79" height="18" rx="9" fill="#23314B" opacity=".72"/>
-  <rect x="272" y="315" width="96" height="18" rx="9" fill="#23314B" opacity=".55"/>
-  <rect x="255" y="350" width="113" height="18" rx="9" fill="#23314B" opacity=".38"/>
+  <rect width="512" height="512" rx="112" fill="url(#field)"/>
+  <circle cx="397" cy="111" r="25" fill="#FFC46B"/>
+  <path d="M171 125h185v47L256 390h-76l103-202H171z" fill="url(#seven)"/>
+  <rect x="64" y="206" width="384" height="134" rx="52" fill="#203C5E" fill-opacity=".96"/>
+  <path fill="#FFFDF8" d="M140 239h76v22h-26v73h-24v-73h-26zM231 239h27l17 25 17-25h27l-30 46 33 49h-28l-19-29-19 29h-28l33-49zM331 239h76v22h-26v73h-24v-73h-26z"/>
+  <path d="M173 383h166" stroke="#D8EEFF" stroke-linecap="round" stroke-opacity=".3" stroke-width="13"/>
 </svg>
