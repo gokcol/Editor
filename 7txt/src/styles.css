@@ -219,10 +219,11 @@ button { border: 0; cursor: pointer; }
 .media-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--muted); font-size: 12px; font-weight: 650; text-align: center; pointer-events: none; }
 .media-empty[hidden] { display: none; }
 .annotation-layer { position: absolute; inset: 0; overflow: hidden; cursor: crosshair; }
+.annotation-layer[data-tool="select"] { cursor: default; }
 .media-annotation { position: absolute; display: block; box-sizing: border-box; border: 0; background: transparent; cursor: grab; transform: translate(0, 0); }
-.media-annotation.highlight { border: 2px solid color-mix(in srgb, var(--annotation-color) 92%, #fff); border-radius: 3px; background: color-mix(in srgb, var(--annotation-color) 35%, transparent); }
+.media-annotation.highlight { border: 1px solid color-mix(in srgb, var(--annotation-color) 58%, transparent); border-radius: 3px; background: color-mix(in srgb, var(--annotation-color) 42%, transparent); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
 .media-annotation.note { display: grid; width: 18px; height: 18px; place-items: center; border: 2px solid white; border-radius: 50%; background: var(--annotation-color); box-shadow: 0 2px 7px rgba(20, 31, 50, .35); color: rgba(255,255,255,.9); font-size: 22px; line-height: 4px; transform: translate(-50%, -50%); }
-.media-annotation.selected { outline: 2px solid var(--ink); outline-offset: 2px; }
+.media-annotation.selected { outline: 2px solid var(--aqua); outline-offset: 2px; }
 .media-annotation:active { cursor: grabbing; }
 .annotation-panel { display: flex; min-width: 0; flex-direction: column; overflow: hidden; padding: 12px 10px; border-left: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 92%, var(--soft)); }
 .annotation-panel-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 4px 9px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .09em; }
@@ -230,6 +231,7 @@ button { border: 0; cursor: pointer; }
 .annotation-tools { display: grid; grid-template-columns: 1fr; gap: 3px; padding: 3px; border-radius: 7px; background: var(--soft); }
 .annotation-tools button { padding: 6px 7px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 750; text-align: left; }
 .annotation-tools button.selected, .annotation-tools button:hover { background: var(--paper); color: var(--aqua); box-shadow: 0 1px 2px rgba(29,49,78,.11); }
+.annotation-hint { margin: 8px 4px 0; color: var(--muted); font-size: 9px; font-weight: 550; line-height: 1.4; }
 .annotation-colors { display: flex; align-items: center; gap: 7px; padding: 10px 5px; }
 .annotation-colors button { width: 16px; height: 16px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--annotation-color); cursor: pointer; }
 .annotation-colors button[data-annotation-color="#f5c451"] { --annotation-color: #f5c451; }.annotation-colors button[data-annotation-color="#4ac6bd"] { --annotation-color: #4ac6bd; }.annotation-colors button[data-annotation-color="#8198ee"] { --annotation-color: #8198ee; }.annotation-colors button[data-annotation-color="#e9899d"] { --annotation-color: #e9899d; }

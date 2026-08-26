@@ -8,7 +8,10 @@ import './styles.css';
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
 type AnnotationKind = 'highlight' | 'note';
-type MediaAnnotation = { id: string; kind: AnnotationKind; x: number; y: number; width?: number; height?: number; text?: string; color: string };
+type MediaAnnotation = { id: string; kind: AnnotationKind; x: number; y: number; width?: number; height?: number; text?: string; color: string; page?: number };
+type AnnotationDrag =
+  | { mode: 'move'; id: string; pointerId: number; dx: number; dy: number }
+  | { mode: 'draw'; id: string; pointerId: number; x: number; y: number };
 type TextDocument = {
   id: string;
   name: string;
@@ -209,7 +212,7 @@ app.innerHTML = `
         <div class="media-heading"><span class="media-kind-chip">PDF</span><span class="media-label">Media viewer</span><span class="media-page-status"></span><span class="toolbar-spacer"></span><button class="media-control" data-action="media-previous-page" title="Previous PDF page" aria-label="Previous PDF page">‹</button><span class="media-page-count"></span><button class="media-control" data-action="media-next-page" title="Next PDF page" aria-label="Next PDF page">›</button><span class="media-control-divider"></span><button class="media-control" data-action="media-zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button class="media-zoom-label" data-action="media-zoom-fit" title="Fit media to view" aria-label="Fit media to view">100%</button><button class="media-control" data-action="media-zoom-in" title="Zoom in" aria-label="Zoom in">+</button></div>
         <div class="media-body">
           <div class="media-scroller"><div class="media-stage" aria-label="Document or image canvas"><img class="media-image" alt="" hidden /><canvas class="pdf-canvas" hidden></canvas><div class="annotation-layer" aria-label="Media annotations"></div></div><div class="media-empty">Loading preview…</div></div>
-          <aside class="annotation-panel" aria-label="Annotations"><div class="annotation-panel-heading"><span>ANNOTATE</span><button data-action="clear-media-annotations" title="Clear all annotations" aria-label="Clear all annotations">Clear</button></div><div class="annotation-tools" role="group" aria-label="Annotation tool"><button data-annotation-tool="select" title="Select an annotation" aria-pressed="true">Select</button><button data-annotation-tool="highlight" title="Add highlight" aria-pressed="false">Highlight</button><button data-annotation-tool="note" title="Add note" aria-pressed="false">Note</button></div><div class="annotation-colors" role="group" aria-label="Annotation color"><button data-annotation-color="#f5c451" aria-label="Gold annotation"></button><button data-annotation-color="#4ac6bd" aria-label="Teal annotation"></button><button data-annotation-color="#8198ee" aria-label="Blue annotation"></button><button data-annotation-color="#e9899d" aria-label="Rose annotation"></button></div><div class="annotation-list"></div><div class="annotation-panel-footer"><button data-action="delete-media-annotation" title="Delete selected annotation">Delete selected</button><button data-action="save-media-annotations" title="Save annotations next to the original media">Save notes</button></div></aside>
+          <aside class="annotation-panel" aria-label="Annotations"><div class="annotation-panel-heading"><span>ANNOTATE</span><button data-action="clear-media-annotations" title="Clear all annotations" aria-label="Clear all annotations">Clear</button></div><div class="annotation-tools" role="group" aria-label="Annotation tool"><button data-annotation-tool="select" title="Select and move an annotation" aria-pressed="true">Select</button><button data-annotation-tool="highlight" title="Click and drag to draw a highlight" aria-pressed="false">Highlight</button><button data-annotation-tool="note" title="Click to attach a note" aria-pressed="false">Note</button></div><p class="annotation-hint">Choose Highlight, then drag over the area you want to mark.</p><div class="annotation-colors" role="group" aria-label="Annotation color"><button data-annotation-color="#f5c451" aria-label="Gold annotation"></button><button data-annotation-color="#4ac6bd" aria-label="Teal annotation"></button><button data-annotation-color="#8198ee" aria-label="Blue annotation"></button><button data-annotation-color="#e9899d" aria-label="Rose annotation"></button></div><div class="annotation-list"></div><div class="annotation-panel-footer"><button data-action="edit-media-annotation" title="Edit selected note">Edit selected</button><button data-action="delete-media-annotation" title="Delete selected annotation">Delete selected</button><button data-action="save-media-annotations" title="Save annotations next to the original media">Save notes</button></div></aside>
         </div>
       </section>
     </section>
@@ -304,7 +307,7 @@ let annotationTool: 'select' | AnnotationKind = 'select';
 let annotationColor = '#f5c451';
 let selectedAnnotationId: string | null = null;
 let annotationSaveTimer: number | undefined;
-let annotationDrag: { id: string; pointerId: number; dx: number; dy: number } | null = null;
+let annotationDrag: AnnotationDrag | null = null;
 
 function required<T extends Element>(selector: string): T {
   const value = app!.querySelector<T>(selector);
@@ -1044,7 +1047,8 @@ function validAnnotation(value: unknown): value is MediaAnnotation {
     && (annotation.kind === 'highlight' || annotation.kind === 'note')
     && typeof annotation.x === 'number'
     && typeof annotation.y === 'number'
-    && typeof annotation.color === 'string';
+    && typeof annotation.color === 'string'
+    && (annotation.page === undefined || (typeof annotation.page === 'number' && Number.isInteger(annotation.page) && annotation.page > 0));
 }
 
 function annotationsFromSidecar(raw: string | null) {
@@ -1121,11 +1125,13 @@ async function loadMediaAnnotations(target: TextDocument) {
 
 function renderMediaAnnotations() {
   annotationLayer.replaceChildren();
+  annotationLayer.dataset.tool = annotationTool;
   const annotations = documentState.annotations || [];
-  for (const annotation of annotations) {
+  const visibleAnnotations = annotations.filter((annotation) => documentState.kind !== 'pdf' || annotation.page === undefined || annotation.page === mediaPage);
+  for (const annotation of visibleAnnotations) {
     const marker = document.createElement('button');
     marker.type = 'button';
-    marker.className = `media-annotation ${annotation.kind}${annotation.id === selectedAnnotationId ? ' selected' : ''}`;
+    marker.className = `media-annotation ${annotation.kind}${annotationTool === 'select' && annotation.id === selectedAnnotationId ? ' selected' : ''}`;
     marker.dataset.annotationId = annotation.id;
     marker.style.setProperty('--annotation-color', annotation.color);
     marker.style.left = `${Math.max(0, Math.min(1, annotation.x)) * 100}%`;
@@ -1150,7 +1156,8 @@ function renderMediaAnnotations() {
       item.type = 'button';
       item.className = annotation.id === selectedAnnotationId ? 'selected' : '';
       item.dataset.annotationId = annotation.id;
-      item.innerHTML = `<span style="--annotation-color:${escapeHtml(annotation.color)}"></span><strong>${annotation.kind === 'highlight' ? 'Highlight' : 'Note'} ${index + 1}</strong><small>${escapeHtml(annotation.text || (annotation.kind === 'highlight' ? 'Colored overlay' : 'Untitled note'))}</small>`;
+      const page = documentState.kind === 'pdf' && annotation.page ? `Page ${annotation.page} · ` : '';
+      item.innerHTML = `<span style="--annotation-color:${escapeHtml(annotation.color)}"></span><strong>${page}${annotation.kind === 'highlight' ? 'Highlight' : 'Note'} ${index + 1}</strong><small>${escapeHtml(annotation.text || (annotation.kind === 'highlight' ? 'Drawn highlight' : 'Untitled note'))}</small>`;
       annotationList.append(item);
     });
   }
@@ -1296,23 +1303,40 @@ function setAnnotationTool(next: string | undefined) {
   renderMediaAnnotations();
 }
 
-function addMediaAnnotation(event: PointerEvent) {
-  if (!isMediaDocument(documentState) || annotationTool === 'select') return;
+function addMediaNote(event: PointerEvent) {
+  if (!isMediaDocument(documentState) || annotationTool !== 'note') return;
   const { x, y } = annotationPosition(event);
-  const isNote = annotationTool === 'note';
-  const text = isNote ? window.prompt('Note text (optional):') || '' : '';
+  const text = window.prompt('Note text (optional):') || '';
   const annotation: MediaAnnotation = {
     id: `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    kind: annotationTool,
-    x: isNote ? x : Math.min(.95, x),
-    y: isNote ? y : Math.min(.94, y),
-    width: isNote ? undefined : .23,
-    height: isNote ? undefined : .075,
+    kind: 'note',
+    x,
+    y,
     text,
     color: annotationColor,
+    page: documentState.kind === 'pdf' ? mediaPage : undefined,
   };
   selectedAnnotationId = annotation.id;
   setMediaAnnotations([...(documentState.annotations || []), annotation]);
+}
+
+function startMediaHighlight(event: PointerEvent) {
+  if (!isMediaDocument(documentState) || annotationTool !== 'highlight') return;
+  const { x, y } = annotationPosition(event);
+  const annotation: MediaAnnotation = {
+    id: `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind: 'highlight',
+    x,
+    y,
+    width: .001,
+    height: .001,
+    color: annotationColor,
+    page: documentState.kind === 'pdf' ? mediaPage : undefined,
+  };
+  selectedAnnotationId = annotation.id;
+  setMediaAnnotations([...(documentState.annotations || []), annotation], false);
+  annotationDrag = { mode: 'draw', id: annotation.id, pointerId: event.pointerId, x, y };
+  annotationLayer.setPointerCapture(event.pointerId);
 }
 
 function deleteSelectedMediaAnnotation() {
@@ -1320,6 +1344,16 @@ function deleteSelectedMediaAnnotation() {
   setMediaAnnotations((documentState.annotations || []).filter((annotation) => annotation.id !== selectedAnnotationId));
   selectedAnnotationId = null;
   renderMediaAnnotations();
+}
+
+function editSelectedMediaAnnotation() {
+  if (!isMediaDocument(documentState) || !selectedAnnotationId) return;
+  const target = mediaAnnotationById(selectedAnnotationId);
+  if (!target) return;
+  const label = target.kind === 'note' ? 'Note text:' : 'Highlight label (optional):';
+  const text = window.prompt(label, target.text || '');
+  if (text === null) return;
+  setMediaAnnotations((documentState.annotations || []).map((annotation) => annotation.id === target.id ? { ...annotation, text } : annotation));
 }
 
 function clearMediaAnnotations() {
@@ -2100,6 +2134,7 @@ function handleAction(action?: string) {
     case 'save-as': void saveAs(); break;
     case 'save-media-annotations': void saveMediaAnnotations(true); break;
     case 'clear-media-annotations': clearMediaAnnotations(); break;
+    case 'edit-media-annotation': editSelectedMediaAnnotation(); break;
     case 'delete-media-annotation': deleteSelectedMediaAnnotation(); break;
     case 'media-zoom-in': setMediaZoom(mediaZoom + .2); break;
     case 'media-zoom-out': setMediaZoom(mediaZoom - .2); break;
@@ -2181,37 +2216,61 @@ annotationLayer.addEventListener('pointerdown', (event) => {
   if (!isMediaDocument(documentState) || event.button !== 0) return;
   const marker = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-annotation-id]') : null;
   if (!marker?.dataset.annotationId) {
-    addMediaAnnotation(event);
+    if (annotationTool === 'highlight') startMediaHighlight(event);
+    else if (annotationTool === 'note') addMediaNote(event);
     return;
   }
+  if (annotationTool !== 'select') return;
   const annotation = mediaAnnotationById(marker.dataset.annotationId);
   if (!annotation) return;
   event.preventDefault();
   event.stopPropagation();
   selectedAnnotationId = annotation.id;
   const position = annotationPosition(event);
-  annotationDrag = { id: annotation.id, pointerId: event.pointerId, dx: position.x - annotation.x, dy: position.y - annotation.y };
+  annotationDrag = { mode: 'move', id: annotation.id, pointerId: event.pointerId, dx: position.x - annotation.x, dy: position.y - annotation.y };
   annotationLayer.setPointerCapture(event.pointerId);
   renderMediaAnnotations();
 });
 
 annotationLayer.addEventListener('pointermove', (event) => {
-  if (!annotationDrag || annotationDrag.pointerId !== event.pointerId || !isMediaDocument(documentState)) return;
-  const moving = mediaAnnotationById(annotationDrag.id);
+  const drag = annotationDrag;
+  if (!drag || drag.pointerId !== event.pointerId || !isMediaDocument(documentState)) return;
+  const moving = mediaAnnotationById(drag.id);
   if (!moving) return;
   const position = annotationPosition(event);
+  if (drag.mode === 'draw') {
+    const x = Math.min(drag.x, position.x);
+    const y = Math.min(drag.y, position.y);
+    const width = Math.max(.001, Math.abs(position.x - drag.x));
+    const height = Math.max(.001, Math.abs(position.y - drag.y));
+    setMediaAnnotations((documentState.annotations || []).map((annotation) => annotation.id === moving.id
+      ? { ...annotation, x, y, width, height }
+      : annotation), false);
+    return;
+  }
   const maxX = 1 - (moving.kind === 'highlight' ? moving.width || .02 : 0);
   const maxY = 1 - (moving.kind === 'highlight' ? moving.height || .02 : 0);
   const annotations = (documentState.annotations || []).map((annotation) => annotation.id === moving.id
-    ? { ...annotation, x: Math.max(0, Math.min(maxX, position.x - annotationDrag!.dx)), y: Math.max(0, Math.min(maxY, position.y - annotationDrag!.dy)) }
+    ? { ...annotation, x: Math.max(0, Math.min(maxX, position.x - drag.dx)), y: Math.max(0, Math.min(maxY, position.y - drag.dy)) }
     : annotation);
   setMediaAnnotations(annotations);
 });
 
 function finishAnnotationDrag(event: PointerEvent) {
   if (!annotationDrag || annotationDrag.pointerId !== event.pointerId) return;
+  const finished = annotationDrag;
   if (annotationLayer.hasPointerCapture(event.pointerId)) annotationLayer.releasePointerCapture(event.pointerId);
   annotationDrag = null;
+  if (finished.mode === 'draw') {
+    const annotation = mediaAnnotationById(finished.id);
+    if (!annotation || (annotation.width || 0) < .008 || (annotation.height || 0) < .008) {
+      setMediaAnnotations((documentState.annotations || []).filter((item) => item.id !== finished.id), false);
+      selectedAnnotationId = null;
+      showToast('Drag across an area to create a highlight.', 'info');
+      return;
+    }
+    setMediaAnnotations(documentState.annotations || []);
+  }
 }
 
 annotationLayer.addEventListener('pointerup', finishAnnotationDrag);
