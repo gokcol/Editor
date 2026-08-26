@@ -3676,8 +3676,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
               ))}
             </div>
             <button className="new-tab" onClick={() => openNewSource()} title="New source tab — choose a format" aria-label="New source tab">＋</button>
-            <div className="tab-tools">
-              <button className="compact-button" onClick={formatActive} title="Format source (⌥⇧F)">Format</button>
+            {(activeDocument.sourceType === 'latex' || activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'python' || taskManagedLatex) && <div className="tab-tools">
               {activeDocument.sourceType === 'latex' && !taskManagedLatex && <div className="latex-preview-mode" role="group" aria-label="LaTeX preview format">
                 <button className={latexPreviewMode === 'pdf' ? 'selected' : ''} type="button" aria-pressed={latexPreviewMode === 'pdf'} onClick={() => { setLatexPreviewMode('pdf'); void renderDocument(activeDocument, 'pdf'); }} title="Compile and preview PDF">PDF</button>
                 <button className={latexPreviewMode === 'dvi' ? 'selected' : ''} type="button" aria-pressed={latexPreviewMode === 'dvi'} onClick={() => { setLatexPreviewMode('dvi'); void renderDocument(activeDocument, 'dvi'); }} title="Compile with classic latex and preview the DVI as SVG when dvisvgm is available">DVI</button>
@@ -3699,8 +3698,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
                 <button className="compact-button" onClick={() => { if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true); setPythonInspectorView('output'); }} title="Show Python output in the right panel">› Output</button>
               </div> : taskManagedLatex ? <div className="project-task-toolbar" role="group" aria-label="Project build and preview tasks">
                 {isProjectTasksLoading ? <span className="project-task-pending">Project pipeline…</span> : projectToolbarTasks.map((task) => <button key={task.id} className="compact-button project-task-button" onClick={() => void runProjectTask(task)} disabled={isTaskRunning} title={projectTaskTooltip(task)}>▶ {task.label}</button>)}
-              </div> : <button className="compact-button render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'}>▶ {activeDocument.sourceType === 'metafont' ? 'Render proof' : 'Render'}</button>}
-            </div>
+              </div> : null}
+            </div>}
           </div>
 
           <div className="editor-meta">
@@ -3713,14 +3712,17 @@ function App({ desktop }: { desktop: DesktopApi }) {
                 <output aria-label={`Editor font size ${settings.editorFontSize} pixels`}>{settings.editorFontSize}px</output>
                 <button type="button" onClick={() => changeEditorFontSize(1)} disabled={settings.editorFontSize >= 24} title="Increase editor font size (⌘+)" aria-label="Increase editor font size">+</button>
               </div>
-              <button onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)">☷ Outline</button>
-              {activeDocument.sourceType === 'markdown' && <button onClick={insertMarkdownTableOfContents} title="Insert or refresh a generated Markdown table of contents">☷ ToC</button>}
-              <button onClick={() => setHistoryOpen(true)} title="Local version history">◴ History</button>
-              <button onClick={openEncodingDialog} title="Choose the opening and saving character encoding">⌁ {encodingLabel(activeDocument.encoding)}</button>
-              <button className={activeDocument.pinned ? 'active' : ''} onClick={toggleActiveTabPin} title={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-pressed={activeDocument.pinned}>{activeDocument.pinned ? '⌖ Unpin' : '⌖ Pin'}</button>
-              <button onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)}>↶ Undo</button>
-              <button onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)}>↷ Redo</button>
-              <button onClick={() => saveDocument(false)}>Save <kbd>⌘S</kbd></button>
+              <button className="editor-command-icon" onClick={() => setOutlineOpen(true)} title="Document outline (⌘⇧O)" aria-label="Document outline">☷</button>
+              {activeDocument.sourceType === 'markdown' && <button className="editor-command-icon" onClick={insertMarkdownTableOfContents} title="Insert or refresh a generated Markdown table of contents" aria-label="Insert or refresh table of contents">≣</button>}
+              <button className="editor-command-icon" onClick={() => setHistoryOpen(true)} title="Local version history" aria-label="Local version history">◴</button>
+              <button className="editor-command-icon" onClick={openEncodingDialog} title={`Text encoding: ${encodingLabel(activeDocument.encoding)}`} aria-label={`Text encoding: ${encodingLabel(activeDocument.encoding)}`}>⌁</button>
+              <button className={`editor-command-icon ${activeDocument.pinned ? 'active' : ''}`} onClick={toggleActiveTabPin} title={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-label={activeDocument.pinned ? 'Unpin active tab' : 'Pin active tab'} aria-pressed={activeDocument.pinned}>⌖</button>
+              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'undo', null)} title="Undo (⌘Z)" aria-label="Undo">↶</button>
+              <button className="editor-command-icon" onClick={() => editorRef.current?.trigger('toolbar', 'redo', null)} title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
+              <button className="editor-command-icon save-button" onClick={() => saveDocument(false)} title="Save (⌘S)" aria-label="Save">▣</button>
+              <span className="editor-command-separator" aria-hidden="true"></span>
+              <button className="editor-command-icon" onClick={formatActive} title="Format source (⌥⇧F)" aria-label="Format source">≋</button>
+              {activeDocument.sourceType !== 'python' && !taskManagedLatex && <button className="editor-command-icon render-button" onClick={() => void renderDocument(activeDocument, activeDocument.sourceType === 'latex' ? latexPreviewMode : 'pdf')} title={activeDocument.sourceType === 'metafont' ? 'Render a local MetaFont glyph proof (⌘↵)' : 'Render preview (⌘↵)'} aria-label={activeDocument.sourceType === 'metafont' ? 'Render MetaFont glyph proof' : 'Render preview'}>▶</button>}
             </div>
           </div>
 
