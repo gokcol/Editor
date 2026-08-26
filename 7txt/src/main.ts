@@ -115,7 +115,7 @@ if (!app) throw new Error('7TXT could not create its editor window.');
 app.innerHTML = `
   <main class="app-shell" data-mode="split">
     <header class="titlebar">
-      <div class="brand"><img class="brand-mark" src="${brandIconUrl}" alt="" /><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
+      <div class="brand"><button class="brand-mark-button" data-action="show-sidebar" title="Show Files sidebar" aria-label="Show Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
       <div class="document-title"><span class="dirty-dot" aria-hidden="true"></span><strong></strong><small></small></div>
       <div aria-hidden="true"></div>
     </header>
@@ -266,6 +266,7 @@ const sidebarToggle = required<HTMLButtonElement>('[data-action="toggle-sidebar"
 const themePicker = required<HTMLDetailsElement>('.theme-picker');
 const folderFilter = required<HTMLInputElement>('.folder-filter');
 const workspace = required<HTMLElement>('.workspace');
+const sidebar = required<HTMLElement>('.sidebar');
 const sidebarResizer = required<HTMLElement>('.sidebar-resizer');
 const externalChangeBar = required<HTMLElement>('.external-change');
 const commandPalette = required<HTMLElement>('.command-palette');
@@ -288,8 +289,11 @@ let uiTheme = readUiTheme();
 let uiScale = readUiScale();
 let editorSurface = readEditorSurface();
 let sidebarVisible = readSidebarVisible();
+let sidebarAutoHidden = false;
 let sidebarWidth = readSidebarWidth();
 let sidebarResizePointerId: number | null = null;
+let sidebarAutoHideTimer: number | undefined;
+let sidebarPointerInside = false;
 let externalChange: ExternalChange | null = null;
 const fileFingerprints = new Map<string, FileFingerprint>();
 const histories = new Map<string, DocumentHistory>([[firstDocument.id, { entries: [''], index: 0 }]]);
@@ -426,13 +430,45 @@ function readSidebarWidth() {
 }
 
 function applySidebarLayout() {
-  const visibleLabel = sidebarVisible ? 'Hide Files sidebar' : 'Show Files sidebar';
+  const shown = sidebarIsShown();
+  const visibleLabel = shown ? 'Hide Files sidebar' : 'Show Files sidebar';
   workspace.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
-  shell.classList.toggle('sidebar-hidden', !sidebarVisible);
+  shell.classList.toggle('sidebar-hidden', !shown);
   sidebarToggle.title = `${visibleLabel} (⇧⌘B)`;
   sidebarToggle.setAttribute('aria-label', visibleLabel);
-  sidebarToggle.setAttribute('aria-expanded', String(sidebarVisible));
+  sidebarToggle.setAttribute('aria-expanded', String(shown));
   sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
+}
+
+function sidebarIsShown() {
+  return sidebarVisible && !sidebarAutoHidden;
+}
+
+function cancelSidebarAutoHide() {
+  if (sidebarAutoHideTimer !== undefined) window.clearTimeout(sidebarAutoHideTimer);
+  sidebarAutoHideTimer = undefined;
+}
+
+function scheduleSidebarAutoHide() {
+  cancelSidebarAutoHide();
+  if (!sidebarIsShown() || sidebarPointerInside || zenMode) return;
+  sidebarAutoHideTimer = window.setTimeout(() => {
+    sidebarAutoHideTimer = undefined;
+    if (!sidebarIsShown() || sidebarPointerInside || zenMode || sidebarResizePointerId !== null || sidebar.contains(document.activeElement)) return;
+    sidebarAutoHidden = true;
+    applySidebarLayout();
+  }, 3000);
+}
+
+function showSidebar() {
+  const wasShown = sidebarIsShown();
+  cancelSidebarAutoHide();
+  sidebarVisible = true;
+  sidebarAutoHidden = false;
+  localStorage.setItem(SIDEBAR_VISIBLE_KEY, 'true');
+  applySidebarLayout();
+  if (!wasShown) showToast('Files sidebar shown. It hides three seconds after you leave it.');
+  scheduleSidebarAutoHide();
 }
 
 function setSidebarWidth(width: number, persist = true) {
@@ -442,7 +478,10 @@ function setSidebarWidth(width: number, persist = true) {
 }
 
 function toggleSidebar() {
-  sidebarVisible = !sidebarVisible;
+  const wasShown = sidebarIsShown();
+  cancelSidebarAutoHide();
+  sidebarVisible = !wasShown;
+  sidebarAutoHidden = false;
   localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
   applySidebarLayout();
   showToast(sidebarVisible ? 'Files sidebar shown.' : 'Files sidebar hidden.');
@@ -1957,7 +1996,8 @@ function toggleZenMode() {
 
 function startSidebarResizing() {
   sidebarResizer.addEventListener('pointerdown', (event) => {
-    if (!sidebarVisible || event.button !== 0) return;
+    if (!sidebarIsShown() || event.button !== 0) return;
+    cancelSidebarAutoHide();
     sidebarResizePointerId = event.pointerId;
     sidebarResizer.setPointerCapture(event.pointerId);
     workspace.classList.add('sidebar-resizing');
@@ -1990,6 +2030,25 @@ function startSidebarResizing() {
     event.preventDefault();
     setSidebarWidth(nextWidth);
   });
+}
+
+function startSidebarAutoHide() {
+  const markInside = () => {
+    sidebarPointerInside = true;
+    cancelSidebarAutoHide();
+  };
+  const markOutside = () => {
+    sidebarPointerInside = false;
+    scheduleSidebarAutoHide();
+  };
+  for (const element of [sidebar, sidebarResizer]) {
+    element.addEventListener('pointerenter', markInside);
+    element.addEventListener('pointerleave', markOutside);
+  }
+  sidebar.addEventListener('focusin', cancelSidebarAutoHide);
+  sidebar.addEventListener('focusout', () => window.setTimeout(() => {
+    if (!sidebar.contains(document.activeElement)) scheduleSidebarAutoHide();
+  }, 0));
 }
 
 function goToLinePrompt() {
@@ -2143,6 +2202,7 @@ function handleAction(action?: string) {
     case 'media-previous-page': changePdfPage(-1); break;
     case 'media-next-page': changePdfPage(1); break;
     case 'toggle-sidebar': toggleSidebar(); break;
+    case 'show-sidebar': showSidebar(); break;
     case 'close': closeDocument(); break;
     case 'reopen-encoding': reopenWithEncoding(); break;
     case 'undo': undo(); break;
@@ -2429,6 +2489,7 @@ applyUiScale();
 applyEditorSurface();
 setupTransientMenus();
 startSidebarResizing();
+startSidebarAutoHide();
 render();
 renderProjectTree();
 void refreshProjectFolder(true);

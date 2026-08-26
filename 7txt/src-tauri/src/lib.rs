@@ -645,6 +645,13 @@ fn item<R: Runtime>(
 }
 
 fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    let application = SubmenuBuilder::new(app, "7TXT")
+        .item(&PredefinedMenuItem::hide(app, Some("Hide 7TXT"))?)
+        .item(&PredefinedMenuItem::hide_others(app, Some("Hide Others"))?)
+        .item(&PredefinedMenuItem::show_all(app, Some("Show All"))?)
+        .separator()
+        .item(&PredefinedMenuItem::about(app, Some("About 7TXT"), None)?)
+        .build()?;
     let file = SubmenuBuilder::new(app, "File")
         .item(&item(
             app,
@@ -730,6 +737,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;
     MenuBuilder::new(app)
+        .item(&application)
         .item(&file)
         .item(&edit)
         .item(&view)

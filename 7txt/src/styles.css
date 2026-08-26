@@ -56,6 +56,8 @@ button { border: 0; cursor: pointer; }
 .brand, .document-title, .toolbar, .view-switch, .file-actions, .quick-actions, .markdown-actions, .editor-heading, .preview-heading, .statusbar { display: flex; align-items: center; }
 .brand { gap: 8px; letter-spacing: -.02em; white-space: nowrap; }
 .brand strong { font-size: 16px; }
+.brand-mark-button { display: grid; width: 29px; height: 29px; padding: 2px !important; place-items: center; border-radius: 9px; background: transparent; -webkit-app-region: no-drag; }
+.brand-mark-button:hover { background: var(--soft) !important; }
 .brand-mark {
   display: block; width: 25px; height: 25px; flex: 0 0 25px; object-fit: contain;
   border-radius: 8px; box-shadow: 0 4px 12px rgba(48, 113, 180, .24);
