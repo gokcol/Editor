@@ -27,12 +27,6 @@ pub const SOURCE_TYPE_IDS: &[&str] = &[
     "css",
 ];
 
-pub const SOURCE_EXTENSIONS: &[&str] = &[
-    "tex", "latex", "ltx", "tikz", "mf", "svg", "mmd", "mermaid", "md", "markdown", "txt", "yaml",
-    "yml", "json", "js", "cjs", "mjs", "jsx", "ts", "cts", "mts", "tsx", "py", "pyw", "f", "for",
-    "f90", "f95", "f03", "f08", "f18", "sql", "ddl", "html", "htm", "xhtml", "css",
-];
-
 pub const MAX_RECENT_ENTRIES: usize = 12;
 pub const MAX_PROJECT_TREE_DEPTH: usize = 32;
 
@@ -87,17 +81,6 @@ pub fn extension_for_source_type(source_type: &str) -> &'static str {
         "css" => "css",
         _ => "tex",
     }
-}
-
-pub fn is_supported_source(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            SOURCE_EXTENSIONS
-                .iter()
-                .any(|known| extension.eq_ignore_ascii_case(known))
-        })
-        .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, Serialize)]

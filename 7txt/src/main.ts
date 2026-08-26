@@ -785,7 +785,7 @@ function renderProjectTree() {
   root.append(name, path);
   projectTree.append(root);
   if (!projectFolder.entries.length) {
-    projectTree.append(makeEmpty('This folder has no visible folders or supported text files.'));
+    projectTree.append(makeEmpty('This folder has no visible folders or files.'));
   } else {
     const entries = document.createElement('div');
     entries.className = 'folder-entries';
@@ -838,7 +838,7 @@ function makeFolderEntry(entry: FolderEntry): HTMLElement {
 
 async function createBrowserEntry() {
   if (!projectFolder) return;
-  const name = window.prompt('New item name. Use .txt, .md, or .markdown for a text file; end with / for a folder.', 'untitled.txt');
+  const name = window.prompt('New item name. Use any extension for a text file; end with / for a folder.', 'untitled.txt');
   if (!name?.trim()) return;
   const trimmed = name.trim();
   const kind = trimmed.endsWith('/') ? 'directory' : 'file';

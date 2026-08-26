@@ -77,17 +77,6 @@ struct PendingExternalFiles {
     frontend_ready: AtomicBool,
 }
 
-fn is_supported_text_path(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "txt" | "md" | "markdown"
-    )
-}
-
 fn text_file_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -422,9 +411,6 @@ fn create_browser_entry(
             fs::create_dir(&target).map_err(|error| format!("Could not create folder: {error}"))?
         }
         "file" => {
-            if !is_supported_text_path(&target) {
-                return Err("New files must use .txt, .md, or .markdown.".to_owned());
-            }
             fs::write(&target, b"").map_err(|error| format!("Could not create file: {error}"))?;
         }
         _ => return Err("Choose a text file or folder to create.".to_owned()),

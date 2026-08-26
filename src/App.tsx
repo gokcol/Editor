@@ -635,8 +635,10 @@ function rememberScratchSession(documents: DocumentModel[], activeId: string) {
 }
 
 function sourceFilenameForDrop(name: string, type: SourceType) {
-  const safe = name.trim() || `untitled.${SOURCE_META[type].extension}`;
-  return SOURCE_FILENAME_PATTERN.test(safe) ? safe : `${safe}.${SOURCE_META[type].extension}`;
+  // Preserve custom extensions such as `.dat` when a text file is dropped.
+  // Its detected source mode may be plain text, but the filename is still
+  // meaningful to the project that owns it.
+  return name.trim() || `untitled.${SOURCE_META[type].extension}`;
 }
 
 function lineFromRenderMessage(message?: string) {
@@ -3299,20 +3301,26 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const handleSourceDrop = useCallback(async (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault();
     setDragActive(false);
-    const file = Array.from(event.dataTransfer.files).find((candidate) => SOURCE_FILENAME_PATTERN.test(candidate.name));
+    const file = Array.from(event.dataTransfer.files)[0];
     if (!file) {
-      showToast('Drop a supported diagram, document, data, or code source file to open it as a tab.', 'info');
+      showToast('Drop any text file to open it as a tab.', 'info');
       return;
     }
     try {
       const type = sourceTypeForName(file.name);
       const value = await file.text();
+      if (value.includes('\0')) {
+        showToast('That file appears to be binary data and was not opened.', 'error');
+        return;
+      }
       const requestedName = sourceFilenameForDrop(file.name, type);
       const base = filenameWithoutExtension(requestedName);
+      const dotIndex = requestedName.lastIndexOf('.');
+      const extension = dotIndex > 0 ? requestedName.slice(dotIndex) : '';
       let name = requestedName;
       let index = 2;
       while (documents.some((document) => document.name === name)) {
-        name = `${base} ${index}.${SOURCE_META[type].extension}`;
+        name = `${base} ${index}${extension}`;
         index += 1;
       }
       const document: DocumentModel = {
@@ -3438,7 +3446,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
               </article>)}
             </section>;
           })}
-          {!recentProjects.length && <div className="empty-workbench-state">Open a folder or a supported source file and it will appear here for quick reuse.</div>}
+          {!recentProjects.length && <div className="empty-workbench-state">Open a folder or text file and it will appear here for quick reuse.</div>}
         </div>
       </section>
     </div>
@@ -4128,8 +4136,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
             </form>
             <div className="workbench-list search-results">
               {projectSearchHits.map((hit, index) => <button key={`${hit.node.relativePath}-${hit.line}-${hit.column}-${index}`} onClick={() => { void openFile(hit.node, hit.line); setProjectSearchOpen(false); }}><span><strong>{compactPath(hit.node.relativePath)}</strong><code>Ln {hit.line}, Col {hit.column} · {hit.excerpt}</code></span><small>Open</small></button>)}
-              {project && projectSearchQuery && !isProjectSearching && !projectSearchHits.length && <div className="empty-workbench-state">No source matches yet. Press Search to scan all supported files.</div>}
-              {!project && <div className="empty-workbench-state">Open a project folder to search across its ordinary source files.</div>}
+              {project && projectSearchQuery && !isProjectSearching && !projectSearchHits.length && <div className="empty-workbench-state">No text matches yet. Press Search to scan the project’s text files.</div>}
+              {!project && <div className="empty-workbench-state">Open a project folder to search across its text files.</div>}
             </div>
           </section>
         </div>
@@ -4328,7 +4336,7 @@ function FileTree({ nodes, activePath, collapsed, selectedFolderPath, onToggle, 
       {!hidden && <FileTree nodes={node.children ?? []} activePath={activePath} collapsed={collapsed} selectedFolderPath={selectedFolderPath} onToggle={onToggle} onSelectFolder={onSelectFolder} onOpen={onOpen} depth={depth + 1} />}
     </div>;
     const type = node.sourceType ?? sourceTypeForName(node.name);
-    return <button key={node.relativePath} className={`tree-row file-row ${node.relativePath === activePath ? 'active' : ''} ${node.supported ? '' : 'unsupported'}`} style={{ paddingLeft: 29 + depth * 14 }} onClick={() => onOpen(node)} title={node.supported ? node.relativePath : 'This file type is not a diagram source'}>
+    return <button key={node.relativePath} className={`tree-row file-row ${node.relativePath === activePath ? 'active' : ''} ${node.supported ? '' : 'unsupported'}`} style={{ paddingLeft: 29 + depth * 14 }} onClick={() => onOpen(node)} title={node.supported ? node.relativePath : 'This item appears to contain binary data'}>
       <span className={`tree-file-icon ${SOURCE_META[type].color}`}>{node.supported ? SOURCE_META[type].short : '·'}</span><span>{node.name}</span>
     </button>;
   })}</>;

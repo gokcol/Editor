@@ -6,12 +6,12 @@
 
 use crate::{
     models::{
-        extension_for_source_type, is_supported_source, source_type_for_path, AppSettings,
-        Canceled, DecodedSourceFile, DuplicatedFileResult, ExternalOpenFilesResult, FileNode,
-        LegacyProjectInput, OpenRecentResult, OpenedSourceFile, OpenedSourceOrCanceled, Project,
-        ProjectChange, ProjectOrCanceled, ProjectSourceFile, ProjectWatchUpdate, RecentEntry,
-        RelativePathResult, RenamedFileResult, SaveAsResult, StandaloneSourceFile, UnwatchResponse,
-        WatchResponse, WriteOpenedFileResult, MAX_PROJECT_TREE_DEPTH, MAX_RECENT_ENTRIES,
+        extension_for_source_type, source_type_for_path, AppSettings, Canceled, DecodedSourceFile,
+        DuplicatedFileResult, ExternalOpenFilesResult, FileNode, LegacyProjectInput,
+        OpenRecentResult, OpenedSourceFile, OpenedSourceOrCanceled, Project, ProjectChange,
+        ProjectOrCanceled, ProjectSourceFile, ProjectWatchUpdate, RecentEntry, RelativePathResult,
+        RenamedFileResult, SaveAsResult, StandaloneSourceFile, UnwatchResponse, WatchResponse,
+        WriteOpenedFileResult, MAX_PROJECT_TREE_DEPTH, MAX_RECENT_ENTRIES,
     },
     state::{CoreState, PendingExternalFiles, ProjectWatcher},
     text_encoding,
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread,
@@ -36,6 +36,7 @@ const PROJECT_MANIFEST_NAMES: &[&str] = &[".yedit.json", ".diagram-foundry.json"
 const IGNORED_DIRECTORIES: &[&str] = &[".git", "node_modules", ".DS_Store", "dist", "build"];
 const MAX_PROJECT_WATCHERS: usize = 12;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
+const TEXT_PROBE_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Debug)]
 struct Workspace {
@@ -328,11 +329,28 @@ fn write_no_follow(target: &Path, content: &str, create_new: bool) -> Result<(),
     write_no_follow_bytes(target, content.as_bytes(), create_new)
 }
 
+fn looks_like_text(bytes: &[u8]) -> bool {
+    // UTF-16 uses zero bytes as part of ordinary text, so keep BOM-marked
+    // documents available while treating ordinary NUL-containing streams as
+    // binary. This deliberately avoids relying on filename extensions.
+    bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) || !bytes.contains(&0)
+}
+
+fn is_probably_text_file(path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut sample = [0_u8; TEXT_PROBE_BYTES];
+    let Ok(read) = file.read(&mut sample) else {
+        return false;
+    };
+    looks_like_text(&sample[..read])
+}
+
 fn decode_source(target: &Path, encoding: Option<&str>) -> Result<DecodedSourceFile, String> {
     let bytes = fs::read(target)
         .map_err(|cause| error(format!("Could not read that source file: {cause}")))?;
-    if !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]) && bytes.contains(&0)
-    {
+    if !looks_like_text(&bytes) {
         return Err(error(
             "That file appears to be binary data. Yedit can open text in any filename extension.",
         ));
@@ -440,12 +458,16 @@ fn build_tree(root: &Path, relative_path: &Path, depth: usize) -> Result<Vec<Fil
         } else {
             None
         };
+        let is_regular_file = metadata.file_type().is_file() && !is_link;
         nodes.push(FileNode {
             name: name.clone(),
             relative_path: relative_path_for(root, &child_absolute)?,
             kind: if is_directory { "directory" } else { "file" }.to_owned(),
-            source_type: (!is_directory).then(|| source_type_for_path(Path::new(&name))),
-            supported: (!is_directory).then(|| is_supported_source(Path::new(&name))),
+            source_type: is_regular_file.then(|| source_type_for_path(Path::new(&name))),
+            // A text data file is openable regardless of whether it is named
+            // `.dat`, `.conf`, or with an application-specific suffix.
+            supported: (!is_directory)
+                .then(|| is_regular_file && is_probably_text_file(&child_absolute)),
             size: metadata.len(),
             modified_at: metadata_millis(metadata.modified()),
             created_at: metadata_millis(metadata.created()),
@@ -1625,4 +1647,35 @@ pub fn renderer_ready(window: WebviewWindow, state: State<'_, CoreState>) -> Val
         let _ = state.app.emit_to(window.label(), "menu-action", action);
     }
     json!({ "ok": true })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_tree;
+    use std::{fs, path::Path};
+    use uuid::Uuid;
+
+    #[test]
+    fn project_tree_allows_text_with_an_arbitrary_extension() {
+        let root = std::env::temp_dir().join(format!("yedit-text-tree-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create fixture folder");
+        fs::write(root.join("KOSE.DAT"), b"1 2 3\n4 5 6\n").expect("write text fixture");
+        fs::write(root.join("HHO.EXE"), b"MZ\0\x01\x02").expect("write binary fixture");
+
+        let tree = build_tree(&root, Path::new(""), 0).expect("build project tree");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(
+            tree.iter()
+                .find(|node| node.name == "KOSE.DAT")
+                .and_then(|node| node.supported),
+            Some(true)
+        );
+        assert_eq!(
+            tree.iter()
+                .find(|node| node.name == "HHO.EXE")
+                .and_then(|node| node.supported),
+            Some(false)
+        );
+    }
 }
