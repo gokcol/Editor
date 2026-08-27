@@ -260,6 +260,8 @@ button { border: 0; cursor: pointer; }
 .preview-heading { justify-content: space-between; }
 .preview-kind { color: var(--aqua); font-size: 9px; }
 .editor-surface { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.editor-view { --line-number-digits: 1; display: flex; flex: 1; min-width: 0; min-height: 0; }
+.line-numbers { width: calc(var(--line-number-digits) * 1ch + 20px); min-width: calc(var(--line-number-digits) * 1ch + 20px); height: 100%; margin: 0; overflow: hidden; padding: 19px 8px 40vh; border: 0; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 70%, var(--paper)); color: var(--muted); font-family: var(--editor-font-family); font-size: var(--editor-font-size); font-weight: 600; line-height: 1.62; text-align: right; user-select: none; white-space: pre; }
 .editor { width: 100%; min-width: 0; height: 100%; flex: 1; resize: none; border: 0; outline: 0; padding: 19px 21px 40vh; background-color: var(--paper); background-image: none; color: var(--ink); caret-color: var(--aqua); font-family: var(--editor-font-family); font-size: var(--editor-font-size); line-height: 1.62; tab-size: 2; }
 .app-shell[data-editor-surface="glossy"] .editor { background-color: color-mix(in srgb, var(--paper) 88%, #bedce7); background-image: radial-gradient(ellipse at 18% 0%, rgba(255,255,255,.85), transparent 42%), linear-gradient(145deg, rgba(255,255,255,.25), transparent 43%, rgba(91,155,184,.1)); }
 .app-shell[data-editor-surface="ruled"] .editor { background-image: linear-gradient(to bottom, transparent calc(100% - 1px), color-mix(in srgb, var(--aqua) 22%, transparent) calc(100% - 1px)); background-size: 100% 1.62em; background-position: 0 19px; background-attachment: local; }
@@ -271,8 +273,8 @@ button { border: 0; cursor: pointer; }
 .app-shell[data-editor-surface="warm-paper"] .editor { background-color: #f8eed7; background-image: radial-gradient(rgba(139,103,50,.09) .7px, transparent .9px), linear-gradient(105deg, rgba(255,255,255,.6), rgba(217,182,119,.12)); background-size: 7px 7px, 100% 100%; color: #4a3925; caret-color: #9c6543; }
 .app-shell[data-editor-surface="linen"] .editor { background-color: color-mix(in srgb, var(--paper) 96%, #e8dfce); background-image: repeating-linear-gradient(0deg, rgba(110,96,75,.06) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(110,96,75,.045) 0 1px, transparent 1px 5px); }
 .app-shell[data-editor-surface="night-grid"] .editor { background-color: #101721; background-image: linear-gradient(rgba(116,205,204,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(116,205,204,.14) 1px, transparent 1px); background-size: 1.62em 1.62em; background-position: 21px 19px; color: #e2f0f3; caret-color: #75e3d7; }
-.editor-secondary { display: none; border-left: 1px solid var(--line); }
-.app-shell.editor-split .editor-secondary { display: block; }
+.editor-secondary-view { display: none; border-left: 1px solid var(--line); }
+.app-shell.editor-split .editor-secondary-view { display: flex; }
 .app-shell.no-word-wrap .editor { overflow-wrap: normal; white-space: pre; }
 .editor::selection { background: var(--editor-selection); }
 .markdown-preview { overflow: auto; height: 100%; padding: 22px clamp(20px, 5vw, 58px) 64px; color: var(--preview-ink); font-size: 15px; line-height: 1.68; }

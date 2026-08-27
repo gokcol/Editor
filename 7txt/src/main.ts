@@ -203,7 +203,7 @@ app.innerHTML = `
       <section class="editor-pane">
         <div class="external-change" hidden><span></span><button data-action="reload-external">Reload</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Ignore</button></div>
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
-        <div class="editor-surface"><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div>
+        <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
       </section>
       <section class="preview-pane">
         <div class="preview-heading"><span>PREVIEW</span><span class="preview-kind"></span></div>
@@ -232,6 +232,8 @@ app.innerHTML = `
 const shell = required<HTMLElement>('.app-shell');
 const editor = required<HTMLTextAreaElement>('.editor');
 const secondaryEditor = required<HTMLTextAreaElement>('.editor-secondary');
+const lineNumbers = required<HTMLElement>('.line-numbers');
+const secondaryLineNumbers = required<HTMLElement>('.line-numbers-secondary');
 const preview = required<HTMLElement>('.markdown-preview');
 const mediaPane = required<HTMLElement>('.media-pane');
 const mediaScroller = required<HTMLElement>('.media-scroller');
@@ -1438,6 +1440,7 @@ function render() {
   renderTabs();
   renderOutline();
   renderRecents();
+  renderLineNumbers();
   updateCursor();
   scheduleRecovery();
 }
@@ -1601,6 +1604,7 @@ function updateCursor() {
     return;
   }
   const source = activeEditor();
+  syncLineNumbers(source);
   const before = source.value.slice(0, source.selectionStart);
   const line = before.split('\n').length;
   const column = before.length - before.lastIndexOf('\n');
@@ -1609,6 +1613,19 @@ function updateCursor() {
     documents = documents.map((document) => document.id === activeDocumentId ? documentState : document);
   }
   required<HTMLElement>('.status-cursor').textContent = `Ln ${line}, Col ${column}`;
+}
+
+function renderLineNumbers() {
+  for (const [surface, gutter] of [[editor, lineNumbers], [secondaryEditor, secondaryLineNumbers]] as const) {
+    const lineCount = Math.max(1, surface.value.split('\n').length);
+    gutter.textContent = Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n');
+    gutter.parentElement?.style.setProperty('--line-number-digits', String(String(lineCount).length));
+    gutter.scrollTop = surface.scrollTop;
+  }
+}
+
+function syncLineNumbers(surface: HTMLTextAreaElement) {
+  (surface === secondaryEditor ? secondaryLineNumbers : lineNumbers).scrollTop = surface.scrollTop;
 }
 
 function goToLine(line: number) {
@@ -2352,6 +2369,7 @@ function handleEditorTab(event: KeyboardEvent, surface: HTMLTextAreaElement) {
 for (const surface of [editor, secondaryEditor]) {
   surface.addEventListener('input', () => recordContent(surface.value));
   surface.addEventListener('keydown', (event) => handleEditorTab(event, surface));
+  surface.addEventListener('scroll', () => syncLineNumbers(surface));
   surface.addEventListener('keyup', updateCursor);
   surface.addEventListener('click', updateCursor);
   surface.addEventListener('select', updateCursor);
