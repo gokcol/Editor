@@ -1982,15 +1982,26 @@ function toggleMarkdownTask() {
 }
 
 function htmlExportDocument() {
-  const title = escapeHtml(documentState.name.replace(/\.(md|markdown)$/i, '') || '7TXT document');
+  const title = escapeHtml(documentExportBaseName());
   const body = documentState.isMarkdown ? renderMarkdown(documentState.content) : `<pre>${escapeHtml(documentState.content)}</pre>`;
-  return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{max-width:48rem;margin:3rem auto;padding:0 1.5rem;color:#243047;font:17px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}pre{overflow:auto;padding:1rem;border-radius:.5rem;background:#f2f5fa;white-space:pre-wrap}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}table{border-collapse:collapse}th,td{padding:.45rem .7rem;border:1px solid #d7dfec}blockquote{margin:1rem 0;padding:.2rem 1rem;border-left:3px solid #0e8989;color:#5f6d83}</style></head><body>${body}</body></html>`;
+  return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}html{background:#fff}body{max-width:none;margin:0;padding:18mm 17mm 20mm;color:#202a39;font:11.5pt/1.68 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-rendering:optimizeLegibility}h1,h2,h3,h4,h5,h6{color:#172c42;line-height:1.25;letter-spacing:-.018em;break-after:avoid-page;page-break-after:avoid}h1{margin:0 0 .9em;padding-bottom:.45em;border-bottom:2px solid #11928d;font-size:24pt}h2{margin:1.8em 0 .7em;padding-bottom:.27em;border-bottom:1px solid #d8e3e5;font-size:17pt}h3{margin:1.5em 0 .55em;font-size:13pt}p,li{orphans:3;widows:3}p{margin:.85em 0}a{color:#087c82;text-decoration:none}hr{margin:1.8em 0;border:0;border-top:1px solid #d8e3e5}blockquote{margin:1.2em 0;padding:.25em 1.05em;border-left:3px solid #11928d;color:#516276;background:#f2faf9}pre{overflow:auto;margin:1.1em 0;padding:1em 1.1em;border:1px solid #dce5ed;border-radius:.45em;background:#f5f8fb;white-space:pre-wrap;font:9.5pt/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}p code,li code{padding:.08em .28em;border-radius:.23em;background:#edf3f7}table{display:table;width:100%;margin:1.2em 0;border-collapse:collapse;font-size:10.5pt;break-inside:avoid-page}thead{display:table-header-group}tr{break-inside:avoid-page}th,td{padding:.5em .65em;border:1px solid #d7e0e8;text-align:left;vertical-align:top}th{background:#eef8f7;color:#1a5660;font-weight:700}img,svg{max-width:100%;height:auto;break-inside:avoid-page}</style></head><body>${body}</body></html>`;
+}
+
+function documentExportBaseName() {
+  return documentState.name.replace(/\.(txt|md|markdown)$/i, '').trim() || 'document';
 }
 
 async function exportHtml() {
-  const base = documentState.name.replace(/\.(txt|md|markdown)$/i, '') || 'document';
+  const base = documentExportBaseName();
   try {
     const result = await invoke<{ name: string; path: string } | null>('export_document', { suggestedName: base, content: htmlExportDocument(), extension: 'html' });
+    if (result) showToast(`Exported ${result.name}.`, 'success');
+  } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+}
+
+async function exportPdf() {
+  try {
+    const result = await invoke<{ name: string; path: string } | null>('export_document', { suggestedName: documentExportBaseName(), content: htmlExportDocument(), extension: 'pdf' });
     if (result) showToast(`Exported ${result.name}.`, 'success');
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
@@ -2094,7 +2105,8 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
-    { label: 'Print / Save as PDF', hint: '⌘P', run: () => void printDocument() },
+    { label: 'Export clean PDF', hint: '', run: () => void exportPdf() },
+    { label: 'Print', hint: '⌘P', run: () => void printDocument() },
     { label: 'Export HTML', hint: '', run: () => void exportHtml() },
     { label: 'Insert Markdown table', hint: '', run: insertMarkdownTable },
     { label: 'Toggle Markdown task', hint: '', run: toggleMarkdownTask },
@@ -2240,7 +2252,7 @@ function handleAction(action?: string) {
     case 'toggle-editor-split': toggleEditorSplit(); break;
     case 'zen': toggleZenMode(); break;
     case 'print': void printDocument(); break;
-    case 'export-pdf': void printDocument(); break;
+    case 'export-pdf': void exportPdf(); break;
     case 'export-html': void exportHtml(); break;
     case 'insert-table': insertMarkdownTable(); break;
     case 'toggle-task': toggleMarkdownTask(); break;

@@ -1,4 +1,5 @@
 mod text_encoding;
+mod pdf_export;
 
 use std::{
     env, fs,
@@ -573,8 +574,8 @@ fn export_document(
     extension: String,
 ) -> Result<Option<ExportedFile>, String> {
     let extension = extension.trim_start_matches('.').to_ascii_lowercase();
-    if !matches!(extension.as_str(), "html" | "htm") {
-        return Err("7TXT can export this document as HTML.".to_owned());
+    if !matches!(extension.as_str(), "html" | "htm" | "pdf") {
+        return Err("7TXT can export this document as HTML or PDF.".to_owned());
     }
     let fallback_name = if suggested_name
         .to_ascii_lowercase()
@@ -589,11 +590,15 @@ fn export_document(
         )
     };
     let path = FileDialog::new()
-        .add_filter("HTML", &[extension.as_str()])
+        .add_filter(if extension == "pdf" { "PDF" } else { "HTML" }, &[extension.as_str()])
         .set_file_name(&fallback_name)
         .save_file();
     path.map(|path| {
-        fs::write(&path, content).map_err(|error| format!("Could not export HTML: {error}"))?;
+        if extension == "pdf" {
+            pdf_export::export_pdf_document(&content, &path)?;
+        } else {
+            fs::write(&path, content).map_err(|error| format!("Could not export HTML: {error}"))?;
+        }
         let real_path = fs::canonicalize(&path)
             .map_err(|_| "The exported file could not be resolved.".to_owned())?;
         Ok(ExportedFile {
