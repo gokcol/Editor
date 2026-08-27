@@ -738,6 +738,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             "Markdown Preview",
             Some("CmdOrCtrl+3"),
         )?)
+        .item(&item(app, "toggle-preview", "Show / Hide Markdown Preview", None)?)
         .separator()
         .item(&item(
             app,

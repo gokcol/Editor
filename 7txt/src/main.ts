@@ -60,6 +60,8 @@ const UI_SCALE_KEY = '7txt:ui-scale:v1';
 const EDITOR_SURFACE_KEY = '7txt:editor-surface:v1';
 const SIDEBAR_VISIBLE_KEY = '7txt:sidebar-visible:v1';
 const SIDEBAR_WIDTH_KEY = '7txt:sidebar-width:v1';
+const PREVIEW_VISIBLE_KEY = '7txt:preview-visible:v1';
+const PREVIEW_WIDTH_KEY = '7txt:preview-width:v1';
 const SESSION_KEY = '7txt:workspace-session:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const MAX_RECENTS = 14;
@@ -68,6 +70,9 @@ const MAX_RECOVERY_BYTES = 3 * 1024 * 1024;
 const MIN_SIDEBAR_WIDTH = 180;
 const DEFAULT_SIDEBAR_WIDTH = 218;
 const MAX_SIDEBAR_WIDTH = 430;
+const MIN_PREVIEW_WIDTH = 280;
+const DEFAULT_PREVIEW_WIDTH = 460;
+const MAX_PREVIEW_WIDTH = 760;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
   ['SFMono-Regular, SF Mono, Menlo, Monaco, monospace', 'SF Mono'],
@@ -144,6 +149,7 @@ app.innerHTML = `
         <button data-mode-button="split" title="Split view (⌘2)">Split</button>
         <button data-mode-button="preview" title="Preview (⌘3)">Preview</button>
       </div>
+      <button class="toolbar-icon-button preview-toggle" data-action="toggle-preview" title="Hide Markdown preview" aria-label="Hide Markdown preview" aria-pressed="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.2-5.5 9.5-5.5S21.5 12 21.5 12 18.3 17.5 12 17.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.7"/></svg></button>
       <div class="markdown-actions" aria-label="Markdown tools">
         <button class="toolbar-icon-button" data-action="insert-table" title="Insert Markdown table" aria-label="Insert Markdown table"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 10h16M4 15h16M10 5v14M15 5v14"/></svg></button>
         <button class="toolbar-icon-button" data-action="toggle-task" title="Toggle Markdown task list" aria-label="Toggle Markdown task list"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h3v3H4zM10 7h10M4 15h3v3H4zM10 16h10M4.5 15.5 5.7 17l2-3"/></svg></button>
@@ -205,6 +211,7 @@ app.innerHTML = `
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
         <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
       </section>
+      <div class="preview-resizer" role="separator" aria-label="Resize Markdown preview" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="760" tabindex="0"></div>
       <section class="preview-pane">
         <div class="preview-heading"><span>PREVIEW</span><span class="preview-kind"></span></div>
         <article class="markdown-preview" aria-label="Document preview"></article>
@@ -271,6 +278,8 @@ const folderFilter = required<HTMLInputElement>('.folder-filter');
 const workspace = required<HTMLElement>('.workspace');
 const sidebar = required<HTMLElement>('.sidebar');
 const sidebarResizer = required<HTMLElement>('.sidebar-resizer');
+const previewResizer = required<HTMLElement>('.preview-resizer');
+const previewToggle = required<HTMLButtonElement>('.preview-toggle');
 const externalChangeBar = required<HTMLElement>('.external-change');
 const commandPalette = required<HTMLElement>('.command-palette');
 const commandPaletteInput = required<HTMLInputElement>('.command-palette input');
@@ -295,6 +304,9 @@ let sidebarVisible = readSidebarVisible();
 let sidebarAutoHidden = false;
 let sidebarWidth = readSidebarWidth();
 let sidebarResizePointerId: number | null = null;
+let previewEnabled = readPreviewVisible();
+let previewWidth = readPreviewWidth();
+let previewResizePointerId: number | null = null;
 let sidebarAutoHideTimer: number | undefined;
 let sidebarPointerInside = false;
 let externalChange: ExternalChange | null = null;
@@ -432,6 +444,21 @@ function readSidebarWidth() {
   return Number.isFinite(stored) ? clampSidebarWidth(stored) : DEFAULT_SIDEBAR_WIDTH;
 }
 
+function readPreviewVisible() {
+  return localStorage.getItem(PREVIEW_VISIBLE_KEY) !== 'false';
+}
+
+function clampPreviewWidth(width: number) {
+  const sidebarSpace = sidebarIsShown() ? sidebarWidth + 6 : 0;
+  const available = Math.max(MIN_PREVIEW_WIDTH, window.innerWidth / uiScaleFactor() - sidebarSpace - 360);
+  return Math.round(Math.min(Math.max(width, MIN_PREVIEW_WIDTH), Math.min(MAX_PREVIEW_WIDTH, available)));
+}
+
+function readPreviewWidth() {
+  const stored = Number(localStorage.getItem(PREVIEW_WIDTH_KEY));
+  return Number.isFinite(stored) ? clampPreviewWidth(stored) : DEFAULT_PREVIEW_WIDTH;
+}
+
 function applySidebarLayout() {
   const shown = sidebarIsShown();
   const visibleLabel = shown ? 'Hide Files sidebar' : 'Show Files sidebar';
@@ -444,6 +471,17 @@ function applySidebarLayout() {
   brandSidebarToggle.setAttribute('aria-label', visibleLabel);
   brandSidebarToggle.setAttribute('aria-expanded', String(shown));
   sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
+}
+
+function applyPreviewLayout() {
+  const available = documentState.isMarkdown && !isMediaDocument(documentState);
+  const shown = available && previewEnabled;
+  workspace.style.setProperty('--preview-width', `${previewWidth}px`);
+  previewToggle.hidden = !available;
+  previewToggle.setAttribute('aria-pressed', String(shown));
+  previewToggle.title = shown ? 'Hide Markdown preview' : 'Show Markdown preview';
+  previewToggle.setAttribute('aria-label', previewToggle.title);
+  previewResizer.setAttribute('aria-valuenow', String(previewWidth));
 }
 
 function sidebarIsShown() {
@@ -480,6 +518,28 @@ function toggleSidebar() {
   localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
   applySidebarLayout();
   showToast(sidebarVisible ? 'Files sidebar shown.' : 'Files sidebar hidden.');
+}
+
+function setPreviewWidth(width: number, persist = true) {
+  previewWidth = clampPreviewWidth(width);
+  if (persist) localStorage.setItem(PREVIEW_WIDTH_KEY, String(previewWidth));
+  applyPreviewLayout();
+}
+
+function togglePreview() {
+  if (!documentState.isMarkdown || isMediaDocument(documentState)) {
+    showToast('Preview is available for Markdown documents.', 'error');
+    return;
+  }
+  previewEnabled = !previewEnabled;
+  localStorage.setItem(PREVIEW_VISIBLE_KEY, String(previewEnabled));
+  viewMode = previewEnabled ? 'split' : 'edit';
+  render();
+  showToast(previewEnabled ? 'Markdown preview shown.' : 'Markdown preview hidden.');
+}
+
+function preferredViewMode(document: Pick<TextDocument, 'isMarkdown'>): ViewMode {
+  return document.isMarkdown && previewEnabled ? 'split' : 'edit';
 }
 
 function blankDocument(isMarkdown = false): TextDocument {
@@ -537,7 +597,7 @@ function activateDocument(id: string) {
   const cursor = Math.min(next.cursor || 0, next.content.length);
   editor.setSelectionRange(cursor, cursor);
   secondaryEditor.setSelectionRange(cursor, cursor);
-  viewMode = next.isMarkdown ? 'split' : 'edit';
+  viewMode = preferredViewMode(next);
   render();
   if (isMediaDocument(next)) return;
   window.requestAnimationFrame(() => {
@@ -553,7 +613,7 @@ function addDocument(next: TextDocument) {
   activeDocumentId = next.id;
   editor.value = next.content;
   secondaryEditor.value = next.content;
-  viewMode = next.isMarkdown ? 'split' : 'edit';
+  viewMode = preferredViewMode(next);
   render();
   if (!isMediaDocument(next)) window.requestAnimationFrame(() => editor.focus());
 }
@@ -864,7 +924,7 @@ function restoreSession() {
   const cursor = Math.min(active.cursor || 0, active.content.length);
   editor.setSelectionRange(cursor, cursor);
   secondaryEditor.setSelectionRange(cursor, cursor);
-  viewMode = active.isMarkdown ? 'split' : 'edit';
+  viewMode = preferredViewMode(active);
   if (session.savedAt) showToast('Restored your previous workspace and recovery drafts.', 'success');
 }
 
@@ -1401,6 +1461,7 @@ function clearMediaAnnotations() {
 function render() {
   const isMedia = isMediaDocument(documentState);
   if (!isMedia && !documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
+  if (!isMedia && documentState.isMarkdown && !previewEnabled && viewMode !== 'edit') viewMode = 'edit';
   shell.dataset.mode = viewMode;
   shell.classList.toggle('text-document', documentState.kind === 'text' && !documentState.isMarkdown);
   shell.classList.toggle('media-document', isMedia);
@@ -1432,6 +1493,7 @@ function render() {
     button.hidden = isMedia;
     button.classList.toggle('selected', !isMedia && button.dataset.modeButton === viewMode);
   }
+  applyPreviewLayout();
   if (!isMedia) {
     preview.innerHTML = documentState.isMarkdown ? renderMarkdown(documentState.content) : `<pre>${escapeHtml(documentState.content || 'Start writing…')}</pre>`;
   } else {
@@ -1652,6 +1714,10 @@ function goToLine(line: number) {
 
 function setViewMode(next: ViewMode) {
   if (isMediaDocument(documentState)) return;
+  if (documentState.isMarkdown && next !== 'edit' && !previewEnabled) {
+    previewEnabled = true;
+    localStorage.setItem(PREVIEW_VISIBLE_KEY, 'true');
+  }
   viewMode = documentState.isMarkdown ? next : 'edit';
   render();
 }
@@ -1750,7 +1816,7 @@ function openResultInTab(result: OpenedDocument, replacePristineBlank = false) {
     documentState = next;
     activeDocumentId = next.id;
     editor.value = next.content;
-    viewMode = next.isMarkdown ? 'split' : 'edit';
+    viewMode = preferredViewMode(next);
     render();
     if (!isMediaDocument(next)) window.requestAnimationFrame(() => editor.focus());
     void captureFingerprint(normalised.path);
@@ -1824,7 +1890,7 @@ function closeDocument(id = activeDocumentId) {
       activeDocumentId = next.id;
       editor.value = next.content;
       secondaryEditor.value = next.content;
-      viewMode = next.isMarkdown ? 'split' : 'edit';
+      viewMode = preferredViewMode(next);
     }
   }
   render();
@@ -2067,6 +2133,43 @@ function startSidebarResizing() {
   });
 }
 
+function startPreviewResizing() {
+  previewResizer.addEventListener('pointerdown', (event) => {
+    if (!documentState.isMarkdown || !previewEnabled || viewMode !== 'split' || event.button !== 0) return;
+    previewResizePointerId = event.pointerId;
+    previewResizer.setPointerCapture(event.pointerId);
+    workspace.classList.add('preview-resizing');
+    event.preventDefault();
+  });
+
+  previewResizer.addEventListener('pointermove', (event) => {
+    if (previewResizePointerId !== event.pointerId) return;
+    const bounds = workspace.getBoundingClientRect();
+    setPreviewWidth((bounds.right - event.clientX) / uiScaleFactor(), false);
+  });
+
+  const finishResize = (event: PointerEvent) => {
+    if (previewResizePointerId !== event.pointerId) return;
+    if (previewResizer.hasPointerCapture(event.pointerId)) previewResizer.releasePointerCapture(event.pointerId);
+    previewResizePointerId = null;
+    workspace.classList.remove('preview-resizing');
+    setPreviewWidth(previewWidth);
+  };
+  previewResizer.addEventListener('pointerup', finishResize);
+  previewResizer.addEventListener('pointercancel', finishResize);
+  previewResizer.addEventListener('keydown', (event) => {
+    let nextWidth: number | undefined;
+    const step = event.shiftKey ? 30 : 10;
+    if (event.key === 'ArrowLeft') nextWidth = previewWidth + step;
+    else if (event.key === 'ArrowRight') nextWidth = previewWidth - step;
+    else if (event.key === 'Home') nextWidth = MIN_PREVIEW_WIDTH;
+    else if (event.key === 'End') nextWidth = MAX_PREVIEW_WIDTH;
+    if (nextWidth === undefined) return;
+    event.preventDefault();
+    setPreviewWidth(nextWidth);
+  });
+}
+
 function startSidebarAutoHide() {
   const markInside = () => {
     sidebarPointerInside = true;
@@ -2103,6 +2206,7 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Find and replace', hint: '⌘F', run: openFind },
     { label: 'Go to line', hint: '⌘L', run: goToLinePrompt },
     { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
+    { label: 'Toggle Markdown preview', hint: '', run: togglePreview },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
     { label: 'Export clean PDF', hint: '', run: () => void exportPdf() },
@@ -2250,6 +2354,7 @@ function handleAction(action?: string) {
     case 'command-palette': openCommandPalette(); break;
     case 'go-to-line': goToLinePrompt(); break;
     case 'toggle-editor-split': toggleEditorSplit(); break;
+    case 'toggle-preview': togglePreview(); break;
     case 'zen': toggleZenMode(); break;
     case 'print': void printDocument(); break;
     case 'export-pdf': void exportPdf(); break;
@@ -2520,11 +2625,13 @@ restoreSession();
 applyEditorAppearance();
 applyEditorOptions();
 applySidebarLayout();
+applyPreviewLayout();
 applyUiTheme();
 applyUiScale();
 applyEditorSurface();
 setupTransientMenus();
 startSidebarResizing();
+startPreviewResizing();
 startSidebarAutoHide();
 render();
 renderProjectTree();
@@ -2534,5 +2641,7 @@ void startDragAndDrop();
 window.addEventListener('resize', () => {
   const constrained = clampSidebarWidth(sidebarWidth);
   if (constrained !== sidebarWidth) setSidebarWidth(constrained);
+  const constrainedPreview = clampPreviewWidth(previewWidth);
+  if (constrainedPreview !== previewWidth) setPreviewWidth(constrainedPreview);
 });
 window.setInterval(() => { void watchFiles(); }, 4000);
