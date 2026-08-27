@@ -17,6 +17,7 @@
     "allow-rename-browser-entry",
     "allow-move-browser-entry-to-trash",
     "allow-export-document",
+    "allow-print-window",
     "allow-save-as",
     "allow-write-file"
   ]

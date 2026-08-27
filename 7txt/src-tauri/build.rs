@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "rename_browser_entry",
     "move_browser_entry_to_trash",
     "export_document",
+    "print_window",
     "save_as",
     "write_file",
 ];

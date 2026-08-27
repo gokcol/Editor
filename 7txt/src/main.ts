@@ -1549,6 +1549,15 @@ function renderListItem(value: string) {
   return `<label class="markdown-task"><input type="checkbox" disabled${task[1].toLowerCase() === 'x' ? ' checked' : ''} />${renderInline(task[2])}</label>`;
 }
 
+function renderParagraph(lines: string[]) {
+  return lines.map((line, index) => {
+    const hardBreak = /(?: {2,}|\\)$/.test(line);
+    const content = hardBreak ? line.replace(/(?: {2,}|\\)$/, '') : line;
+    const separator = index === lines.length - 1 ? '' : hardBreak ? '<br />' : ' ';
+    return `${renderInline(content.trim())}${separator}`;
+  }).join('');
+}
+
 function renderMarkdown(source: string) {
   const lines = source.split('\n');
   const output: string[] = [];
@@ -1587,13 +1596,13 @@ function renderMarkdown(source: string) {
       output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`);
       continue;
     }
-    const paragraph: string[] = [line.trim()];
+    const paragraph: string[] = [line];
     index += 1;
     while (index < lines.length && lines[index].trim() && !/^(#{1,6}\s+|```|>\s?|(?:[-*+]\s+|\d+\.\s+))/.test(lines[index])) {
-      paragraph.push(lines[index].trim());
+      paragraph.push(lines[index]);
       index += 1;
     }
-    output.push(`<p>${renderInline(paragraph.join(' '))}</p>`);
+    output.push(`<p>${renderParagraph(paragraph)}</p>`);
   }
   return output.join('') || '<p class="preview-empty">Start writing Markdown to see a clean reading preview.</p>';
 }
@@ -1986,10 +1995,15 @@ async function exportHtml() {
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
 
-function printDocument() {
+async function printDocument() {
   if (documentState.isMarkdown && viewMode !== 'preview') setViewMode('preview');
-  window.setTimeout(() => window.print(), 80);
-  showToast('Use the macOS print dialog for page setup or Save as PDF.');
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+  try {
+    await invoke('print_window');
+    showToast('In the macOS print dialog, choose PDF → Save as PDF.');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : String(error), 'error');
+  }
 }
 
 function toggleEditorSplit() {
@@ -2080,7 +2094,7 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
-    { label: 'Print / Save as PDF', hint: '⌘P', run: printDocument },
+    { label: 'Print / Save as PDF', hint: '⌘P', run: () => void printDocument() },
     { label: 'Export HTML', hint: '', run: () => void exportHtml() },
     { label: 'Insert Markdown table', hint: '', run: insertMarkdownTable },
     { label: 'Toggle Markdown task', hint: '', run: toggleMarkdownTask },
@@ -2225,8 +2239,8 @@ function handleAction(action?: string) {
     case 'go-to-line': goToLinePrompt(); break;
     case 'toggle-editor-split': toggleEditorSplit(); break;
     case 'zen': toggleZenMode(); break;
-    case 'print': printDocument(); break;
-    case 'export-pdf': printDocument(); break;
+    case 'print': void printDocument(); break;
+    case 'export-pdf': void printDocument(); break;
     case 'export-html': void exportHtml(); break;
     case 'insert-table': insertMarkdownTable(); break;
     case 'toggle-task': toggleMarkdownTask(); break;
@@ -2430,7 +2444,7 @@ window.addEventListener('keydown', (event) => {
   else if (key === 'b' && event.shiftKey) { event.preventDefault(); toggleSidebar(); }
   else if (key === 'l') { event.preventDefault(); goToLinePrompt(); }
   else if (key === 'p' && event.shiftKey) { event.preventDefault(); openCommandPalette(); }
-  else if (key === 'p') { event.preventDefault(); printDocument(); }
+  else if (key === 'p') { event.preventDefault(); void printDocument(); }
   else if (key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
   else if (key === '1') { event.preventDefault(); setViewMode('edit'); }
   else if (key === '2') { event.preventDefault(); setViewMode('split'); }

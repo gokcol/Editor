@@ -605,6 +605,13 @@ fn export_document(
 }
 
 #[tauri::command]
+fn print_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .print()
+        .map_err(|error| format!("Could not open the macOS print dialog: {error}"))
+}
+
+#[tauri::command]
 fn save_as(
     suggested_name: String,
     content: String,
@@ -766,6 +773,7 @@ pub fn run() {
             rename_browser_entry,
             move_browser_entry_to_trash,
             export_document,
+            print_window,
             save_as,
             write_file
         ])
