@@ -723,6 +723,24 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             "Command Palette…",
             Some("CmdOrCtrl+Shift+P"),
         )?)
+        .item(&item(
+            app,
+            "quick-switch",
+            "Quick Switcher…",
+            Some("CmdOrCtrl+K"),
+        )?)
+        .separator()
+        .item(&item(app, "reflow-paragraph", "Reflow Paragraph…", None)?)
+        .item(&item(app, "smart-typography", "Smart Typography", None)?)
+        .item(&item(app, "uppercase", "Uppercase", None)?)
+        .item(&item(app, "lowercase", "Lowercase", None)?)
+        .item(&item(app, "title-case", "Title Case", None)?)
+        .item(&item(
+            app,
+            "trim-trailing-whitespace",
+            "Trim Trailing Whitespace",
+            None,
+        )?)
         .build()?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&item(app, "mode-edit", "Edit", Some("CmdOrCtrl+1"))?)
@@ -739,6 +757,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             Some("CmdOrCtrl+3"),
         )?)
         .item(&item(app, "toggle-preview", "Show / Hide Markdown Preview", None)?)
+        .item(&item(app, "reading-mode", "Focused Reading Mode", None)?)
         .separator()
         .item(&item(
             app,
@@ -747,6 +766,8 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             Some("CmdOrCtrl+Shift+B"),
         )?)
         .item(&item(app, "toggle-editor-split", "Split Editor", None)?)
+        .item(&item(app, "timeline", "Local Document Timeline…", None)?)
+        .item(&item(app, "writing-goal", "Set Writing Goal…", None)?)
         .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;
     MenuBuilder::new(app)

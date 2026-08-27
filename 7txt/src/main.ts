@@ -41,6 +41,8 @@ type OpenedDocument = {
 type SavedTextFile = { name: string; path: string; encoding: string };
 type RecentEntry = { name: string; path: string; isMarkdown: boolean; kind: DocumentKind; openedAt: number };
 type DocumentHistory = { entries: string[]; index: number };
+type TimelineSnapshot = { id: string; savedAt: number; label: string; content: string };
+type QuickSwitchItem = { group: string; label: string; detail: string; run: () => void };
 type FolderEntry = { name: string; path: string; kind: 'file' | 'directory' };
 type ProjectFolder = { name: string; path: string; parentPath?: string; homePath: string; documentsPath: string; entries: FolderEntry[]; truncated: boolean };
 type FolderBookmark = { name: string; path: string };
@@ -62,11 +64,15 @@ const SIDEBAR_VISIBLE_KEY = '7txt:sidebar-visible:v1';
 const SIDEBAR_WIDTH_KEY = '7txt:sidebar-width:v1';
 const PREVIEW_VISIBLE_KEY = '7txt:preview-visible:v1';
 const PREVIEW_WIDTH_KEY = '7txt:preview-width:v1';
+const WRITING_GOAL_KEY = '7txt:writing-goal:v1';
+const TIMELINE_KEY_PREFIX = '7txt:document-timeline:v1:';
 const SESSION_KEY = '7txt:workspace-session:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_RECOVERY_BYTES = 3 * 1024 * 1024;
+const MAX_TIMELINE_SNAPSHOTS = 16;
+const MAX_TIMELINE_SNAPSHOT_CHARS = 280_000;
 const MIN_SIDEBAR_WIDTH = 180;
 const DEFAULT_SIDEBAR_WIDTH = 218;
 const MAX_SIDEBAR_WIDTH = 430;
@@ -140,6 +146,7 @@ app.innerHTML = `
         <button class="toolbar-icon-button save-button" data-action="save" title="Save (⌘S)" aria-label="Save"><svg class="toolbar-icon toolbar-save-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="save-body" d="M5 3h12l3 3v15H5z"/><path d="M8 3v6h8V3M8 20v-6h8v6"/></svg></button>
         <button class="toolbar-icon-button" data-action="find" title="Find (⌘F)" aria-label="Find"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg></button>
         <button class="toolbar-icon-button folder-bookmark-toggle" data-action="toggle-folder-bookmark" title="Bookmark this folder" aria-label="Bookmark this folder"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></svg></button>
+        <button class="toolbar-icon-button" data-action="quick-switch" title="Quick switcher (⌘K)" aria-label="Quick switcher"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4M8.5 11h5"/></svg></button>
         <button class="toolbar-icon-button" data-action="command-palette" title="Command Palette (⇧⌘P)" aria-label="Command Palette"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h.01M12 9h4M8 13h.01M12 13h4M8 17h8"/></svg></button>
       </div>
       <label class="encoding-control" title="Text encoding — click to choose how this document is opened or saved."><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12"/></svg><select data-encoding aria-label="Text encoding">${CHARACTER_ENCODINGS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
@@ -153,6 +160,7 @@ app.innerHTML = `
       <div class="markdown-actions" aria-label="Markdown tools">
         <button class="toolbar-icon-button" data-action="insert-table" title="Insert Markdown table" aria-label="Insert Markdown table"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 10h16M4 15h16M10 5v14M15 5v14"/></svg></button>
         <button class="toolbar-icon-button" data-action="toggle-task" title="Toggle Markdown task list" aria-label="Toggle Markdown task list"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h3v3H4zM10 7h10M4 15h3v3H4zM10 16h10M4.5 15.5 5.7 17l2-3"/></svg></button>
+        <button class="toolbar-icon-button" data-action="insert-link" title="Insert Markdown link from clipboard" aria-label="Insert Markdown link from clipboard"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13.5a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M14 10.5a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1"/></svg></button>
         <button class="toolbar-icon-button" data-action="export-html" title="Export Markdown as HTML" aria-label="Export Markdown as HTML"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v7M9 15l3 3 3-3"/></svg></button>
       </div>
       <div class="toolbar-spacer"></div>
@@ -174,6 +182,8 @@ app.innerHTML = `
         </div>
       </details>
       <button class="toolbar-icon-button" data-action="toggle-editor-split" title="Split editor" aria-label="Split editor"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM12 4v16"/></svg></button>
+      <button class="toolbar-icon-button" data-action="timeline" title="Local document timeline" aria-label="Local document timeline"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3.5 2M5 5l2 2"/></svg></button>
+      <button class="toolbar-icon-button" data-action="reading-mode" title="Focused reading mode" aria-label="Focused reading mode"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5c2.8-.8 5.4-.4 8 1.3 2.6-1.7 5.2-2.1 8-1.3v13c-2.8-.8-5.4-.4-8 1.3-2.6-1.7-5.2-2.1-8-1.3zM12 6.8v13"/></svg></button>
       <button class="toolbar-icon-button" data-action="zen" title="Zen mode" aria-label="Zen mode"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M12 4v16M7 7l10 10M17 7 7 17"/></svg></button>
       <button class="toolbar-icon-button" data-action="undo" title="Undo (⌘Z)" aria-label="Undo"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-4 4 4 4M5 11h7a6 6 0 0 1 6 6"/></svg></button>
       <button class="toolbar-icon-button" data-action="redo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 4 4-4 4M19 11h-7a6 6 0 0 0-6 6"/></svg></button>
@@ -228,11 +238,14 @@ app.innerHTML = `
       <span class="status-file">Untitled</span>
       <span class="status-stats"></span>
       <span class="status-cursor">Ln 1, Col 1</span>
+      <button class="writing-progress" data-action="writing-goal" title="Set a writing goal"></button>
       <span class="status-spacer"></span>
       <span class="status-help">⌘O Open · ⌘S Save · ⌘F Find</span>
     </footer>
     <div class="toast" role="status" aria-live="polite" hidden></div>
     <section class="command-palette" hidden aria-label="Command Palette"><div class="command-palette-card"><input type="search" placeholder="Type a command…" aria-label="Search commands" spellcheck="false" /><div class="command-list"></div><small>↑↓ navigate · Enter run · Esc close</small></div></section>
+    <section class="quick-switcher overlay-panel" hidden aria-label="Quick switcher"><div class="overlay-card"><div class="overlay-heading"><strong>Quick switcher</strong><button data-action="close-quick-switch" aria-label="Close quick switcher">×</button></div><input type="search" placeholder="Open tabs, recents, bookmarks, or this folder…" aria-label="Quick switcher search" spellcheck="false" /><div class="quick-switch-list"></div><small>⌘K opens this switcher · Esc closes</small></div></section>
+    <section class="timeline-panel overlay-panel" hidden aria-label="Document timeline"><div class="overlay-card timeline-card"><div class="overlay-heading"><strong>Local timeline</strong><button data-action="close-timeline" aria-label="Close timeline">×</button></div><p class="timeline-intro">Saved locally in this browser profile. Restore a snapshot into the current tab.</p><div class="timeline-list"></div></div></section>
   </main>
 `;
 
@@ -284,6 +297,12 @@ const externalChangeBar = required<HTMLElement>('.external-change');
 const commandPalette = required<HTMLElement>('.command-palette');
 const commandPaletteInput = required<HTMLInputElement>('.command-palette input');
 const commandList = required<HTMLElement>('.command-list');
+const quickSwitcher = required<HTMLElement>('.quick-switcher');
+const quickSwitchInput = required<HTMLInputElement>('.quick-switcher input');
+const quickSwitchList = required<HTMLElement>('.quick-switch-list');
+const timelinePanel = required<HTMLElement>('.timeline-panel');
+const timelineList = required<HTMLElement>('.timeline-list');
+const writingProgress = required<HTMLButtonElement>('.writing-progress');
 const tabList = required<HTMLElement>('.tab-list');
 
 let nextDocumentId = 1;
@@ -297,6 +316,9 @@ let showHiddenFiles = false;
 let folderFilterValue = '';
 let editorSplit = false;
 let zenMode = false;
+let readingMode = false;
+let writingGoal = readWritingGoal();
+let writingStartedAt = Date.now();
 let uiTheme = readUiTheme();
 let uiScale = readUiScale();
 let editorSurface = readEditorSurface();
@@ -314,6 +336,7 @@ const fileFingerprints = new Map<string, FileFingerprint>();
 const histories = new Map<string, DocumentHistory>([[firstDocument.id, { entries: [''], index: 0 }]]);
 let toastTimer: number | undefined;
 let recoveryTimer: number | undefined;
+let timelineTimer: number | undefined;
 let autosaveInFlight = false;
 let commandSelection = 0;
 let mediaPdf: PDFDocumentProxy | null = null;
@@ -337,6 +360,44 @@ function required<T extends Element>(selector: string): T {
 
 function isUiTheme(value: string): value is UiTheme {
   return UI_THEMES.some(([theme]) => theme === value);
+}
+
+function readWritingGoal() {
+  const value = Number(localStorage.getItem(WRITING_GOAL_KEY));
+  return Number.isInteger(value) && value > 0 && value <= 100_000 ? value : 0;
+}
+
+function wordCount(content: string) {
+  return content.trim() ? content.trim().split(/\s+/).length : 0;
+}
+
+function renderWritingProgress() {
+  if (isMediaDocument(documentState)) {
+    writingProgress.hidden = true;
+    return;
+  }
+  writingProgress.hidden = false;
+  const words = wordCount(documentState.content);
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - writingStartedAt) / 60_000));
+  writingProgress.textContent = writingGoal ? `${Math.min(words, writingGoal)} / ${writingGoal} words${elapsedMinutes ? ` · ${elapsedMinutes}m` : ''}` : `${words} words${elapsedMinutes ? ` · ${elapsedMinutes}m` : ''}`;
+  writingProgress.classList.toggle('complete', writingGoal > 0 && words >= writingGoal);
+  writingProgress.title = writingGoal ? 'Change or clear this writing goal' : 'Set a writing goal';
+}
+
+function setWritingGoal() {
+  const answer = window.prompt('Writing goal for this session (words). Enter 0 to clear it:', writingGoal ? String(writingGoal) : '500');
+  if (answer === null) return;
+  const next = Number(answer.trim());
+  if (!Number.isInteger(next) || next < 0 || next > 100_000) {
+    showToast('Enter a whole number between 0 and 100,000.', 'error');
+    return;
+  }
+  writingGoal = next;
+  writingStartedAt = Date.now();
+  if (writingGoal) localStorage.setItem(WRITING_GOAL_KEY, String(writingGoal));
+  else localStorage.removeItem(WRITING_GOAL_KEY);
+  renderWritingProgress();
+  showToast(writingGoal ? `Writing goal set to ${writingGoal} words.` : 'Writing goal cleared.', 'success');
 }
 
 function readUiTheme(): UiTheme {
@@ -585,6 +646,95 @@ function historyFor(document: TextDocument) {
   const created = { entries: [document.content], index: 0 };
   histories.set(document.id, created);
   return created;
+}
+
+function timelineKey(document: TextDocument) {
+  return `${TIMELINE_KEY_PREFIX}${document.path || `draft-${document.id}`}`;
+}
+
+function readTimeline(document = documentState): TimelineSnapshot[] {
+  if (isMediaDocument(document)) return [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(timelineKey(document)) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is TimelineSnapshot => Boolean(
+      entry && typeof entry === 'object'
+      && typeof (entry as TimelineSnapshot).id === 'string'
+      && typeof (entry as TimelineSnapshot).savedAt === 'number'
+      && typeof (entry as TimelineSnapshot).label === 'string'
+      && typeof (entry as TimelineSnapshot).content === 'string',
+    )).slice(0, MAX_TIMELINE_SNAPSHOTS);
+  } catch {
+    return [];
+  }
+}
+
+function captureTimeline(label = 'Snapshot') {
+  const target = documentState;
+  if (isMediaDocument(target) || target.content.length > MAX_TIMELINE_SNAPSHOT_CHARS) return;
+  const existing = readTimeline(target);
+  if (existing[0]?.content === target.content) return;
+  const next: TimelineSnapshot[] = [{
+    id: `snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    savedAt: Date.now(),
+    label,
+    content: target.content,
+  }, ...existing].slice(0, MAX_TIMELINE_SNAPSHOTS);
+  try {
+    localStorage.setItem(timelineKey(target), JSON.stringify(next));
+  } catch {
+    // A full browser profile should never prevent editing or saving a document.
+  }
+}
+
+function scheduleTimelineSnapshot() {
+  if (timelineTimer) window.clearTimeout(timelineTimer);
+  const documentId = documentState.id;
+  timelineTimer = window.setTimeout(() => {
+    if (documentState.id === documentId) captureTimeline('Automatic snapshot');
+  }, 18_000);
+}
+
+function formatSnapshotTime(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
+}
+
+function openTimeline() {
+  if (isMediaDocument(documentState)) {
+    showToast('Timeline snapshots are available for text and Markdown documents.', 'info');
+    return;
+  }
+  const snapshots = readTimeline();
+  timelineList.replaceChildren();
+  if (!snapshots.length) {
+    timelineList.append(makeEmpty('Snapshots appear after you edit for a short while or save this document.'));
+  } else {
+    for (const snapshot of snapshots) {
+      const row = document.createElement('div');
+      row.className = 'timeline-entry';
+      const label = document.createElement('div');
+      label.innerHTML = `<strong>${escapeHtml(snapshot.label)}</strong><small>${escapeHtml(formatSnapshotTime(snapshot.savedAt))} · ${wordCount(snapshot.content)} words</small>`;
+      const restore = document.createElement('button');
+      restore.textContent = 'Restore';
+      restore.addEventListener('click', () => restoreTimelineSnapshot(snapshot));
+      row.append(label, restore);
+      timelineList.append(row);
+    }
+  }
+  timelinePanel.hidden = false;
+}
+
+function closeTimeline() {
+  timelinePanel.hidden = true;
+  if (!isMediaDocument(documentState)) editor.focus();
+}
+
+function restoreTimelineSnapshot(snapshot: TimelineSnapshot) {
+  if (!window.confirm(`Restore the ${snapshot.label.toLowerCase()} from ${formatSnapshotTime(snapshot.savedAt)}? Your current text will remain available as a new snapshot.`)) return;
+  captureTimeline('Before restore');
+  recordContent(snapshot.content);
+  closeTimeline();
+  showToast('Snapshot restored to the current tab.', 'success');
 }
 
 function activateDocument(id: string) {
@@ -1114,6 +1264,7 @@ function recordContent(content: string) {
   if (history.entries.length === 2500) history.index = history.entries.length - 1;
   render();
   scheduleRecovery();
+  scheduleTimelineSnapshot();
 }
 
 function restoreHistory(nextIndex: number) {
@@ -1467,6 +1618,7 @@ function render() {
   shell.classList.toggle('media-document', isMedia);
   shell.classList.toggle('editor-split', editorSplit);
   shell.classList.toggle('zen-mode', zenMode);
+  shell.classList.toggle('reading-mode', readingMode && documentState.isMarkdown && !isMedia);
   mediaPane.hidden = !isMedia;
   if (editor.value !== documentState.content) editor.value = documentState.content;
   if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
@@ -1504,6 +1656,7 @@ function render() {
   renderRecents();
   renderLineNumbers();
   updateCursor();
+  renderWritingProgress();
   scheduleRecovery();
 }
 
@@ -1620,6 +1773,35 @@ function renderParagraph(lines: string[]) {
   }).join('');
 }
 
+function markdownTableCells(line: string) {
+  const trimmed = line.trim();
+  const content = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return content.split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, '|').trim());
+}
+
+function markdownTableRule(line: string) {
+  const cells = markdownTableCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function tableAlignment(rule: string) {
+  if (/^:-+:$/.test(rule)) return 'center';
+  if (/^-+:$/.test(rule)) return 'right';
+  if (/^:-+$/.test(rule)) return 'left';
+  return '';
+}
+
+function renderMarkdownTable(headerLine: string, ruleLine: string, rows: string[]) {
+  const headers = markdownTableCells(headerLine);
+  const rules = markdownTableCells(ruleLine);
+  const header = headers.map((cell, index) => `<th${tableAlignment(rules[index] || '') ? ` style="text-align:${tableAlignment(rules[index] || '')}"` : ''}>${renderInline(cell)}</th>`).join('');
+  const body = rows.map((line) => {
+    const cells = markdownTableCells(line);
+    return `<tr>${headers.map((_, index) => `<td${tableAlignment(rules[index] || '') ? ` style="text-align:${tableAlignment(rules[index] || '')}"` : ''}>${renderInline(cells[index] || '')}</td>`).join('')}</tr>`;
+  }).join('');
+  return `<div class="markdown-table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 function renderMarkdown(source: string) {
   const lines = source.split('\n');
   const output: string[] = [];
@@ -1639,6 +1821,16 @@ function renderMarkdown(source: string) {
     const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
     if (heading) { output.push(`<h${heading[1].length}>${renderInline(heading[2])}</h${heading[1].length}>`); index += 1; continue; }
     if (/^(?:---|\*\*\*|___)\s*$/.test(line)) { output.push('<hr />'); index += 1; continue; }
+    if (line.includes('|') && index + 1 < lines.length && markdownTableRule(lines[index + 1])) {
+      const rows: string[] = [];
+      index += 2;
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        rows.push(lines[index]);
+        index += 1;
+      }
+      output.push(renderMarkdownTable(line, lines[index - rows.length - 1], rows));
+      continue;
+    }
     if (/^>\s?/.test(line)) {
       const quote: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index])) { quote.push(lines[index].replace(/^>\s?/, '')); index += 1; }
@@ -1660,7 +1852,7 @@ function renderMarkdown(source: string) {
     }
     const paragraph: string[] = [line];
     index += 1;
-    while (index < lines.length && lines[index].trim() && !/^(#{1,6}\s+|```|>\s?|(?:[-*+]\s+|\d+\.\s+))/.test(lines[index])) {
+    while (index < lines.length && lines[index].trim() && !/^(#{1,6}\s+|```|>\s?|(?:[-*+]\s+|\d+\.\s+))/.test(lines[index]) && !(lines[index].includes('|') && index + 1 < lines.length && markdownTableRule(lines[index + 1]))) {
       paragraph.push(lines[index]);
       index += 1;
     }
@@ -1843,6 +2035,7 @@ async function saveAs() {
     if (externalChange?.path === result.path) externalChange = null;
     render();
     await captureFingerprint(result.path);
+    captureTimeline('Saved');
     showToast(`Saved ${result.name}.`, 'success');
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
@@ -1860,6 +2053,7 @@ async function save() {
     if (externalChange?.path === result.path) externalChange = null;
     render();
     await captureFingerprint(result.path);
+    captureTimeline('Saved');
     showToast('Saved locally.', 'success');
   } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
 }
@@ -2024,10 +2218,101 @@ function insertAtSelection(value: string) {
   target.focus();
 }
 
+function selectedTextRange() {
+  const target = activeEditor();
+  if (target.selectionStart !== target.selectionEnd) {
+    return { start: target.selectionStart, end: target.selectionEnd, text: documentState.content.slice(target.selectionStart, target.selectionEnd) };
+  }
+  const content = documentState.content;
+  const start = content.lastIndexOf('\n\n', Math.max(0, target.selectionStart - 1)) + 2;
+  const nextBreak = content.indexOf('\n\n', target.selectionEnd);
+  const end = nextBreak === -1 ? content.length : nextBreak;
+  return { start, end, text: content.slice(start, end) };
+}
+
+function replaceTextRange(start: number, end: number, replacement: string) {
+  const target = activeEditor();
+  recordContent(`${documentState.content.slice(0, start)}${replacement}${documentState.content.slice(end)}`);
+  editor.setSelectionRange(start, start + replacement.length);
+  secondaryEditor.setSelectionRange(start, start + replacement.length);
+  target.focus();
+}
+
+function reflowParagraph() {
+  if (isMediaDocument(documentState)) return;
+  const width = Number(window.prompt('Reflow selected text or the current paragraph to this column width:', '78'));
+  if (!Number.isInteger(width) || width < 24 || width > 200) {
+    showToast('Choose a column width between 24 and 200.', 'error');
+    return;
+  }
+  const { start, end, text } = selectedTextRange();
+  if (!text.trim()) return;
+  const prefixMatch = /^(\s*(?:(?:[-*+])|\d+[.)])\s+)?/.exec(text);
+  const prefix = prefixMatch?.[0] || '';
+  const words = text.replace(/^\s*(?:(?:[-*+])|\d+[.)])\s+/, '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const available = Math.max(16, width - prefix.length);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    if (current && `${current} ${word}`.length > available) {
+      lines.push(current);
+      current = word;
+    } else current = current ? `${current} ${word}` : word;
+  }
+  if (current) lines.push(current);
+  const replacement = lines.map((line, index) => index === 0 ? `${prefix}${line}` : `${' '.repeat(prefix.length)}${line}`).join('\n');
+  replaceTextRange(start, end, replacement);
+  showToast(`Reflowed text to ${width} columns.`, 'success');
+}
+
+function convertTextCase(kind: 'upper' | 'lower' | 'title') {
+  const { start, end, text } = selectedTextRange();
+  if (!text) return;
+  const replacement = kind === 'upper' ? text.toLocaleUpperCase()
+    : kind === 'lower' ? text.toLocaleLowerCase()
+      : text.toLocaleLowerCase().replace(/\b[\p{L}\p{N}]/gu, (letter) => letter.toLocaleUpperCase());
+  replaceTextRange(start, end, replacement);
+  showToast(`${kind === 'title' ? 'Title' : kind[0].toUpperCase() + kind.slice(1)} case applied.`, 'success');
+}
+
+function smartTypography() {
+  const { start, end, text } = selectedTextRange();
+  if (!text) return;
+  const replacement = text
+    .replace(/\.\.\./g, '…')
+    .replace(/---/g, '—')
+    .replace(/--/g, '–')
+    .replace(/"([^"\n]+)"/g, '“$1”')
+    .replace(/'([^'\n]+)'/g, '‘$1’');
+  replaceTextRange(start, end, replacement);
+  showToast('Applied smart typography.', 'success');
+}
+
+function trimTrailingWhitespace() {
+  if (isMediaDocument(documentState)) return;
+  const replacement = documentState.content.replace(/[\t ]+$/gm, '');
+  if (replacement === documentState.content) { showToast('There is no trailing whitespace to remove.'); return; }
+  recordContent(replacement);
+  showToast('Trimmed trailing whitespace.', 'success');
+}
+
 function insertMarkdownTable() {
   if (!documentState.isMarkdown) { showToast('Markdown tools are available for Markdown documents.', 'error'); return; }
   insertAtSelection('| Column | Column |\n| --- | --- |\n| Value | Value |');
   showToast('Inserted a Markdown table.', 'success');
+}
+
+async function insertMarkdownLink() {
+  if (!documentState.isMarkdown) { showToast('Markdown link tools are available for Markdown documents.', 'error'); return; }
+  let url = '';
+  try { url = (await navigator.clipboard.readText()).trim(); } catch { /* The prompt below remains available. */ }
+  if (!/^(https?:\/\/|mailto:)/i.test(url)) url = window.prompt('Paste a web address for this link:', url) || '';
+  if (!/^(https?:\/\/|mailto:)/i.test(url)) { showToast('Enter a complete web address, such as https://example.com.', 'error'); return; }
+  const selected = documentState.content.slice(activeEditor().selectionStart, activeEditor().selectionEnd);
+  const label = selected || window.prompt('Link text:', 'Link') || '';
+  if (!label.trim()) return;
+  insertAtSelection(`[${label}](${url})`);
+  showToast('Inserted Markdown link.', 'success');
 }
 
 function toggleMarkdownTask() {
@@ -2093,6 +2378,21 @@ function toggleZenMode() {
   zenMode = !zenMode;
   render();
   showToast(zenMode ? 'Zen mode on. Press Escape to leave.' : 'Zen mode off.');
+}
+
+function toggleReadingMode() {
+  if (!documentState.isMarkdown || isMediaDocument(documentState)) {
+    showToast('Focused reading mode is available for Markdown documents.', 'info');
+    return;
+  }
+  readingMode = !readingMode;
+  if (readingMode) {
+    previewEnabled = true;
+    localStorage.setItem(PREVIEW_VISIBLE_KEY, 'true');
+    viewMode = 'preview';
+  }
+  render();
+  showToast(readingMode ? 'Focused reading mode on. Press Escape to leave.' : 'Focused reading mode off.');
 }
 
 function startSidebarResizing() {
@@ -2194,6 +2494,71 @@ function goToLinePrompt() {
   if (Number.isInteger(line) && line > 0) goToLine(line);
 }
 
+function quickSwitchItems(): QuickSwitchItem[] {
+  const openTabs = documents.map((document) => ({
+    group: 'OPEN TAB',
+    label: document.name,
+    detail: document.path || 'Unsaved document',
+    run: () => activateDocument(document.id),
+  }));
+  const recents = readRecents().map((entry) => ({
+    group: 'RECENT',
+    label: entry.name,
+    detail: entry.path,
+    run: () => void openRecent(entry),
+  }));
+  const bookmarks = readFolderBookmarks().map((bookmark) => ({
+    group: 'BOOKMARK',
+    label: bookmark.name,
+    detail: bookmark.path,
+    run: () => void browseFolder(bookmark.path),
+  }));
+  const folderEntries = (projectFolder?.entries || []).filter((entry) => entry.kind === 'file').slice(0, 160).map((entry) => ({
+    group: 'THIS FOLDER',
+    label: entry.name,
+    detail: entry.path,
+    run: () => void openProjectFile(entry.path),
+  }));
+  return [...openTabs, ...recents, ...bookmarks, ...folderEntries];
+}
+
+function renderQuickSwitcher() {
+  const query = quickSwitchInput.value.trim().toLocaleLowerCase();
+  const matches = quickSwitchItems().filter((item) => `${item.label} ${item.detail} ${item.group}`.toLocaleLowerCase().includes(query)).slice(0, 80);
+  quickSwitchList.replaceChildren();
+  if (!matches.length) {
+    quickSwitchList.append(makeEmpty('No tabs, recent files, bookmarks, or folder entries match.'));
+    return;
+  }
+  let lastGroup = '';
+  for (const item of matches) {
+    if (item.group !== lastGroup) {
+      const heading = document.createElement('span');
+      heading.className = 'quick-switch-group';
+      heading.textContent = item.group;
+      quickSwitchList.append(heading);
+      lastGroup = item.group;
+    }
+    const button = document.createElement('button');
+    button.innerHTML = `<strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small>`;
+    button.addEventListener('click', () => { closeQuickSwitcher(); item.run(); });
+    quickSwitchList.append(button);
+  }
+}
+
+function openQuickSwitcher() {
+  closeCommandPalette();
+  quickSwitcher.hidden = false;
+  quickSwitchInput.value = '';
+  renderQuickSwitcher();
+  window.requestAnimationFrame(() => quickSwitchInput.focus());
+}
+
+function closeQuickSwitcher() {
+  quickSwitcher.hidden = true;
+  if (!isMediaDocument(documentState)) editor.focus();
+}
+
 type PaletteCommand = { label: string; hint: string; run: () => void };
 
 function paletteCommands(): PaletteCommand[] {
@@ -2205,15 +2570,26 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Save As', hint: '⇧⌘S', run: () => void saveAs() },
     { label: 'Find and replace', hint: '⌘F', run: openFind },
     { label: 'Go to line', hint: '⌘L', run: goToLinePrompt },
+    { label: 'Quick switcher', hint: '⌘K', run: openQuickSwitcher },
+    { label: 'Set writing goal', hint: '', run: setWritingGoal },
+    { label: 'Open local timeline', hint: '', run: openTimeline },
     { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
     { label: 'Toggle Markdown preview', hint: '', run: togglePreview },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
+    { label: 'Focused reading mode', hint: '', run: toggleReadingMode },
     { label: 'Export clean PDF', hint: '', run: () => void exportPdf() },
     { label: 'Print', hint: '⌘P', run: () => void printDocument() },
     { label: 'Export HTML', hint: '', run: () => void exportHtml() },
     { label: 'Insert Markdown table', hint: '', run: insertMarkdownTable },
     { label: 'Toggle Markdown task', hint: '', run: toggleMarkdownTask },
+    { label: 'Insert Markdown link from clipboard', hint: '', run: () => void insertMarkdownLink() },
+    { label: 'Reflow current paragraph', hint: '', run: reflowParagraph },
+    { label: 'Smart typography', hint: '', run: smartTypography },
+    { label: 'Uppercase selection or paragraph', hint: '', run: () => convertTextCase('upper') },
+    { label: 'Lowercase selection or paragraph', hint: '', run: () => convertTextCase('lower') },
+    { label: 'Title case selection or paragraph', hint: '', run: () => convertTextCase('title') },
+    { label: 'Trim trailing whitespace', hint: '', run: trimTrailingWhitespace },
     { label: 'Toggle word wrap', hint: '', run: () => { editorOptions = { ...editorOptions, wordWrap: !editorOptions.wordWrap }; saveEditorOptions(); render(); } },
     { label: 'Refresh folder', hint: '', run: () => void refreshProjectFolder() },
   ];
@@ -2352,15 +2728,28 @@ function handleAction(action?: string) {
     case 'replace-all': replaceAll(); break;
     case 'close-find': closeFind(); break;
     case 'command-palette': openCommandPalette(); break;
+    case 'quick-switch': openQuickSwitcher(); break;
+    case 'close-quick-switch': closeQuickSwitcher(); break;
+    case 'timeline': openTimeline(); break;
+    case 'close-timeline': closeTimeline(); break;
+    case 'writing-goal': setWritingGoal(); break;
     case 'go-to-line': goToLinePrompt(); break;
     case 'toggle-editor-split': toggleEditorSplit(); break;
     case 'toggle-preview': togglePreview(); break;
+    case 'reading-mode': toggleReadingMode(); break;
     case 'zen': toggleZenMode(); break;
     case 'print': void printDocument(); break;
     case 'export-pdf': void exportPdf(); break;
     case 'export-html': void exportHtml(); break;
     case 'insert-table': insertMarkdownTable(); break;
     case 'toggle-task': toggleMarkdownTask(); break;
+    case 'insert-link': void insertMarkdownLink(); break;
+    case 'reflow-paragraph': reflowParagraph(); break;
+    case 'smart-typography': smartTypography(); break;
+    case 'uppercase': convertTextCase('upper'); break;
+    case 'lowercase': convertTextCase('lower'); break;
+    case 'title-case': convertTextCase('title'); break;
+    case 'trim-trailing-whitespace': trimTrailingWhitespace(); break;
     case 'reload-external': void reloadExternalChange(); break;
     case 'compare-external': void compareExternalChange(); break;
     case 'ignore-external': ignoreExternalChange(); break;
@@ -2535,8 +2924,20 @@ commandPaletteInput.addEventListener('keydown', (event) => {
   else if (event.key === 'ArrowUp') { event.preventDefault(); commandSelection = Math.max(0, commandSelection - 1); renderCommandPalette(); }
   else if (event.key === 'Enter') { event.preventDefault(); const command = commands[commandSelection]; if (command) { closeCommandPalette(); command.run(); } }
 });
+quickSwitchInput.addEventListener('input', renderQuickSwitcher);
+quickSwitchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { event.preventDefault(); closeQuickSwitcher(); }
+  else if (event.key === 'Enter') {
+    event.preventDefault();
+    quickSwitchList.querySelector<HTMLButtonElement>('button')?.click();
+  }
+});
+quickSwitcher.addEventListener('pointerdown', (event) => { if (event.target === quickSwitcher) closeQuickSwitcher(); });
+timelinePanel.addEventListener('pointerdown', (event) => { if (event.target === timelinePanel) closeTimeline(); });
 
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !quickSwitcher.hidden) { event.preventDefault(); closeQuickSwitcher(); return; }
+  if (event.key === 'Escape' && !timelinePanel.hidden) { event.preventDefault(); closeTimeline(); return; }
   if (event.key === 'Escape') {
     const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open]'));
     if (hasOpenTransientMenu) {
@@ -2545,6 +2946,7 @@ window.addEventListener('keydown', (event) => {
       return;
     }
   }
+  if (event.key === 'Escape' && readingMode) { event.preventDefault(); toggleReadingMode(); return; }
   if (event.key === 'Escape' && zenMode) { event.preventDefault(); toggleZenMode(); return; }
   if (!commandPalette.hidden) return;
   const primary = event.metaKey || event.ctrlKey;
@@ -2560,6 +2962,7 @@ window.addEventListener('keydown', (event) => {
   else if (key === 'g') { event.preventDefault(); if (findbar.hidden) openFind(); else findNext(); }
   else if (key === 'b' && event.shiftKey) { event.preventDefault(); toggleSidebar(); }
   else if (key === 'l') { event.preventDefault(); goToLinePrompt(); }
+  else if (key === 'k') { event.preventDefault(); openQuickSwitcher(); }
   else if (key === 'p' && event.shiftKey) { event.preventDefault(); openCommandPalette(); }
   else if (key === 'p') { event.preventDefault(); void printDocument(); }
   else if (key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
@@ -2616,6 +3019,7 @@ async function startDragAndDrop() {
 
 window.addEventListener('beforeunload', (event) => {
   persistRecovery();
+  captureTimeline('Before close');
   if (!documents.some((document) => document.content !== document.savedContent)) return;
   event.preventDefault();
   event.returnValue = '';
@@ -2645,3 +3049,4 @@ window.addEventListener('resize', () => {
   if (constrainedPreview !== previewWidth) setPreviewWidth(constrainedPreview);
 });
 window.setInterval(() => { void watchFiles(); }, 4000);
+window.setInterval(renderWritingProgress, 30_000);
