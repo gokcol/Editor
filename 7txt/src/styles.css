@@ -90,6 +90,7 @@ button { border: 0; cursor: pointer; }
 .markdown-actions[hidden] { display: none; }
 .toolbar-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .toolbar-icon-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px !important; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.toolbar-icon-button[hidden] { display: none !important; }
 .toolbar-icon-button:hover { background: var(--soft); color: var(--ink); }
 .save-button { color: var(--aqua) !important; }
 .toolbar-save-icon .save-body { fill: currentColor; stroke: none; opacity: .18; }
