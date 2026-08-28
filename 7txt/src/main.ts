@@ -79,6 +79,8 @@ const MAX_SIDEBAR_WIDTH = 430;
 const MIN_PREVIEW_WIDTH = 280;
 const DEFAULT_PREVIEW_WIDTH = 460;
 const MAX_PREVIEW_WIDTH = 760;
+const TAB_WIDTHS = [230, 172, 129] as const;
+const TAB_GAP = 4;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
   ['SFMono-Regular, SF Mono, Menlo, Monaco, monospace', 'SF Mono'],
@@ -452,6 +454,7 @@ function applyUiScale() {
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', String(selected));
   }
+  window.requestAnimationFrame(updateTabWidth);
 }
 
 function setUiScale(next: string) {
@@ -1751,6 +1754,7 @@ function renderTabs() {
   openTabsList.replaceChildren();
   openTabsMenu.hidden = true;
   openTabsToggle.hidden = workspaceEmpty || documents.length === 0;
+  updateTabWidth();
   if (workspaceEmpty) return;
   for (const document of documents) {
     const tab = window.document.createElement('div');
@@ -1796,6 +1800,15 @@ function renderTabs() {
 
     tab.addEventListener('pointerdown', (event) => beginTabDrag(event, document.id));
   }
+}
+
+function updateTabWidth() {
+  const tabCount = Math.max(documents.length, 1);
+  const availableWidth = tabList.clientWidth;
+  const requiredWidth = (tabWidth: number) => tabCount * tabWidth + Math.max(0, tabCount - 1) * TAB_GAP;
+  const tabWidth = TAB_WIDTHS.find((candidate) => requiredWidth(candidate) <= availableWidth)
+    ?? TAB_WIDTHS[TAB_WIDTHS.length - 1];
+  tabList.style.setProperty('--tab-width', `${tabWidth}px`);
 }
 
 function clearTabDropMarkers() {
@@ -3170,6 +3183,7 @@ window.addEventListener('resize', () => {
   if (constrained !== sidebarWidth) setSidebarWidth(constrained);
   const constrainedPreview = clampPreviewWidth(previewWidth);
   if (constrainedPreview !== previewWidth) setPreviewWidth(constrainedPreview);
+  window.requestAnimationFrame(updateTabWidth);
 });
 window.setInterval(() => { void watchFiles(); }, 4000);
 window.setInterval(renderWritingProgress, 30_000);
