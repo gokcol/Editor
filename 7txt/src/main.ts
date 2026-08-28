@@ -126,28 +126,28 @@ if (!app) throw new Error('7TXT could not create its editor window.');
 app.innerHTML = `
   <main class="app-shell" data-mode="split">
     <header class="titlebar">
-      <div class="brand"><button class="brand-mark-button" data-action="toggle-sidebar" title="Hide Files sidebar" aria-label="Hide Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong><span class="brand-subtitle">quiet text &amp; Markdown</span></div>
-      <div class="document-title"><span class="dirty-dot" aria-hidden="true"></span><strong></strong><small></small></div>
-      <div aria-hidden="true"></div>
+      <div class="brand"><button class="brand-mark-button" data-action="toggle-sidebar" title="Hide Files sidebar" aria-label="Hide Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong></div>
+      <div class="header-actions" aria-label="Workspace actions">
+        <div class="header-file-actions">
+          <button class="toolbar-icon-button" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg></button>
+          <button class="toolbar-icon-button" data-action="new-markdown" title="New Markdown tab (⇧⌘N)" aria-label="New Markdown tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8.5 16v-5l2 2.7L12.5 11v5M15 11v5"/></svg></button>
+          <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
+          <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z"/></svg></button>
+        </div>
+        <button class="toolbar-icon-button sidebar-toggle" data-action="toggle-sidebar" title="Hide Files sidebar (⇧⌘B)" aria-label="Hide Files sidebar" aria-expanded="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM10 4v16M7 8h.01M7 12h.01M7 16h.01"/></svg></button>
+        <button class="toolbar-icon-button" data-action="quick-switch" title="Quick switcher (⌘K)" aria-label="Quick switcher"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4M8.5 11h5"/></svg></button>
+        <button class="toolbar-icon-button" data-action="command-palette" title="Command Palette (⇧⌘P)" aria-label="Command Palette"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h.01M12 9h4M8 13h.01M12 13h4M8 17h8"/></svg></button>
+      </div>
     </header>
     <nav class="document-tabs" aria-label="Open documents">
       <div class="tab-list" role="tablist"></div>
       <button class="tab-new" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab">+</button>
     </nav>
     <section class="toolbar" aria-label="Document controls">
-      <div class="file-actions">
-        <button class="toolbar-icon-button" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg></button>
-        <button class="toolbar-icon-button" data-action="new-markdown" title="New Markdown tab (⇧⌘N)" aria-label="New Markdown tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8.5 16v-5l2 2.7L12.5 11v5M15 11v5"/></svg></button>
-        <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
-        <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z"/></svg></button>
-      </div>
-      <button class="toolbar-icon-button sidebar-toggle" data-action="toggle-sidebar" title="Hide Files sidebar (⇧⌘B)" aria-label="Hide Files sidebar" aria-expanded="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM10 4v16M7 8h.01M7 12h.01M7 16h.01"/></svg></button>
       <div class="quick-actions" aria-label="Quick actions">
         <button class="toolbar-icon-button save-button" data-action="save" title="Save (⌘S)" aria-label="Save"><svg class="toolbar-icon toolbar-save-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="save-body" d="M5 3h12l3 3v15H5z"/><path d="M8 3v6h8V3M8 20v-6h8v6"/></svg></button>
         <button class="toolbar-icon-button" data-action="find" title="Find (⌘F)" aria-label="Find"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg></button>
         <button class="toolbar-icon-button folder-bookmark-toggle" data-action="toggle-folder-bookmark" title="Bookmark this folder" aria-label="Bookmark this folder"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></svg></button>
-        <button class="toolbar-icon-button" data-action="quick-switch" title="Quick switcher (⌘K)" aria-label="Quick switcher"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4M8.5 11h5"/></svg></button>
-        <button class="toolbar-icon-button" data-action="command-palette" title="Command Palette (⇧⌘P)" aria-label="Command Palette"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h.01M12 9h4M8 13h.01M12 13h4M8 17h8"/></svg></button>
       </div>
       <label class="encoding-control" title="Text encoding — click to choose how this document is opened or saved."><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12"/></svg><select data-encoding aria-label="Text encoding">${CHARACTER_ENCODINGS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
       <button data-action="reopen-encoding" class="toolbar-icon-button reopen-encoding" title="Reload this saved document using the selected encoding" aria-label="Reload using selected encoding"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5M20 5v6h-6"/></svg></button>
@@ -235,7 +235,6 @@ app.innerHTML = `
       </section>
     </section>
     <footer class="statusbar">
-      <span class="status-file">Untitled</span>
       <span class="status-stats"></span>
       <span class="status-cursor">Ln 1, Col 1</span>
       <button class="writing-progress" data-action="writing-goal" title="Set a writing goal"></button>
@@ -1623,14 +1622,10 @@ function render() {
   if (editor.value !== documentState.content) editor.value = documentState.content;
   if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
   document.title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
-  required<HTMLElement>('.document-title strong').textContent = documentState.name;
-  required<HTMLElement>('.document-title small').textContent = documentState.path || 'Unsaved document';
-  required<HTMLElement>('.dirty-dot').classList.toggle('visible', isDirty());
   required<HTMLElement>('.format-chip').textContent = documentKindLabel(documentState);
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
   required<HTMLElement>('.editor-mode-label').textContent = documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
   required<HTMLElement>('.editor-status').textContent = isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved locally' : 'Ready';
-  required<HTMLElement>('.status-file').textContent = documentState.path || documentState.name;
   required<HTMLElement>('.status-stats').textContent = isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
   encodingSelect.value = documentState.encoding;
@@ -1724,7 +1719,10 @@ function renderTabs() {
     const tab = window.document.createElement('div');
     const activate = window.document.createElement('button');
     const close = window.document.createElement('button');
-    tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}`;
+    const dirty = isMediaDocument(document)
+      ? annotationSnapshot(document) !== (document.savedAnnotations || '')
+      : document.content !== document.savedContent;
+    tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}`;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(document.id === activeDocumentId));
     activate.className = 'tab-activate';
