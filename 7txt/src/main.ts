@@ -95,7 +95,7 @@ const MIN_PREVIEW_WIDTH = 280;
 const DEFAULT_PREVIEW_WIDTH = 460;
 const MAX_PREVIEW_WIDTH = 760;
 const TAB_WIDTHS = [230, 172, 129, 97] as const;
-const TAB_GAP = 4;
+const TAB_GAP = 5;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
   ['SFMono-Regular, SF Mono, Menlo, Monaco, monospace', 'SF Mono'],
