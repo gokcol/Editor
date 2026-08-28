@@ -141,7 +141,7 @@ app.innerHTML = `
     </header>
     <nav class="document-tabs" aria-label="Open documents">
       <div class="tab-list" role="tablist"></div>
-      <details class="open-tabs-menu" title="Open tabs" aria-label="Open tabs"><summary aria-label="Show all open tabs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h10"/><path d="m17 16 2 2 2-2"/></svg></summary><div class="open-tabs-list" role="menu"></div></details>
+      <div class="open-tabs-popover"><button class="open-tabs-toggle" data-action="toggle-open-tabs" title="Show all open tabs" aria-label="Show all open tabs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h10"/><path d="m17 16 2 2 2-2"/></svg></button><div class="open-tabs-menu" role="menu" hidden></div></div>
       <button class="tab-new" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab">+</button>
     </nav>
     <section class="toolbar" aria-label="Document controls">
@@ -308,8 +308,9 @@ const timelinePanel = required<HTMLElement>('.timeline-panel');
 const timelineList = required<HTMLElement>('.timeline-list');
 const writingProgress = required<HTMLButtonElement>('.writing-progress');
 const tabList = required<HTMLElement>('.tab-list');
-const openTabsMenu = required<HTMLDetailsElement>('.open-tabs-menu');
-const openTabsList = required<HTMLElement>('.open-tabs-list');
+const openTabsToggle = required<HTMLButtonElement>('.open-tabs-toggle');
+const openTabsMenu = required<HTMLElement>('.open-tabs-menu');
+const openTabsList = openTabsMenu;
 
 let nextDocumentId = 1;
 const firstDocument = blankDocument();
@@ -317,7 +318,7 @@ let documents: TextDocument[] = [firstDocument];
 let activeDocumentId = firstDocument.id;
 let documentState: TextDocument = firstDocument;
 let workspaceEmpty = false;
-let draggedTabId: string | null = null;
+let tabDrag: { id: string; pointerId: number; startX: number; dragging: boolean } | null = null;
 let viewMode: ViewMode = 'split';
 let projectFolder: ProjectFolder | null = null;
 let showHiddenFiles = false;
@@ -485,14 +486,15 @@ function setEditorSurface(next: string) {
 }
 
 function closeTransientMenus() {
-  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) menu.open = false;
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) menu.open = false;
+  openTabsMenu.hidden = true;
 }
 
 function setupTransientMenus() {
-  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) {
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
     menu.addEventListener('toggle', () => {
       if (!menu.open) return;
-      for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) {
+      for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
         if (other !== menu) other.open = false;
       }
     });
@@ -1747,7 +1749,8 @@ function renderRecents() {
 function renderTabs() {
   tabList.replaceChildren();
   openTabsList.replaceChildren();
-  openTabsMenu.hidden = workspaceEmpty || documents.length === 0;
+  openTabsMenu.hidden = true;
+  openTabsToggle.hidden = workspaceEmpty || documents.length === 0;
   if (workspaceEmpty) return;
   for (const document of documents) {
     const tab = window.document.createElement('div');
@@ -1757,9 +1760,9 @@ function renderTabs() {
       ? annotationSnapshot(document) !== (document.savedAnnotations || '')
       : document.content !== document.savedContent;
     tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}`;
+    tab.dataset.tabId = document.id;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(document.id === activeDocumentId));
-    tab.draggable = true;
     activate.className = 'tab-activate';
     activate.type = 'button';
     activate.textContent = document.name;
@@ -1781,45 +1784,57 @@ function renderTabs() {
     menuActivate.textContent = document.name;
     menuActivate.title = document.path || document.name;
     menuActivate.setAttribute('role', 'menuitem');
-    menuActivate.addEventListener('click', () => { openTabsMenu.open = false; activateDocument(document.id); });
+    menuActivate.addEventListener('click', () => { openTabsMenu.hidden = true; activateDocument(document.id); });
     const menuClose = window.document.createElement('button');
     menuClose.className = 'open-tabs-close';
     menuClose.textContent = '×';
     menuClose.title = `Close ${document.name}`;
     menuClose.setAttribute('aria-label', menuClose.title);
-    menuClose.addEventListener('click', () => { openTabsMenu.open = false; closeDocument(document.id); });
+    menuClose.addEventListener('click', () => { openTabsMenu.hidden = true; closeDocument(document.id); });
     menuRow.append(menuActivate, menuClose);
     openTabsList.append(menuRow);
 
-    tab.addEventListener('dragstart', (event) => {
-      if (event.target instanceof Element && event.target.closest('.tab-close')) { event.preventDefault(); return; }
-      draggedTabId = document.id;
-      tab.classList.add('dragging');
-      event.dataTransfer?.setData('text/plain', document.id);
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-    });
-    tab.addEventListener('dragover', (event) => {
-      if (!draggedTabId || draggedTabId === document.id) return;
-      event.preventDefault();
-      const before = event.clientX < tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2;
-      tab.classList.toggle('drop-before', before);
-      tab.classList.toggle('drop-after', !before);
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    });
-    tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
-    tab.addEventListener('drop', (event) => {
-      event.preventDefault();
-      const movedId = draggedTabId || event.dataTransfer?.getData('text/plain');
-      const before = event.clientX < tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2;
-      if (movedId) reorderTabs(movedId, document.id, before);
-      draggedTabId = null;
-      tab.classList.remove('drop-before', 'drop-after');
-    });
-    tab.addEventListener('dragend', () => {
-      draggedTabId = null;
-      for (const item of tabList.querySelectorAll('.document-tab')) item.classList.remove('dragging', 'drop-before', 'drop-after');
-    });
+    tab.addEventListener('pointerdown', (event) => beginTabDrag(event, document.id));
   }
+}
+
+function clearTabDropMarkers() {
+  for (const item of tabList.querySelectorAll('.document-tab')) item.classList.remove('dragging', 'drop-before', 'drop-after');
+}
+
+function beginTabDrag(event: PointerEvent, id: string) {
+  if (event.button !== 0 || (event.target instanceof Element && event.target.closest('.tab-close'))) return;
+  tabDrag = { id, pointerId: event.pointerId, startX: event.clientX, dragging: false };
+}
+
+function trackTabDrag(event: PointerEvent) {
+  const active = tabDrag;
+  if (!active || active.pointerId !== event.pointerId) return;
+  if (!active.dragging && Math.abs(event.clientX - active.startX) < 7) return;
+  active.dragging = true;
+  event.preventDefault();
+  clearTabDropMarkers();
+  const dragged = tabList.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(active.id)}"]`);
+  dragged?.classList.add('dragging');
+  const target = window.document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.document-tab');
+  if (!target || target.dataset.tabId === active.id) return;
+  const before = event.clientX < target.getBoundingClientRect().left + target.getBoundingClientRect().width / 2;
+  target.classList.add(before ? 'drop-before' : 'drop-after');
+}
+
+function finishTabDrag(event: PointerEvent) {
+  const active = tabDrag;
+  if (!active || active.pointerId !== event.pointerId) return;
+  tabDrag = null;
+  if (!active.dragging) return;
+  event.preventDefault();
+  const target = window.document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.document-tab');
+  const targetId = target?.dataset.tabId;
+  if (target && targetId && targetId !== active.id) {
+    const before = event.clientX < target.getBoundingClientRect().left + target.getBoundingClientRect().width / 2;
+    reorderTabs(active.id, targetId, before);
+  }
+  clearTabDropMarkers();
 }
 
 function reorderTabs(movedId: string, targetId: string, before: boolean) {
@@ -1834,6 +1849,12 @@ function reorderTabs(movedId: string, targetId: string, before: boolean) {
   documents = ordered;
   renderTabs();
   scheduleRecovery();
+}
+
+function toggleOpenTabsMenu() {
+  const shouldOpen = openTabsMenu.hidden;
+  closeTransientMenus();
+  openTabsMenu.hidden = !shouldOpen;
 }
 
 function escapeHtml(value: string) {
@@ -2154,12 +2175,13 @@ async function save() {
 }
 
 function closeDocument(id = activeDocumentId) {
+  openTabsMenu.hidden = true;
   const target = documents.find((document) => document.id === id);
   if (!target) return;
   const targetDirty = isMediaDocument(target)
     ? annotationSnapshot(target) !== (target.savedAnnotations || '')
     : target.content !== target.savedContent;
-  if (targetDirty && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
+  if (targetDirty && target.path && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
   const index = documents.findIndex((document) => document.id === id);
   histories.delete(id);
   if (documents.length === 1) {
@@ -2825,6 +2847,7 @@ function handleAction(action?: string) {
     case 'close-find': closeFind(); break;
     case 'command-palette': openCommandPalette(); break;
     case 'quick-switch': openQuickSwitcher(); break;
+    case 'toggle-open-tabs': toggleOpenTabsMenu(); break;
     case 'close-quick-switch': closeQuickSwitcher(); break;
     case 'timeline': openTimeline(); break;
     case 'close-timeline': closeTimeline(); break;
@@ -2859,9 +2882,13 @@ function handleAction(action?: string) {
 
 app.addEventListener('pointerdown', (event) => {
   if (!(event.target instanceof Element)) return;
-  if (event.target.closest('.theme-picker, .editor-appearance, .open-tabs-menu')) return;
+  if (event.target.closest('.theme-picker, .editor-appearance, .open-tabs-popover')) return;
   closeTransientMenus();
 });
+
+window.addEventListener('pointermove', trackTabDrag);
+window.addEventListener('pointerup', finishTabDrag);
+window.addEventListener('pointercancel', finishTabDrag);
 
 app.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
@@ -3035,7 +3062,7 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !quickSwitcher.hidden) { event.preventDefault(); closeQuickSwitcher(); return; }
   if (event.key === 'Escape' && !timelinePanel.hidden) { event.preventDefault(); closeTimeline(); return; }
   if (event.key === 'Escape') {
-    const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open], .open-tabs-menu[open]'));
+    const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open]')) || !openTabsMenu.hidden;
     if (hasOpenTransientMenu) {
       event.preventDefault();
       closeTransientMenus();
