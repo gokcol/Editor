@@ -51,6 +51,20 @@ type ExternalChange = { path: string; name: string; fingerprint?: FileFingerprin
 type EditorOptions = { wordWrap: boolean; indentation: 'spaces' | 'tabs'; tabSize: 2 | 4 | 8; lineEnding: 'lf' | 'crlf'; spellLanguage: string };
 type SessionDocument = Omit<TextDocument, 'id'> & { cursor?: number };
 type RestoredSession = { documents: SessionDocument[]; activeIndex: number; savedAt: number };
+type WorkbenchState = {
+  viewMode?: ViewMode;
+  editorSplit?: boolean;
+  zenMode?: boolean;
+  readingMode?: boolean;
+  sidebarVisible?: boolean;
+  sidebarAutoHidden?: boolean;
+  sidebarWidth?: number;
+  previewEnabled?: boolean;
+  previewWidth?: number;
+  showHiddenFiles?: boolean;
+  folderFilterValue?: string;
+  projectFolderPath?: string;
+};
 
 const RECENTS_KEY = '7txt:recent-files:v1';
 const PROJECT_FOLDER_KEY = '7txt:open-folder:v1';
@@ -67,6 +81,7 @@ const PREVIEW_WIDTH_KEY = '7txt:preview-width:v1';
 const WRITING_GOAL_KEY = '7txt:writing-goal:v1';
 const TIMELINE_KEY_PREFIX = '7txt:document-timeline:v1:';
 const SESSION_KEY = '7txt:workspace-session:v1';
+const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
@@ -79,7 +94,7 @@ const MAX_SIDEBAR_WIDTH = 430;
 const MIN_PREVIEW_WIDTH = 280;
 const DEFAULT_PREVIEW_WIDTH = 460;
 const MAX_PREVIEW_WIDTH = 760;
-const TAB_WIDTHS = [230, 172, 129] as const;
+const TAB_WIDTHS = [230, 172, 129, 97] as const;
 const TAB_GAP = 4;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
@@ -313,6 +328,7 @@ const tabList = required<HTMLElement>('.tab-list');
 const openTabsToggle = required<HTMLButtonElement>('.open-tabs-toggle');
 const openTabsMenu = required<HTMLElement>('.open-tabs-menu');
 const openTabsList = openTabsMenu;
+const savedWorkbenchState = readWorkbenchState();
 
 let nextDocumentId = 1;
 const firstDocument = blankDocument();
@@ -321,24 +337,24 @@ let activeDocumentId = firstDocument.id;
 let documentState: TextDocument = firstDocument;
 let workspaceEmpty = false;
 let tabDrag: { id: string; pointerId: number; startX: number; dragging: boolean } | null = null;
-let viewMode: ViewMode = 'split';
+let viewMode: ViewMode = savedWorkbenchState.viewMode || 'split';
 let projectFolder: ProjectFolder | null = null;
-let showHiddenFiles = false;
-let folderFilterValue = '';
-let editorSplit = false;
-let zenMode = false;
-let readingMode = false;
+let showHiddenFiles = savedWorkbenchState.showHiddenFiles || false;
+let folderFilterValue = savedWorkbenchState.folderFilterValue || '';
+let editorSplit = savedWorkbenchState.editorSplit || false;
+let zenMode = savedWorkbenchState.zenMode || false;
+let readingMode = savedWorkbenchState.readingMode || false;
 let writingGoal = readWritingGoal();
 let writingStartedAt = Date.now();
 let uiTheme = readUiTheme();
 let uiScale = readUiScale();
 let editorSurface = readEditorSurface();
-let sidebarVisible = readSidebarVisible();
-let sidebarAutoHidden = false;
-let sidebarWidth = readSidebarWidth();
+let sidebarVisible = savedWorkbenchState.sidebarVisible ?? readSidebarVisible();
+let sidebarAutoHidden = savedWorkbenchState.sidebarAutoHidden || false;
+let sidebarWidth = savedWorkbenchState.sidebarWidth === undefined ? readSidebarWidth() : clampSidebarWidth(savedWorkbenchState.sidebarWidth);
 let sidebarResizePointerId: number | null = null;
-let previewEnabled = readPreviewVisible();
-let previewWidth = readPreviewWidth();
+let previewEnabled = savedWorkbenchState.previewEnabled ?? readPreviewVisible();
+let previewWidth = savedWorkbenchState.previewWidth === undefined ? readPreviewWidth() : clampPreviewWidth(savedWorkbenchState.previewWidth);
 let previewResizePointerId: number | null = null;
 let sidebarAutoHideTimer: number | undefined;
 let sidebarPointerInside = false;
@@ -443,6 +459,59 @@ function readUiScale(): UiScale {
   return isUiScale(stored) ? stored : 'normal';
 }
 
+function isViewMode(value: unknown): value is ViewMode {
+  return value === 'edit' || value === 'split' || value === 'preview';
+}
+
+function readWorkbenchState(): WorkbenchState {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(WORKBENCH_STATE_KEY) || 'null');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const state = parsed as Record<string, unknown>;
+    const finiteNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    const nonEmptyText = (value: unknown) => typeof value === 'string' && value.trim() ? value : undefined;
+    return {
+      viewMode: isViewMode(state.viewMode) ? state.viewMode : undefined,
+      editorSplit: typeof state.editorSplit === 'boolean' ? state.editorSplit : undefined,
+      zenMode: typeof state.zenMode === 'boolean' ? state.zenMode : undefined,
+      readingMode: typeof state.readingMode === 'boolean' ? state.readingMode : undefined,
+      sidebarVisible: typeof state.sidebarVisible === 'boolean' ? state.sidebarVisible : undefined,
+      sidebarAutoHidden: typeof state.sidebarAutoHidden === 'boolean' ? state.sidebarAutoHidden : undefined,
+      sidebarWidth: finiteNumber(state.sidebarWidth),
+      previewEnabled: typeof state.previewEnabled === 'boolean' ? state.previewEnabled : undefined,
+      previewWidth: finiteNumber(state.previewWidth),
+      showHiddenFiles: typeof state.showHiddenFiles === 'boolean' ? state.showHiddenFiles : undefined,
+      folderFilterValue: typeof state.folderFilterValue === 'string' ? state.folderFilterValue : undefined,
+      projectFolderPath: nonEmptyText(state.projectFolderPath),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function persistWorkbenchState() {
+  try {
+    const projectFolderPath = projectFolder?.path || localStorage.getItem(PROJECT_FOLDER_KEY) || savedWorkbenchState.projectFolderPath;
+    const state: WorkbenchState = {
+      viewMode,
+      editorSplit,
+      zenMode,
+      readingMode,
+      sidebarVisible,
+      sidebarAutoHidden,
+      sidebarWidth,
+      previewEnabled,
+      previewWidth,
+      showHiddenFiles,
+      folderFilterValue,
+      projectFolderPath: projectFolderPath || undefined,
+    };
+    localStorage.setItem(WORKBENCH_STATE_KEY, JSON.stringify(state));
+  } catch {
+    // Workspace layout persistence is best-effort.
+  }
+}
+
 function uiScaleFactor() {
   return UI_SCALE_FACTORS[uiScale];
 }
@@ -545,6 +614,7 @@ function applySidebarLayout() {
   brandSidebarToggle.setAttribute('aria-label', visibleLabel);
   brandSidebarToggle.setAttribute('aria-expanded', String(shown));
   sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
+  persistWorkbenchState();
 }
 
 function applyPreviewLayout() {
@@ -556,6 +626,7 @@ function applyPreviewLayout() {
   previewToggle.title = shown ? 'Hide Markdown preview' : 'Show Markdown preview';
   previewToggle.setAttribute('aria-label', previewToggle.title);
   previewResizer.setAttribute('aria-valuenow', String(previewWidth));
+  persistWorkbenchState();
 }
 
 function sidebarIsShown() {
@@ -1095,16 +1166,18 @@ function restoreSession() {
   const cursor = Math.min(active.cursor || 0, active.content.length);
   editor.setSelectionRange(cursor, cursor);
   secondaryEditor.setSelectionRange(cursor, cursor);
-  viewMode = preferredViewMode(active);
+  viewMode = active.isMarkdown && previewEnabled ? viewMode : 'edit';
   if (session.savedAt) showToast('Restored your previous workspace and recovery drafts.', 'success');
 }
 
 function storedProjectPath() {
-  const path = localStorage.getItem(PROJECT_FOLDER_KEY);
+  const path = localStorage.getItem(PROJECT_FOLDER_KEY) || savedWorkbenchState.projectFolderPath;
   return path && path.trim() ? path : null;
 }
 
 function renderProjectTree() {
+  if (folderFilter.value !== folderFilterValue) folderFilter.value = folderFilterValue;
+  persistWorkbenchState();
   projectTree.replaceChildren();
   renderBookmarks();
   if (!projectFolder) {
@@ -1688,6 +1761,7 @@ function render() {
   renderLineNumbers();
   updateCursor();
   renderWritingProgress();
+  persistWorkbenchState();
   scheduleRecovery();
 }
 
@@ -2835,7 +2909,7 @@ function handleAction(action?: string) {
     case 'browser-home': browseHome(); break;
     case 'browser-documents': browseDocuments(); break;
     case 'new-browser-entry': void createBrowserEntry(); break;
-    case 'toggle-hidden-files': showHiddenFiles = !showHiddenFiles; void refreshProjectFolder(); showToast(showHiddenFiles ? 'Showing hidden files.' : 'Hiding hidden files.'); break;
+    case 'toggle-hidden-files': showHiddenFiles = !showHiddenFiles; persistWorkbenchState(); void refreshProjectFolder(); showToast(showHiddenFiles ? 'Showing hidden files.' : 'Hiding hidden files.'); break;
     case 'toggle-folder-bookmark': toggleFolderBookmark(); break;
     case 'save': void save(); break;
     case 'save-as': void saveAs(); break;
@@ -3049,7 +3123,7 @@ editorIndentSelect.addEventListener('change', () => { editorOptions = { ...edito
 editorTabSizeSelect.addEventListener('change', () => { const size = Number(editorTabSizeSelect.value); editorOptions = { ...editorOptions, tabSize: size === 4 || size === 8 ? size : 2 }; saveEditorOptions(); });
 editorLineEndingSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, lineEnding: editorLineEndingSelect.value === 'crlf' ? 'crlf' : 'lf' }; saveEditorOptions(); showToast(`New saves will use ${editorOptions.lineEnding.toUpperCase()} line endings.`); });
 editorSpellLanguageSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, spellLanguage: editorSpellLanguageSelect.value }; saveEditorOptions(); });
-folderFilter.addEventListener('input', () => { folderFilterValue = folderFilter.value; renderProjectTree(); });
+folderFilter.addEventListener('input', () => { folderFilterValue = folderFilter.value; persistWorkbenchState(); renderProjectTree(); });
 findInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); findNext(); } if (event.key === 'Escape') { closeFind(); } });
 replaceInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.shiftKey ? replaceAll() : replaceOne(); } if (event.key === 'Escape') { closeFind(); } });
 commandPaletteInput.addEventListener('input', () => { commandSelection = 0; renderCommandPalette(); });
@@ -3154,6 +3228,7 @@ async function startDragAndDrop() {
 }
 
 window.addEventListener('beforeunload', (event) => {
+  persistWorkbenchState();
   persistRecovery();
   captureTimeline('Before close');
   if (!documents.some((document) => document.content !== document.savedContent)) return;
