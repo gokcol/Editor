@@ -207,6 +207,7 @@ button { border: 0; cursor: pointer; }
 .folder-truncated { color: #b56b46; }
 
 .editor-pane, .preview-pane { display: flex; flex-direction: column; background: var(--paper); }
+.preview-pane[hidden], .preview-resizer[hidden], .view-switch[hidden] { display: none !important; }
 .editor-pane { border-right: 1px solid var(--line); }
 .media-pane { grid-column: 3 / 6; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--paper); }
 .media-pane[hidden] { display: none; }

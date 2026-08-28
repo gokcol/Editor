@@ -254,6 +254,8 @@ const secondaryEditor = required<HTMLTextAreaElement>('.editor-secondary');
 const lineNumbers = required<HTMLElement>('.line-numbers');
 const secondaryLineNumbers = required<HTMLElement>('.line-numbers-secondary');
 const preview = required<HTMLElement>('.markdown-preview');
+const previewPane = required<HTMLElement>('.preview-pane');
+const viewSwitch = required<HTMLElement>('.view-switch');
 const mediaPane = required<HTMLElement>('.media-pane');
 const mediaScroller = required<HTMLElement>('.media-scroller');
 const mediaStage = required<HTMLElement>('.media-stage');
@@ -1612,6 +1614,8 @@ function render() {
   const isMedia = isMediaDocument(documentState);
   if (!isMedia && !documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
   if (!isMedia && documentState.isMarkdown && !previewEnabled && viewMode !== 'edit') viewMode = 'edit';
+  if (isMedia || !documentState.isMarkdown) readingMode = false;
+  const hasMarkdownPreview = !isMedia && documentState.isMarkdown;
   shell.dataset.mode = viewMode;
   shell.classList.toggle('text-document', documentState.kind === 'text' && !documentState.isMarkdown);
   shell.classList.toggle('media-document', isMedia);
@@ -1619,6 +1623,9 @@ function render() {
   shell.classList.toggle('zen-mode', zenMode);
   shell.classList.toggle('reading-mode', readingMode && documentState.isMarkdown && !isMedia);
   mediaPane.hidden = !isMedia;
+  previewPane.hidden = !hasMarkdownPreview;
+  previewResizer.hidden = !hasMarkdownPreview;
+  viewSwitch.hidden = !hasMarkdownPreview;
   if (editor.value !== documentState.content) editor.value = documentState.content;
   if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
   document.title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
@@ -1641,8 +1648,10 @@ function render() {
     button.classList.toggle('selected', !isMedia && button.dataset.modeButton === viewMode);
   }
   applyPreviewLayout();
-  if (!isMedia) {
-    preview.innerHTML = documentState.isMarkdown ? renderMarkdown(documentState.content) : `<pre>${escapeHtml(documentState.content || 'Start writing…')}</pre>`;
+  if (hasMarkdownPreview) {
+    preview.innerHTML = renderMarkdown(documentState.content);
+  } else if (!isMedia) {
+    preview.replaceChildren();
   } else {
     void renderMediaDocument();
   }
