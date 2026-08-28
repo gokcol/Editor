@@ -141,6 +141,7 @@ app.innerHTML = `
     </header>
     <nav class="document-tabs" aria-label="Open documents">
       <div class="tab-list" role="tablist"></div>
+      <details class="open-tabs-menu" title="Open tabs" aria-label="Open tabs"><summary aria-label="Show all open tabs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h10"/><path d="m17 16 2 2 2-2"/></svg></summary><div class="open-tabs-list" role="menu"></div></details>
       <button class="tab-new" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab">+</button>
     </nav>
     <section class="toolbar" aria-label="Document controls">
@@ -220,6 +221,7 @@ app.innerHTML = `
         <div class="external-change" hidden><span></span><button data-action="reload-external">Reload</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Ignore</button></div>
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
         <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
+        <div class="empty-workspace" hidden><strong>No file open</strong><span>Create a note or open a file to begin.</span><div><button data-action="new-text">New text</button><button data-action="new-markdown">New Markdown</button><button data-action="open">Open file</button></div></div>
       </section>
       <div class="preview-resizer" role="separator" aria-label="Resize Markdown preview" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="760" tabindex="0"></div>
       <section class="preview-pane">
@@ -256,6 +258,7 @@ const secondaryLineNumbers = required<HTMLElement>('.line-numbers-secondary');
 const preview = required<HTMLElement>('.markdown-preview');
 const previewPane = required<HTMLElement>('.preview-pane');
 const viewSwitch = required<HTMLElement>('.view-switch');
+const emptyWorkspaceMessage = required<HTMLElement>('.empty-workspace');
 const mediaPane = required<HTMLElement>('.media-pane');
 const mediaScroller = required<HTMLElement>('.media-scroller');
 const mediaStage = required<HTMLElement>('.media-stage');
@@ -305,12 +308,16 @@ const timelinePanel = required<HTMLElement>('.timeline-panel');
 const timelineList = required<HTMLElement>('.timeline-list');
 const writingProgress = required<HTMLButtonElement>('.writing-progress');
 const tabList = required<HTMLElement>('.tab-list');
+const openTabsMenu = required<HTMLDetailsElement>('.open-tabs-menu');
+const openTabsList = required<HTMLElement>('.open-tabs-list');
 
 let nextDocumentId = 1;
 const firstDocument = blankDocument();
 let documents: TextDocument[] = [firstDocument];
 let activeDocumentId = firstDocument.id;
 let documentState: TextDocument = firstDocument;
+let workspaceEmpty = false;
+let draggedTabId: string | null = null;
 let viewMode: ViewMode = 'split';
 let projectFolder: ProjectFolder | null = null;
 let showHiddenFiles = false;
@@ -478,14 +485,14 @@ function setEditorSurface(next: string) {
 }
 
 function closeTransientMenus() {
-  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) menu.open = false;
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) menu.open = false;
 }
 
 function setupTransientMenus() {
-  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
+  for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) {
     menu.addEventListener('toggle', () => {
       if (!menu.open) return;
-      for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
+      for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance, .open-tabs-menu')) {
         if (other !== menu) other.open = false;
       }
     });
@@ -741,6 +748,7 @@ function restoreTimelineSnapshot(snapshot: TimelineSnapshot) {
 function activateDocument(id: string) {
   const next = documents.find((document) => document.id === id);
   if (!next || id === activeDocumentId) return;
+  workspaceEmpty = false;
   documentState = next;
   activeDocumentId = next.id;
   editor.value = next.content;
@@ -758,7 +766,8 @@ function activateDocument(id: string) {
 }
 
 function addDocument(next: TextDocument) {
-  documents = [...documents, next];
+  documents = workspaceEmpty ? [next] : [...documents, next];
+  workspaceEmpty = false;
   histories.set(next.id, { entries: [next.content], index: 0 });
   documentState = next;
   activeDocumentId = next.id;
@@ -991,6 +1000,11 @@ function readSession(): RestoredSession | null {
 }
 
 function persistRecovery() {
+  if (workspaceEmpty) {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(RECOVERY_KEY);
+    return;
+  }
   const textDocuments = documents.filter((document) => document.kind === 'text');
   if (!textDocuments.length) {
     localStorage.removeItem(SESSION_KEY);
@@ -1064,6 +1078,7 @@ function restoreSession() {
     savedContent: normaliseLineEndings(document.savedContent),
   }));
   if (!restored.length) return;
+  workspaceEmpty = false;
   histories.clear();
   documents = restored;
   for (const document of documents) histories.set(document.id, { entries: [document.content], index: 0 });
@@ -1242,6 +1257,7 @@ function browseDocuments() {
 }
 
 function commitDocument(next: TextDocument, resetHistory = true) {
+  workspaceEmpty = false;
   setCurrentDocument(next);
   editor.value = next.content;
   secondaryEditor.value = next.content;
@@ -1255,6 +1271,7 @@ function commitDocument(next: TextDocument, resetHistory = true) {
 function recordContent(content: string) {
   if (isMediaDocument(documentState)) return;
   if (content === documentState.content) return;
+  workspaceEmpty = false;
   setCurrentDocument({ ...documentState, content });
   if (editor.value !== content) editor.value = content;
   if (secondaryEditor.value !== content) secondaryEditor.value = content;
@@ -1620,20 +1637,25 @@ function render() {
   shell.classList.toggle('text-document', documentState.kind === 'text' && !documentState.isMarkdown);
   shell.classList.toggle('media-document', isMedia);
   shell.classList.toggle('editor-split', editorSplit);
+  shell.classList.toggle('empty-workspace', workspaceEmpty);
   shell.classList.toggle('zen-mode', zenMode);
   shell.classList.toggle('reading-mode', readingMode && documentState.isMarkdown && !isMedia);
   mediaPane.hidden = !isMedia;
+  emptyWorkspaceMessage.hidden = !workspaceEmpty;
+  editor.disabled = workspaceEmpty;
+  secondaryEditor.disabled = workspaceEmpty;
   previewPane.hidden = !hasMarkdownPreview;
   previewResizer.hidden = !hasMarkdownPreview;
   viewSwitch.hidden = !hasMarkdownPreview;
   if (editor.value !== documentState.content) editor.value = documentState.content;
   if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
   document.title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
-  required<HTMLElement>('.format-chip').textContent = documentKindLabel(documentState);
+  required<HTMLElement>('.format-chip').textContent = workspaceEmpty ? '—' : documentKindLabel(documentState);
+  required<HTMLElement>('.format-chip').hidden = workspaceEmpty;
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
-  required<HTMLElement>('.editor-mode-label').textContent = documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
-  required<HTMLElement>('.editor-status').textContent = isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved locally' : 'Ready';
-  required<HTMLElement>('.status-stats').textContent = isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
+  required<HTMLElement>('.editor-mode-label').textContent = workspaceEmpty ? 'No file open' : documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
+  required<HTMLElement>('.editor-status').textContent = workspaceEmpty ? '' : isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved locally' : 'Ready';
+  required<HTMLElement>('.status-stats').textContent = workspaceEmpty ? 'No open files' : isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
   encodingSelect.value = documentState.encoding;
   encodingSelect.closest<HTMLElement>('.encoding-control')?.toggleAttribute('hidden', isMedia);
@@ -1724,6 +1746,9 @@ function renderRecents() {
 
 function renderTabs() {
   tabList.replaceChildren();
+  openTabsList.replaceChildren();
+  openTabsMenu.hidden = workspaceEmpty || documents.length === 0;
+  if (workspaceEmpty) return;
   for (const document of documents) {
     const tab = window.document.createElement('div');
     const activate = window.document.createElement('button');
@@ -1734,6 +1759,7 @@ function renderTabs() {
     tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}`;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(document.id === activeDocumentId));
+    tab.draggable = true;
     activate.className = 'tab-activate';
     activate.type = 'button';
     activate.textContent = document.name;
@@ -1747,7 +1773,67 @@ function renderTabs() {
     close.addEventListener('click', () => closeDocument(document.id));
     tab.append(activate, close);
     tabList.append(tab);
+
+    const menuRow = window.document.createElement('div');
+    menuRow.className = `open-tabs-row${document.id === activeDocumentId ? ' active' : ''}`;
+    const menuActivate = window.document.createElement('button');
+    menuActivate.className = 'open-tabs-activate';
+    menuActivate.textContent = document.name;
+    menuActivate.title = document.path || document.name;
+    menuActivate.setAttribute('role', 'menuitem');
+    menuActivate.addEventListener('click', () => { openTabsMenu.open = false; activateDocument(document.id); });
+    const menuClose = window.document.createElement('button');
+    menuClose.className = 'open-tabs-close';
+    menuClose.textContent = '×';
+    menuClose.title = `Close ${document.name}`;
+    menuClose.setAttribute('aria-label', menuClose.title);
+    menuClose.addEventListener('click', () => { openTabsMenu.open = false; closeDocument(document.id); });
+    menuRow.append(menuActivate, menuClose);
+    openTabsList.append(menuRow);
+
+    tab.addEventListener('dragstart', (event) => {
+      if (event.target instanceof Element && event.target.closest('.tab-close')) { event.preventDefault(); return; }
+      draggedTabId = document.id;
+      tab.classList.add('dragging');
+      event.dataTransfer?.setData('text/plain', document.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    });
+    tab.addEventListener('dragover', (event) => {
+      if (!draggedTabId || draggedTabId === document.id) return;
+      event.preventDefault();
+      const before = event.clientX < tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2;
+      tab.classList.toggle('drop-before', before);
+      tab.classList.toggle('drop-after', !before);
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+    tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
+    tab.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const movedId = draggedTabId || event.dataTransfer?.getData('text/plain');
+      const before = event.clientX < tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2;
+      if (movedId) reorderTabs(movedId, document.id, before);
+      draggedTabId = null;
+      tab.classList.remove('drop-before', 'drop-after');
+    });
+    tab.addEventListener('dragend', () => {
+      draggedTabId = null;
+      for (const item of tabList.querySelectorAll('.document-tab')) item.classList.remove('dragging', 'drop-before', 'drop-after');
+    });
   }
+}
+
+function reorderTabs(movedId: string, targetId: string, before: boolean) {
+  if (movedId === targetId) return;
+  const moving = documents.find((document) => document.id === movedId);
+  const target = documents.find((document) => document.id === targetId);
+  if (!moving || !target) return;
+  const ordered = documents.filter((document) => document.id !== movedId);
+  let targetIndex = ordered.findIndex((document) => document.id === targetId);
+  if (!before) targetIndex += 1;
+  ordered.splice(Math.max(0, targetIndex), 0, moving);
+  documents = ordered;
+  renderTabs();
+  scheduleRecovery();
 }
 
 function escapeHtml(value: string) {
@@ -1989,6 +2075,7 @@ function enqueueExternalFiles(paths: string[]) {
 }
 
 function openResultInTab(result: OpenedDocument, replacePristineBlank = false) {
+  workspaceEmpty = false;
   const normalised = { ...result, content: normaliseLineEndings(result.content) };
   updateRecent(normalised);
   const alreadyOpen = documents.find((document) => document.path === normalised.path);
@@ -2030,6 +2117,7 @@ function openResultInTab(result: OpenedDocument, replacePristineBlank = false) {
 }
 
 async function saveAs() {
+  workspaceEmpty = false;
   if (isMediaDocument(documentState)) {
     await saveMediaAnnotations(true);
     return;
@@ -2079,6 +2167,7 @@ function closeDocument(id = activeDocumentId) {
     documents = [blank];
     documentState = blank;
     activeDocumentId = blank.id;
+    workspaceEmpty = true;
     histories.set(blank.id, { entries: [''], index: 0 });
     editor.value = blank.content;
     secondaryEditor.value = blank.content;
@@ -2770,7 +2859,7 @@ function handleAction(action?: string) {
 
 app.addEventListener('pointerdown', (event) => {
   if (!(event.target instanceof Element)) return;
-  if (event.target.closest('.theme-picker, .editor-appearance')) return;
+  if (event.target.closest('.theme-picker, .editor-appearance, .open-tabs-menu')) return;
   closeTransientMenus();
 });
 
@@ -2946,7 +3035,7 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !quickSwitcher.hidden) { event.preventDefault(); closeQuickSwitcher(); return; }
   if (event.key === 'Escape' && !timelinePanel.hidden) { event.preventDefault(); closeTimeline(); return; }
   if (event.key === 'Escape') {
-    const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open]'));
+    const hasOpenTransientMenu = Boolean(app!.querySelector<HTMLDetailsElement>('.theme-picker[open], .editor-appearance[open], .open-tabs-menu[open]'));
     if (hasOpenTransientMenu) {
       event.preventDefault();
       closeTransientMenus();
