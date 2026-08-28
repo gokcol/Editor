@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import Editor, { loader, type Monaco, type OnMount } from '@monaco-editor/react';
 import type * as MonacoEditor from 'monaco-editor';
@@ -522,14 +522,38 @@ type ProjectSearchHit = { node: FileNode; line: number; column: number; excerpt:
 type GitFileStatus = { path: string; index?: string; workingTree?: string; status?: string };
 type GitInfo = { branch?: string; branches?: string[]; files?: GitFileStatus[]; commits?: { hash: string; subject: string; author?: string; date?: string }[]; available?: boolean; message?: string };
 type QuickOpenResult = { id: string; label: string; detail: string; kind: 'tab' | 'file' | 'symbol' | 'line'; run: () => void };
+type ProjectTabSession = {
+  relativePath: string;
+  encoding?: CharacterEncoding;
+  pinned?: boolean;
+};
+type WorkbenchSession = {
+  projectRoot?: string;
+  projectTabs?: ProjectTabSession[];
+  activeProjectPath?: string;
+  collapsedPaths?: string[];
+  selectedFolderPath?: string;
+  zenMode?: boolean;
+  latexPreviewMode?: LatexRenderMode;
+  texPdfEngine?: TexPdfEngine;
+  previewBackground?: PreviewBackground;
+  pythonInspectorView?: 'output' | 'source';
+};
 
 const LEGACY_RECENT_PROJECTS_KEY = 'diagram-foundry:recent-projects';
 const LEGACY_RECENT_PROJECTS_MIGRATION_KEY = 'yedit:recents-native-migration-v1';
 const PALETTE_HISTORY_KEY = 'diagram-foundry:palette-history';
 const SHORTCUTS_KEY = 'diagram-foundry:shortcuts';
 const SCRATCH_SESSION_KEY = 'yedit:scratch-session-v1';
+const WORKBENCH_SESSION_KEY = 'yedit:workspace-session-v1';
 const MAX_SCRATCH_SESSION_DOCUMENTS = 12;
 const MAX_SCRATCH_SESSION_CHARACTERS = 1_500_000;
+const MAX_RESTORED_PROJECT_TABS = 30;
+// Fixed-size tabs stay easy to scan. When the strip fills, each step is a
+// 25% reduction; after the last step, the strip scrolls instead of shrinking
+// source names into illegibility.
+const TAB_WIDTHS = [205, 154, 116, 87] as const;
+const TAB_GAP = 5;
 const SHORTCUT_ACTIONS = [
   ['quickOpen', 'Quick Open'],
   ['palette', 'Command palette'],
@@ -571,11 +595,11 @@ function legacyRecentProjects() {
   }
 }
 
-function restoredScratchSession(fallback: DocumentModel): { documents: DocumentModel[]; activeId: string } {
+function restoredScratchSession(fallback: DocumentModel): { documents: DocumentModel[]; activeId: string; restored: boolean } {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SCRATCH_SESSION_KEY) || '{}');
     const candidate = parsed && typeof parsed === 'object' ? parsed as { documents?: unknown; activeId?: unknown } : {};
-    if (!Array.isArray(candidate.documents)) return { documents: [fallback], activeId: fallback.id };
+    if (!Array.isArray(candidate.documents)) return { documents: [fallback], activeId: fallback.id, restored: false };
     const documents = candidate.documents
       .filter((value): value is {
         id: string;
@@ -603,11 +627,77 @@ function restoredScratchSession(fallback: DocumentModel): { documents: DocumentM
         revision: typeof value.revision === 'number' && Number.isFinite(value.revision) ? Math.max(0, Math.round(value.revision)) : 0,
         pinned: value.pinned === true,
       }));
-    if (!documents.length) return { documents: [fallback], activeId: fallback.id };
+    if (!documents.length) return { documents: [fallback], activeId: fallback.id, restored: false };
     const requestedActive = typeof candidate.activeId === 'string' ? candidate.activeId : '';
-    return { documents, activeId: documents.some((document) => document.id === requestedActive) ? requestedActive : documents[0].id };
+    return { documents, activeId: documents.some((document) => document.id === requestedActive) ? requestedActive : documents[0].id, restored: true };
   } catch {
-    return { documents: [fallback], activeId: fallback.id };
+    return { documents: [fallback], activeId: fallback.id, restored: false };
+  }
+}
+
+function isProjectSessionPath(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 4_096
+    && !value.includes('\0')
+    && !value.startsWith('/')
+    && !value.split(/[\\/]+/).includes('..');
+}
+
+function readWorkbenchSession(): WorkbenchSession {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(WORKBENCH_SESSION_KEY) || '{}');
+    const candidate = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    const rawTabs = Array.isArray(candidate.projectTabs) ? candidate.projectTabs : [];
+    const projectTabs = rawTabs
+      .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+      .filter((value) => isProjectSessionPath(value.relativePath))
+      .slice(0, MAX_RESTORED_PROJECT_TABS)
+      .map((value) => ({
+        relativePath: value.relativePath as string,
+        ...(typeof value.encoding === 'string' && value.encoding ? { encoding: value.encoding } : {}),
+        ...(value.pinned === true ? { pinned: true } : {}),
+      }));
+    const rawCollapsed = Array.isArray(candidate.collapsedPaths) ? candidate.collapsedPaths : [];
+    const collapsedPaths = rawCollapsed.filter(isProjectSessionPath).slice(0, 1_000);
+    const projectRoot = typeof candidate.projectRoot === 'string' && candidate.projectRoot.length > 0 && candidate.projectRoot.length <= 4_096
+      ? candidate.projectRoot
+      : undefined;
+    const latexPreviewMode = candidate.latexPreviewMode === 'dvi' || candidate.latexPreviewMode === 'pdf'
+      ? candidate.latexPreviewMode
+      : undefined;
+    const texPdfEngine = candidate.texPdfEngine === 'pdflatex' || candidate.texPdfEngine === 'xelatex' || candidate.texPdfEngine === 'lualatex'
+      ? candidate.texPdfEngine
+      : undefined;
+    const previewBackground = candidate.previewBackground === 'grid' || candidate.previewBackground === 'checkerboard' || candidate.previewBackground === 'solid'
+      ? candidate.previewBackground
+      : undefined;
+    const pythonInspectorView = candidate.pythonInspectorView === 'output' || candidate.pythonInspectorView === 'source'
+      ? candidate.pythonInspectorView
+      : undefined;
+    return {
+      ...(projectRoot ? { projectRoot } : {}),
+      ...(projectTabs.length ? { projectTabs } : {}),
+      ...(isProjectSessionPath(candidate.activeProjectPath) ? { activeProjectPath: candidate.activeProjectPath } : {}),
+      ...(collapsedPaths.length ? { collapsedPaths } : {}),
+      ...(isProjectSessionPath(candidate.selectedFolderPath) ? { selectedFolderPath: candidate.selectedFolderPath } : {}),
+      ...(typeof candidate.zenMode === 'boolean' ? { zenMode: candidate.zenMode } : {}),
+      ...(latexPreviewMode ? { latexPreviewMode } : {}),
+      ...(texPdfEngine ? { texPdfEngine } : {}),
+      ...(previewBackground ? { previewBackground } : {}),
+      ...(pythonInspectorView ? { pythonInspectorView } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function rememberWorkbenchSession(session: WorkbenchSession) {
+  try {
+    window.localStorage.setItem(WORKBENCH_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // The project itself and native preferences remain fully usable if local
+    // browser storage is unavailable or has reached its quota.
   }
 }
 
@@ -681,6 +771,7 @@ function shortcutLabel(shortcut: string) {
 function App({ desktop }: { desktop: DesktopApi }) {
   const initialDocument = useMemo(() => makeBlankDocument(), []);
   const initialScratchSession = useMemo(() => restoredScratchSession(initialDocument), [initialDocument]);
+  const initialWorkbenchSession = useMemo(() => readWorkbenchSession(), []);
   const [project, setProject] = useState<Project | null>(null);
   const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
   const [isProjectTasksLoading, setIsProjectTasksLoading] = useState(false);
@@ -688,8 +779,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const [documents, setDocuments] = useState<DocumentModel[]>(initialScratchSession.documents);
   const [activeId, setActiveId] = useState(initialScratchSession.activeId);
   const [preview, setPreview] = useState<PreviewState>(EMPTY_PREVIEW);
-  const [latexPreviewMode, setLatexPreviewMode] = useState<LatexRenderMode>('pdf');
-  const [texPdfEngine, setTexPdfEngine] = useState<TexPdfEngine>('pdflatex');
+  const [latexPreviewMode, setLatexPreviewMode] = useState<LatexRenderMode>(initialWorkbenchSession.latexPreviewMode ?? 'pdf');
+  const [texPdfEngine, setTexPdfEngine] = useState<TexPdfEngine>(initialWorkbenchSession.texPdfEngine ?? 'pdflatex');
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_PANEL_LAYOUT);
   const [promptOpen, setPromptOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -707,11 +798,12 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const [toast, setToast] = useState<Toast>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsReady, setSettingsReady] = useState(false);
+  const [workspaceSessionReady, setWorkspaceSessionReady] = useState(false);
   const [systemAppearance, setSystemAppearance] = useState<PreviewAppearance>(() => window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
+  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set(initialWorkbenchSession.collapsedPaths ?? []));
   // The selected folder is both a visible navigation location and the default
   // destination for the next project file created from the explorer.
-  const [selectedFolderPath, setSelectedFolderPath] = useState('');
+  const [selectedFolderPath, setSelectedFolderPath] = useState(initialWorkbenchSession.selectedFolderPath ?? '');
   const [promptSpec, setPromptSpec] = useState({
     goal: '',
     audience: '',
@@ -757,7 +849,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const [taskOutput, setTaskOutput] = useState('No local task has run in this session.');
   const [isTaskRunning, setIsTaskRunning] = useState(false);
   const [pythonTask, setPythonTask] = useState<PythonTaskState>(EMPTY_PYTHON_TASK);
-  const [pythonInspectorView, setPythonInspectorView] = useState<'output' | 'source'>('output');
+  const [pythonInspectorView, setPythonInspectorView] = useState<'output' | 'source'>(initialWorkbenchSession.pythonInspectorView ?? 'output');
   const [outputViewerOpen, setOutputViewerOpen] = useState(false);
   const [outputViewerFullscreen, setOutputViewerFullscreen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
@@ -769,12 +861,16 @@ function App({ desktop }: { desktop: DesktopApi }) {
     try { return { ...DEFAULT_SHORTCUTS, ...JSON.parse(window.localStorage.getItem(SHORTCUTS_KEY) || '{}') }; } catch { return DEFAULT_SHORTCUTS; }
   });
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutActionId | null>(null);
-  const [zenMode, setZenMode] = useState(false);
+  const [zenMode, setZenMode] = useState(initialWorkbenchSession.zenMode ?? false);
   const [dragActive, setDragActive] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
-  const [previewBackground, setPreviewBackground] = useState<PreviewBackground>('grid');
+  const [previewBackground, setPreviewBackground] = useState<PreviewBackground>(initialWorkbenchSession.previewBackground ?? 'grid');
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [cursorLocation, setCursorLocation] = useState<CursorLocation>({ line: 1, column: 1 });
+  const [openTabsMenuOpen, setOpenTabsMenuOpen] = useState(false);
+  const [tabWidth, setTabWidth] = useState<number>(TAB_WIDTHS[0]);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [tabDropTarget, setTabDropTarget] = useState<{ id: string; placement: 'before' | 'after' } | null>(null);
 
   const changeEditorFontSize = useCallback((delta: number) => {
     setSettings((current) => ({
@@ -795,6 +891,131 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const localWritePathsRef = useRef(new Map<string, number>());
   const pendingRevealLineRef = useRef<number | null>(null);
   const externalOpenQueueRef = useRef(Promise.resolve());
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const openTabsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRestoreStartedRef = useRef(false);
+  const tabDragRef = useRef<{ id: string; pointerId: number; startX: number; dragging: boolean } | null>(null);
+  const suppressTabActivateRef = useRef<string | null>(null);
+
+  const reorderDocuments = useCallback((movedId: string, targetId: string, before: boolean) => {
+    if (movedId === targetId) return;
+    setDocuments((current) => {
+      const moving = current.find((document) => document.id === movedId);
+      if (!moving || !current.some((document) => document.id === targetId)) return current;
+      const next = current.filter((document) => document.id !== movedId);
+      let targetIndex = next.findIndex((document) => document.id === targetId);
+      if (targetIndex < 0) return current;
+      if (!before) targetIndex += 1;
+      next.splice(targetIndex, 0, moving);
+      return next;
+    });
+  }, []);
+
+  const beginTabDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, id: string) => {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest('.tab-close'))) return;
+    tabDragRef.current = { id, pointerId: event.pointerId, startX: event.clientX, dragging: false };
+  }, []);
+
+  const activateTab = useCallback((id: string) => {
+    if (suppressTabActivateRef.current === id) {
+      suppressTabActivateRef.current = null;
+      return;
+    }
+    setActiveId(id);
+  }, []);
+
+  useEffect(() => {
+    const clearDropTarget = () => {
+      setDraggingTabId(null);
+      setTabDropTarget(null);
+    };
+    const tabAtPointer = (event: PointerEvent) => document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-editor-tab-id]');
+    const trackDrag = (event: PointerEvent) => {
+      const drag = tabDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!drag.dragging && Math.abs(event.clientX - drag.startX) < 7) return;
+      drag.dragging = true;
+      event.preventDefault();
+      setDraggingTabId(drag.id);
+      const target = tabAtPointer(event);
+      const targetId = target?.dataset.editorTabId;
+      if (!target || !targetId || targetId === drag.id) {
+        setTabDropTarget(null);
+        return;
+      }
+      const bounds = target.getBoundingClientRect();
+      setTabDropTarget({ id: targetId, placement: event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after' });
+    };
+    const finishDrag = (event: PointerEvent) => {
+      const drag = tabDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      tabDragRef.current = null;
+      if (!drag.dragging) {
+        clearDropTarget();
+        return;
+      }
+      event.preventDefault();
+      suppressTabActivateRef.current = drag.id;
+      if (event.type !== 'pointercancel') {
+        const target = tabAtPointer(event);
+        const targetId = target?.dataset.editorTabId;
+        if (target && targetId && targetId !== drag.id) {
+          const bounds = target.getBoundingClientRect();
+          reorderDocuments(drag.id, targetId, event.clientX < bounds.left + bounds.width / 2);
+        }
+      }
+      clearDropTarget();
+    };
+    window.addEventListener('pointermove', trackDrag, true);
+    window.addEventListener('pointerup', finishDrag, true);
+    window.addEventListener('pointercancel', finishDrag, true);
+    return () => {
+      window.removeEventListener('pointermove', trackDrag, true);
+      window.removeEventListener('pointerup', finishDrag, true);
+      window.removeEventListener('pointercancel', finishDrag, true);
+    };
+  }, [reorderDocuments]);
+
+  useEffect(() => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    const updateWidth = () => {
+      const tabCount = Math.max(documents.length, 1);
+      const availableWidth = tabs.clientWidth;
+      const requiredWidth = (candidate: number) => tabCount * candidate + Math.max(0, tabCount - 1) * TAB_GAP;
+      const nextWidth = TAB_WIDTHS.find((candidate) => requiredWidth(candidate) <= availableWidth)
+        ?? TAB_WIDTHS[TAB_WIDTHS.length - 1];
+      setTabWidth((current) => current === nextWidth ? current : nextWidth);
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(tabs);
+    window.addEventListener('resize', updateWidth);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateWidth);
+    };
+  }, [documents.length]);
+
+  useEffect(() => {
+    if (!openTabsMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !openTabsPopoverRef.current?.contains(event.target)) setOpenTabsMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenTabsMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [openTabsMenuOpen]);
+
+  useEffect(() => {
+    if (!documents.length) setOpenTabsMenuOpen(false);
+  }, [documents.length]);
 
   useEffect(() => {
     // Monaco rejects an internal cancellation promise while disposing a model
@@ -1404,6 +1625,121 @@ function App({ desktop }: { desktop: DesktopApi }) {
       : new Set([...current].filter((relativePath) => directories.has(relativePath))));
     setSelectedFolderPath((current) => resetLocation || !directories.has(current) ? '' : current);
   }, []);
+
+  // Projects, tabs, tree location, and a few transient viewing choices are
+  // deliberately restored from a small renderer-side session. Panel geometry
+  // and visibility already live in the native settings store, so both sources
+  // cooperate without duplicating a preference schema. A missing folder or a
+  // file removed outside Yedit is simply skipped instead of blocking launch.
+  useEffect(() => {
+    if (!settingsReady || workspaceRestoreStartedRef.current) return;
+    workspaceRestoreStartedRef.current = true;
+    let cancelled = false;
+
+    const finish = () => {
+      if (!cancelled) setWorkspaceSessionReady(true);
+    };
+
+    const restore = async () => {
+      const root = initialWorkbenchSession.projectRoot;
+      if (!root) {
+        finish();
+        return;
+      }
+
+      try {
+        const restoredProject = await desktop.project.refresh(root);
+        if (cancelled) return;
+        const sourceByPath = new Map(
+          flattenFiles(restoredProject.tree)
+            .filter((node) => node.kind === 'file' && node.supported)
+            .map((node) => [node.relativePath, node]),
+        );
+        const seenPaths = new Set<string>();
+        const requestedTabs = (initialWorkbenchSession.projectTabs ?? [])
+          .filter((tab) => sourceByPath.has(tab.relativePath))
+          .filter((tab) => {
+            if (seenPaths.has(tab.relativePath)) return false;
+            seenPaths.add(tab.relativePath);
+            return true;
+          })
+          .slice(0, MAX_RESTORED_PROJECT_TABS);
+        const reopenedTabs: DocumentModel[] = [];
+        for (const tab of requestedTabs) {
+          const node = sourceByPath.get(tab.relativePath);
+          if (!node) continue;
+          try {
+            const source = await desktop.project.readFile(restoredProject.root, tab.relativePath, tab.encoding ?? 'auto');
+            reopenedTabs.push({
+              id: `file-${crypto.randomUUID()}`,
+              name: node.name,
+              sourceType: node.sourceType ?? sourceTypeForName(node.name),
+              value: source.content,
+              encoding: source.encoding,
+              relativePath: tab.relativePath,
+              dirty: false,
+              revision: 0,
+              pinned: tab.pinned === true,
+            });
+          } catch {
+            // The project tree may change between refresh and read. Continue
+            // restoring the remaining tabs, just as a normal editor would.
+          }
+        }
+        if (cancelled) return;
+
+        const directories = folderPaths(restoredProject.tree);
+        setProject(restoredProject);
+        setCollapsedPaths(new Set((initialWorkbenchSession.collapsedPaths ?? []).filter((path) => directories.has(path))));
+        setSelectedFolderPath(directories.has(initialWorkbenchSession.selectedFolderPath ?? '') ? initialWorkbenchSession.selectedFolderPath ?? '' : '');
+
+        if (reopenedTabs.length) {
+          const scratchTabs = initialScratchSession.restored ? initialScratchSession.documents : [];
+          const restoredDocuments = [...reopenedTabs, ...scratchTabs];
+          const projectActive = reopenedTabs.find((document) => document.relativePath === initialWorkbenchSession.activeProjectPath);
+          const scratchActive = scratchTabs.find((document) => document.id === initialScratchSession.activeId);
+          setDocuments(restoredDocuments);
+          setActiveId(projectActive?.id ?? scratchActive?.id ?? reopenedTabs[0].id);
+          setPreview(EMPTY_PREVIEW);
+        }
+        void refreshRecentProjects();
+      } catch {
+        // A deleted or disconnected previous folder should never make launch
+        // feel like a failure. The scratch workspace remains available.
+      } finally {
+        finish();
+      }
+    };
+
+    void restore();
+    return () => { cancelled = true; };
+  }, [desktop.project, initialScratchSession, initialWorkbenchSession, refreshRecentProjects, settingsReady]);
+
+  useEffect(() => {
+    if (!workspaceSessionReady) return;
+    const projectTabs = project
+      ? documents
+        .filter((document) => Boolean(document.relativePath))
+        .slice(0, MAX_RESTORED_PROJECT_TABS)
+        .map((document) => ({
+          relativePath: document.relativePath!,
+          ...(document.encoding ? { encoding: document.encoding } : {}),
+          ...(document.pinned ? { pinned: true } : {}),
+        }))
+      : [];
+    rememberWorkbenchSession({
+      ...(project ? { projectRoot: project.root } : {}),
+      ...(projectTabs.length ? { projectTabs } : {}),
+      ...(project && activeDocument?.relativePath ? { activeProjectPath: activeDocument.relativePath } : {}),
+      ...(collapsedPaths.size ? { collapsedPaths: [...collapsedPaths] } : {}),
+      ...(selectedFolderPath ? { selectedFolderPath } : {}),
+      zenMode,
+      latexPreviewMode,
+      texPdfEngine,
+      previewBackground,
+      pythonInspectorView,
+    });
+  }, [activeDocument?.relativePath, collapsedPaths, documents, latexPreviewMode, previewBackground, project, pythonInspectorView, selectedFolderPath, texPdfEngine, workspaceSessionReady, zenMode]);
 
   const hydrateProject = useCallback(async (openedProject: Project) => {
     const sourceFiles = flattenFiles(openedProject.tree).filter((item) => item.supported);
@@ -3681,22 +4017,64 @@ function App({ desktop }: { desktop: DesktopApi }) {
 
         <section className="editor-shell">
           <div className="tab-strip">
-            <div className="tabs">
-              {documents.map((document) => (
-                <button
+            <div className="tabs" ref={tabsRef} role="tablist" aria-label="Open source files" style={{ '--editor-tab-width': `${tabWidth}px` } as CSSProperties}>
+              {documents.map((document) => {
+                const isActive = document.id === activeDocument?.id;
+                const dropPlacement = tabDropTarget?.id === document.id ? tabDropTarget.placement : undefined;
+                return <div
                   key={document.id}
-                  className={`editor-tab ${document.id === activeDocument.id ? 'selected' : ''}${document.pinned ? ' pinned' : ''}`}
-                  onClick={() => setActiveId(document.id)}
-                  title={document.pinned ? `${document.name} · pinned` : document.name}
+                  className={`editor-tab${isActive ? ' selected' : ''}${document.pinned ? ' pinned' : ''}${draggingTabId === document.id ? ' dragging' : ''}${dropPlacement ? ` drop-${dropPlacement}` : ''}`}
+                  data-editor-tab-id={document.id}
+                  onPointerDown={(event) => beginTabDrag(event, document.id)}
                 >
-                  <span className={`file-badge ${SOURCE_META[document.sourceType].color}`}>{SOURCE_META[document.sourceType].short}</span>
-                  <span className="tab-name">{document.name}</span>
-                  {document.pinned && <span className="tab-pin" aria-label="Pinned tab" title="Pinned tab">⌖</span>}
-                  {document.dirty && <span className="dirty-dot" title="Unsaved changes"></span>}
-                  <span className="tab-close" onClick={(event) => closeDocument(document, event)} title="Close tab">×</span>
-                </button>
-              ))}
+                  <button
+                    type="button"
+                    className="tab-activate"
+                    role="tab"
+                    aria-selected={isActive}
+                    onClick={() => activateTab(document.id)}
+                    title={`${document.name}${document.pinned ? ' · pinned' : ''}${document.relativePath ? `\n${document.relativePath}` : ''}`}
+                  >
+                    <span className={`file-badge ${SOURCE_META[document.sourceType].color}`}>{SOURCE_META[document.sourceType].short}</span>
+                    <span className="tab-name">{document.name}</span>
+                    {document.pinned && <span className="tab-pin" aria-label="Pinned tab" title="Pinned tab">⌖</span>}
+                    {document.dirty && <span className="dirty-dot" title="Unsaved changes"></span>}
+                  </button>
+                  <button type="button" className="tab-close" onClick={() => closeDocument(document)} title={`Close ${document.name}`} aria-label={`Close ${document.name}`}>×</button>
+                </div>;
+              })}
             </div>
+            {documents.length > 0 && <div className="open-tabs-popover" ref={openTabsPopoverRef}>
+              <button
+                type="button"
+                className="open-tabs-toggle"
+                onClick={() => setOpenTabsMenuOpen((current) => !current)}
+                aria-expanded={openTabsMenuOpen}
+                aria-haspopup="menu"
+                title="Show all open files"
+                aria-label="Show all open files"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h10M5 17h14M17 10l2 2-2 2" /></svg>
+              </button>
+              {openTabsMenuOpen && <div className="open-tabs-menu" role="menu" aria-label="Open files">
+                {documents.map((document) => <div key={document.id} className={`open-tabs-row${document.id === activeDocument?.id ? ' active' : ''}`}>
+                  <button
+                    type="button"
+                    className="open-tabs-activate"
+                    role="menuitem"
+                    onClick={() => { setActiveId(document.id); setOpenTabsMenuOpen(false); }}
+                    title={document.relativePath ?? document.name}
+                  >{document.name}</button>
+                  <button
+                    type="button"
+                    className="open-tabs-close"
+                    onClick={() => { closeDocument(document); setOpenTabsMenuOpen(false); }}
+                    title={`Close ${document.name}`}
+                    aria-label={`Close ${document.name}`}
+                  >×</button>
+                </div>)}
+              </div>}
+            </div>}
             <button className="new-tab" onClick={() => openNewSource()} title="New source tab — choose a format" aria-label="New source tab">＋</button>
             {(activeDocument.sourceType === 'latex' || activeDocument.sourceType === 'tikz' || activeDocument.sourceType === 'python' || taskManagedLatex) && <div className="tab-tools">
               {activeDocument.sourceType === 'latex' && !taskManagedLatex && <div className="latex-preview-mode" role="group" aria-label="LaTeX preview format">

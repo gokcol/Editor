@@ -94,9 +94,9 @@ button { border: 0; cursor: pointer; }
 .open-tabs-toggle:hover, .open-tabs-toggle:focus-visible { background: var(--soft); color: var(--aqua); }
 .open-tabs-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .open-tabs-menu { position: absolute; z-index: 16; top: calc(100% + 5px); right: 0; display: grid; width: max-content; max-width: calc(100vw - 32px); max-height: min(420px, 60vh); overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); box-shadow: var(--shadow); }
-.open-tabs-row { display: flex; width: max-content; min-width: 0; max-width: 100%; border-radius: 6px; }
+.open-tabs-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px; width: 100%; min-width: 0; max-width: 100%; border-radius: 6px; }
 .open-tabs-row.active { background: color-mix(in srgb, var(--aqua) 10%, transparent); }
-.open-tabs-activate { min-width: 0; flex: 0 1 auto; overflow: hidden; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+.open-tabs-activate { width: 100%; min-width: 0; overflow: hidden; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
 .open-tabs-activate:hover { color: var(--aqua); }
 .open-tabs-close { display: grid; flex: 0 0 26px; width: 26px; margin: 2px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
 .open-tabs-close:hover { background: var(--soft); color: var(--ink); }
