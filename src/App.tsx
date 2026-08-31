@@ -96,6 +96,31 @@ const ABOUT_DEPENDENCIES = [
   { name: 'DOMPurify', license: 'MPL-2.0 or Apache-2.0', purpose: 'HTML sanitization' },
   { name: 'TypeScript and Vite', license: 'Apache-2.0 / MIT', purpose: 'build tooling' },
 ] as const;
+type HelpTopic = 'getting-started' | 'shortcuts';
+const RELEASE_HISTORY = [
+  {
+    version: '1.0.0',
+    label: 'Current release',
+    title: 'A complete local workbench',
+    description: 'Yedit 1.0 turns the early source editor into a dependable daily workspace for technical writing, diagrams, data, and code.',
+    highlights: [
+      'Open folders or individual files, restore your workspace, and keep source in ordinary portable files.',
+      'Edit LaTeX, TikZ, MetaFont, Markdown, JSON, YAML, Python, Fortran, web files, and plain text with language-aware editing.',
+      'Build and inspect local output: XeLaTeX and LuaLaTeX PDFs, MetaFont proofs and TTF conversion, Python run/test output, and exportable previews.',
+      'Fine-tune the workspace with source-type controls, autosave, encoding choices, adjustable panels, editor canvas styling, and configurable shortcuts.',
+    ],
+  },
+  {
+    version: '0.3.3',
+    label: 'Previous release',
+    title: 'The preview foundation',
+    description: 'The last pre-1.0 build established Yedit as a local-first source editor with project folders, previews, settings, and a native menu surface.',
+    highlights: [
+      'A focused source editor and companion preview for visual checking.',
+      'Local preferences, project navigation, and a compact workflow for everyday files.',
+    ],
+  },
+] as const;
 
 const EMPTY_PREVIEW: PreviewState = { status: 'idle', revision: -1 };
 const DEFAULT_SETTINGS: AppSettings = {
@@ -840,6 +865,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const [quickOpenQuery, setQuickOpenQuery] = useState('');
   const [templateGalleryOpen, setTemplateGalleryOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [helpTopic, setHelpTopic] = useState<HelpTopic | null>(null);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [isGitLoading, setIsGitLoading] = useState(false);
@@ -877,6 +904,24 @@ function App({ desktop }: { desktop: DesktopApi }) {
       ...current,
       editorFontSize: clamp(current.editorFontSize + delta, 11, 24),
     }));
+  }, []);
+
+  const openAbout = useCallback(() => {
+    setHelpTopic(null);
+    setWhatsNewOpen(false);
+    setAboutOpen(true);
+  }, []);
+
+  const openHelp = useCallback((topic: HelpTopic) => {
+    setAboutOpen(false);
+    setWhatsNewOpen(false);
+    setHelpTopic(topic);
+  }, []);
+
+  const openWhatsNew = useCallback(() => {
+    setAboutOpen(false);
+    setHelpTopic(null);
+    setWhatsNewOpen(true);
   }, []);
 
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
@@ -3387,7 +3432,10 @@ function App({ desktop }: { desktop: DesktopApi }) {
     { id: 'reset-layout', label: 'Reset panel layout', hint: '', group: 'View', run: resetPanelLayout },
     { id: 'prompt-studio', label: 'Open Prompt Studio', hint: '⌘⇧L', group: 'View', run: () => setPromptOpen(true) },
     { id: 'settings', label: 'Open settings', hint: '⌘,', group: 'View', run: () => setSettingsOpen(true) },
-    { id: 'about', label: 'About Yedit', hint: '', group: 'Help', run: () => setAboutOpen(true) },
+    { id: 'help-getting-started', label: 'Yedit Help: Getting Started', hint: '', group: 'Help', run: () => openHelp('getting-started') },
+    { id: 'help-shortcuts', label: 'Yedit Help: Keyboard Shortcuts', hint: '', group: 'Help', run: () => openHelp('shortcuts') },
+    { id: 'whats-new', label: `What's New in Yedit ${APP_VERSION}`, hint: '', group: 'Help', run: openWhatsNew },
+    { id: 'about', label: 'About Yedit', hint: '', group: 'Help', run: openAbout },
     ...enabledSourceTypes.map((type, index) => ({
       id: `select-${type}`,
       label: `New ${SOURCE_META[type].label} source`,
@@ -3397,7 +3445,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openGitPanel, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openAbout, openGitPanel, openHelp, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, openWhatsNew, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -3410,6 +3458,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
   useEffect(() => {
     const unsubscribe = desktop.onMenuAction((action) => {
       if (action === 'palette') { setPaletteOpen(true); return; }
+      if (action === 'help-about') { openAbout(); return; }
       const requestedType = /^(?:new|select)-(.+)$/.exec(action)?.[1];
       if (requestedType && isKnownSourceType(requestedType) && !isSourceTypeEnabled(requestedType)) {
         showToast(`${SOURCE_META[requestedType].label} is disabled in Settings.`, 'info');
@@ -3420,7 +3469,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
     });
     desktop.rendererReady();
     return unsubscribe;
-  }, [isSourceTypeEnabled, showToast]);
+  }, [isSourceTypeEnabled, openAbout, showToast]);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -3511,6 +3560,18 @@ function App({ desktop }: { desktop: DesktopApi }) {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [aboutOpen]);
+
+  useEffect(() => {
+    if (!helpTopic && !whatsNewOpen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setHelpTopic(null);
+      setWhatsNewOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [helpTopic, whatsNewOpen]);
 
   useEffect(() => {
     if (!outputViewerOpen || outputViewerFullscreen) return undefined;
@@ -3730,7 +3791,71 @@ function App({ desktop }: { desktop: DesktopApi }) {
             </dl>
           </details>
         </div>
-        <footer className="about-footer"><span>© {COPYRIGHT_YEAR} Orhan Gökçöl</span><button type="button" className="accent-button" onClick={() => setAboutOpen(false)}>Done</button></footer>
+        <footer className="about-footer"><span>© {COPYRIGHT_YEAR} Orhan Gökçöl</span><div className="about-footer-actions"><button type="button" className="outline-button" onClick={openWhatsNew}>What’s New</button><button type="button" className="accent-button" onClick={() => setAboutOpen(false)}>Done</button></div></footer>
+      </section>
+    </div>
+  );
+
+  const helpDialog = helpTopic && (
+    <div className="modal-backdrop help-backdrop" onMouseDown={() => setHelpTopic(null)}>
+      <section className="workbench-modal help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title" aria-describedby="help-description" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div><p className="eyebrow">Yedit help</p><h2 id="help-title">{helpTopic === 'getting-started' ? 'Getting started' : 'Keyboard shortcuts'}</h2></div>
+          <button type="button" className="icon-button" autoFocus onClick={() => setHelpTopic(null)} title="Close Yedit help" aria-label="Close Yedit help">×</button>
+        </div>
+        {helpTopic === 'getting-started' ? (
+          <div className="help-content">
+            <p id="help-description" className="help-lede">Yedit keeps the source in your own folders. Start with a folder for a project, or open one file when that is all you need.</p>
+            <ol className="help-steps">
+              <li><span>1</span><div><strong>Open your work</strong><p>Use File → Open Folder for a project tree, or File → Open File for a single document. Yedit remembers recent locations and restores the workspace you were using.</p></div></li>
+              <li><span>2</span><div><strong>Choose a source type</strong><p>New Source creates an empty tab. LaTeX, TikZ, MetaFont, Markdown, data, code, and plain-text files get their matching editing support when opened.</p></div></li>
+              <li><span>3</span><div><strong>Edit and save locally</strong><p>Save writes only to the file you chose. Autosave, local snapshots, text encodings, font size, themes, and panels can all be adjusted in Settings.</p></div></li>
+              <li><span>4</span><div><strong>Preview or run when useful</strong><p>Use Render for visual output, Run Build for local build profiles, and the Python output panel for scripts. Safe Mode keeps local runners and Git changes off until a folder is trusted.</p></div></li>
+            </ol>
+            <aside className="help-callout"><span>Tip</span><p>Press <kbd>⌘⇧P</kbd> to find any command by name. It is the quickest way to discover a feature without changing your layout.</p></aside>
+          </div>
+        ) : (
+          <div className="help-content">
+            <p id="help-description" className="help-lede">These are the standard macOS shortcuts. Quick Open, Command Palette, Prompt Studio, project search, outline, Zen, and builds can be changed in Settings.</p>
+            <div className="shortcut-guide" role="list" aria-label="Yedit keyboard shortcuts">
+              {[
+                ['New source', '⌘N', 'Create an empty source tab'],
+                ['Open file', '⌘O', 'Open one file from disk'],
+                ['Open folder', '⌘⇧O', 'Open a project workspace'],
+                ['Save / Save As', '⌘S / ⌘⇧S', 'Write the active source'],
+                ['Quick Open', shortcutLabel(shortcutBindings.quickOpen), 'Switch to an open or project file'],
+                ['Command Palette', shortcutLabel(shortcutBindings.palette), 'Search every Yedit command'],
+                ['Render preview', '⌘↵', 'Render the active source'],
+                ['Run build', shortcutLabel(shortcutBindings.build), 'Run the active local build profile'],
+                ['Editor font size', '⌘− / ⌘+ / ⌘0', 'Smaller, larger, or reset'],
+                ['Settings', '⌘,', 'Open local preferences'],
+              ].map(([label, keys, description]) => <div key={label} role="listitem"><div><strong>{label}</strong><small>{description}</small></div><kbd>{keys}</kbd></div>)}
+            </div>
+          </div>
+        )}
+        <footer className="about-footer"><span>Help is available from the macOS Help menu and Command Palette.</span><div className="about-footer-actions"><button type="button" className="outline-button" onClick={openWhatsNew}>What’s New</button><button type="button" className="accent-button" onClick={() => setHelpTopic(null)}>Done</button></div></footer>
+      </section>
+    </div>
+  );
+
+  const whatsNewDialog = whatsNewOpen && (
+    <div className="modal-backdrop release-backdrop" onMouseDown={() => setWhatsNewOpen(false)}>
+      <section className="workbench-modal release-modal" role="dialog" aria-modal="true" aria-labelledby="release-title" aria-describedby="release-description" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div><p className="eyebrow">Release notes</p><h2 id="release-title">What’s New</h2></div>
+          <button type="button" className="icon-button" autoFocus onClick={() => setWhatsNewOpen(false)} title="Close What’s New" aria-label="Close What’s New">×</button>
+        </div>
+        <div className="release-content">
+          <div className="release-hero"><span>Yedit <strong>1.0</strong></span><p id="release-description">Yedit 1.0 is the major release following the v0.3.3 preview. It brings the local-first editor into a complete, daily-use workbench.</p></div>
+          <ol className="release-history" aria-label="Yedit version history">
+            {RELEASE_HISTORY.map((release, index) => <li key={release.version} className={index === 0 ? 'current' : ''}>
+              <div className="release-heading"><div><strong>v{release.version}</strong><span>{release.label}</span></div><h3>{release.title}</h3></div>
+              <p>{release.description}</p>
+              <ul>{release.highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
+            </li>)}
+          </ol>
+        </div>
+        <footer className="about-footer"><span>Release notes stay available here for quick comparison.</span><div className="about-footer-actions"><button type="button" className="outline-button" onClick={() => openHelp('getting-started')}>Help</button><button type="button" className="accent-button" onClick={() => setWhatsNewOpen(false)}>Done</button></div></footer>
       </section>
     </div>
   );
@@ -3893,6 +4018,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
         {newSourceDialog}
         {recentProjectsDialog}
         {aboutDialog}
+        {helpDialog}
+        {whatsNewDialog}
       </main>
     );
   }
@@ -4334,6 +4461,10 @@ function App({ desktop }: { desktop: DesktopApi }) {
 
       {aboutDialog}
 
+      {helpDialog}
+
+      {whatsNewDialog}
+
       {recentProjectsDialog}
 
       {encodingOpen && (
@@ -4473,7 +4604,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
                 <input type="range" min="9" max="18" step="1" value={settings.referenceFontSize} onChange={(event) => setSettings((current) => ({ ...current, referenceFontSize: Number(event.target.value) }))} />
               </label>
             </div>
-            <footer className="settings-footer"><span>Syntax coloring, snippets, hover help, folding, and local diagnostics support diagram, document, data, and everyday programming sources.</span><div><button type="button" className="outline-button settings-about-button" onClick={() => { setSettingsOpen(false); setAboutOpen(true); }}>About Yedit</button><button className="accent-button" onClick={() => setSettingsOpen(false)}>Done</button></div></footer>
+            <footer className="settings-footer"><span>Syntax coloring, snippets, hover help, folding, and local diagnostics support diagram, document, data, and everyday programming sources.</span><div><button type="button" className="outline-button settings-about-button" onClick={() => { setSettingsOpen(false); openAbout(); }}>About Yedit</button><button className="accent-button" onClick={() => setSettingsOpen(false)}>Done</button></div></footer>
           </section>
         </div>
       )}

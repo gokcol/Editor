@@ -9,6 +9,7 @@ import './styles.css';
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
 type AnnotationKind = 'highlight' | 'note';
+type HelpSection = 'getting-started' | 'shortcuts' | 'whats-new' | 'about';
 type MediaAnnotation = { id: string; kind: AnnotationKind; x: number; y: number; width?: number; height?: number; text?: string; color: string; page?: number };
 type AnnotationDrag =
   | { mode: 'move'; id: string; pointerId: number; dx: number; dy: number }
@@ -83,6 +84,7 @@ const TIMELINE_KEY_PREFIX = '7txt:document-timeline:v1:';
 const SESSION_KEY = '7txt:workspace-session:v1';
 const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
+const APP_VERSION = '1.0.0';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_RECOVERY_BYTES = 3 * 1024 * 1024;
@@ -264,6 +266,12 @@ app.innerHTML = `
     <section class="command-palette" hidden aria-label="Command Palette"><div class="command-palette-card"><input type="search" placeholder="Type a command…" aria-label="Search commands" spellcheck="false" /><div class="command-list"></div><small>↑↓ navigate · Enter run · Esc close</small></div></section>
     <section class="quick-switcher overlay-panel" hidden aria-label="Quick switcher"><div class="overlay-card"><div class="overlay-heading"><strong>Quick switcher</strong><button data-action="close-quick-switch" aria-label="Close quick switcher">×</button></div><input type="search" placeholder="Open tabs, recents, bookmarks, or this folder…" aria-label="Quick switcher search" spellcheck="false" /><div class="quick-switch-list"></div><small>⌘K opens this switcher · Esc closes</small></div></section>
     <section class="timeline-panel overlay-panel" hidden aria-label="Document timeline"><div class="overlay-card timeline-card"><div class="overlay-heading"><strong>Local timeline</strong><button data-action="close-timeline" aria-label="Close timeline">×</button></div><p class="timeline-intro">Saved locally in this browser profile. Restore a snapshot into the current tab.</p><div class="timeline-list"></div></div></section>
+    <section class="help-panel overlay-panel" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="overlay-card help-card">
+        <div class="overlay-heading"><div class="help-title"><strong id="help-title">7TXT Help</strong><span>Version ${APP_VERSION}</span></div><button data-action="close-help" aria-label="Close Help">×</button></div>
+        <div class="help-layout"><nav class="help-nav" aria-label="Help topics"><button type="button" data-help-section="getting-started">Getting started</button><button type="button" data-help-section="shortcuts">Keyboard shortcuts</button><button type="button" data-help-section="whats-new">What’s new</button><button type="button" data-help-section="about">About 7TXT</button></nav><div class="help-content" tabindex="0"></div></div>
+      </div>
+    </section>
   </main>
 `;
 
@@ -324,6 +332,8 @@ const quickSwitchInput = required<HTMLInputElement>('.quick-switcher input');
 const quickSwitchList = required<HTMLElement>('.quick-switch-list');
 const timelinePanel = required<HTMLElement>('.timeline-panel');
 const timelineList = required<HTMLElement>('.timeline-list');
+const helpPanel = required<HTMLElement>('.help-panel');
+const helpContent = required<HTMLElement>('.help-content');
 const writingProgress = required<HTMLButtonElement>('.writing-progress');
 const tabList = required<HTMLElement>('.tab-list');
 const openTabsToggle = required<HTMLButtonElement>('.open-tabs-toggle');
@@ -368,6 +378,7 @@ let recoveryTimer: number | undefined;
 let timelineTimer: number | undefined;
 let autosaveInFlight = false;
 let commandSelection = 0;
+let helpSection: HelpSection = 'getting-started';
 let mediaPdf: PDFDocumentProxy | null = null;
 let mediaPdfPath: string | undefined;
 let mediaPage = 1;
@@ -820,6 +831,87 @@ function openTimeline() {
 
 function closeTimeline() {
   timelinePanel.hidden = true;
+  if (!isMediaDocument(documentState)) editor.focus();
+}
+
+function isHelpSection(value: string | undefined): value is HelpSection {
+  return value === 'getting-started' || value === 'shortcuts' || value === 'whats-new' || value === 'about';
+}
+
+function helpMarkup(section: HelpSection) {
+  switch (section) {
+    case 'shortcuts':
+      return `
+        <section class="help-topic" aria-labelledby="help-topic-title">
+          <p class="help-eyebrow">MOVE QUICKLY</p>
+          <h2 id="help-topic-title">Keyboard shortcuts</h2>
+          <p class="help-lede">The essentials are intentionally familiar on macOS. Use <kbd>Esc</kbd> to dismiss any sheet, menu, Focused Reading, or Zen mode.</p>
+          <div class="shortcut-list">
+            <div><kbd>⌘N</kbd><span>New text tab</span></div><div><kbd>⇧⌘N</kbd><span>New Markdown tab</span></div>
+            <div><kbd>⌘O</kbd><span>Open a file</span></div><div><kbd>⇧⌘O</kbd><span>Open a folder</span></div>
+            <div><kbd>⌘S</kbd><span>Save</span></div><div><kbd>⇧⌘S</kbd><span>Save As</span></div>
+            <div><kbd>⌘W</kbd><span>Close current tab</span></div><div><kbd>⌘F</kbd><span>Find</span></div>
+            <div><kbd>⌘L</kbd><span>Go to line</span></div><div><kbd>⌘K</kbd><span>Quick switcher</span></div>
+            <div><kbd>⇧⌘P</kbd><span>Command Palette</span></div><div><kbd>⇧⌘B</kbd><span>Show or hide Files sidebar</span></div>
+            <div><kbd>⌘1</kbd><span>Edit view</span></div><div><kbd>⌘2</kbd><span>Split Markdown preview</span></div>
+            <div><kbd>⌘3</kbd><span>Markdown preview</span></div><div><kbd>⌘Z</kbd><span>Undo</span></div>
+          </div>
+          <p class="help-note">Use the Command Palette for less-frequent actions such as export, typography, reflow, themes, and document tools.</p>
+        </section>`;
+    case 'whats-new':
+      return `
+        <section class="help-topic" aria-labelledby="help-topic-title">
+          <p class="help-eyebrow">RELEASE NOTES</p>
+          <h2 id="help-topic-title">What’s new in 1.0.0</h2>
+          <p class="help-lede">This is the practical difference between the early <strong>0.1.10</strong> build and the finished <strong>1.0.0</strong> editor.</p>
+          <div class="release-history">
+            <article class="release-entry current"><div class="release-version">1.0.0</div><div><h3>A complete everyday workspace</h3><ul><li>Reliable, reorderable tabs, an all-tabs list, bulk close commands, and restored workspace state.</li><li>A navigable folder browser with recents, bookmarks, home/Documents shortcuts, and broad text-file opening based on content rather than filename extension.</li><li>Markdown tables, a resizable preview, Markdown-only Focused Reading, clean PDF/HTML export, plus local timeline and recovery.</li><li>PDF and image viewing with local highlight and note annotations.</li><li>Editor fonts, sizes, surfaces, themes, interface scaling, line numbers, and explicit text encoding for opening and saving.</li></ul></div></article>
+            <article class="release-entry"><div class="release-version muted">0.1.10</div><div><h3>The foundation</h3><p>Native text and Markdown editing, local save/open, basic preview, files sidebar, and a deliberately lightweight workflow.</p></div></article>
+          </div>
+        </section>`;
+    case 'about':
+      return `
+        <section class="help-topic" aria-labelledby="help-topic-title">
+          <p class="help-eyebrow">ABOUT</p>
+          <h2 id="help-topic-title">7TXT ${APP_VERSION}</h2>
+          <p class="help-lede">A compact, local-first editor for everyday text and Markdown work, with enough workspace tools to stay out of your way.</p>
+          <dl class="about-details"><div><dt>Developer</dt><dd>Orhan Gökçöl</dd></div><div><dt>Copyright</dt><dd>© 2026 Orhan Gökçöl</dd></div><div><dt>License</dt><dd>MIT</dd></div><div><dt>Built with</dt><dd>Tauri, TypeScript, and PDF.js</dd></div></dl>
+          <p class="help-note">7TXT keeps documents, recents, recovery data, and annotations on this Mac. It does not require an online account.</p>
+        </section>`;
+    case 'getting-started':
+    default:
+      return `
+        <section class="help-topic" aria-labelledby="help-topic-title">
+          <p class="help-eyebrow">WELCOME TO 7TXT</p>
+          <h2 id="help-topic-title">Start simply</h2>
+          <p class="help-lede">Open a document, make the space yours, and stay with the writing. 7TXT saves locally and preserves your workspace between launches.</p>
+          <ol class="help-steps"><li><span>1</span><div><strong>Open a file or folder</strong><p>Use File → Open, drag files in, or choose a folder for a navigable Files sidebar. Use the star to bookmark folders you revisit.</p></div></li><li><span>2</span><div><strong>Work in tabs</strong><p>Create text or Markdown tabs, drag tabs to reorder them, and use the list button beside the tabs to jump or close several at once.</p></div></li><li><span>3</span><div><strong>Choose the right view</strong><p>Markdown supports Edit, Split, and Preview. Focused Reading is deliberately available only for Markdown; PDFs and images open in the viewer.</p></div></li><li><span>4</span><div><strong>Save with confidence</strong><p>Choose an encoding before reopening or saving, and use the local timeline and recovery copies as a safety net while you write.</p></div></li></ol>
+        </section>`;
+  }
+}
+
+function renderHelp() {
+  for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-help-section]')) {
+    const selected = button.dataset.helpSection === helpSection;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-current', selected ? 'page' : 'false');
+  }
+  helpContent.innerHTML = helpMarkup(helpSection);
+}
+
+function openHelp(section: HelpSection = 'getting-started') {
+  closeTransientMenus();
+  commandPalette.hidden = true;
+  quickSwitcher.hidden = true;
+  timelinePanel.hidden = true;
+  helpSection = section;
+  renderHelp();
+  helpPanel.hidden = false;
+  window.requestAnimationFrame(() => helpPanel.querySelector<HTMLButtonElement>('[data-action="close-help"]')?.focus());
+}
+
+function closeHelp() {
+  helpPanel.hidden = true;
   if (!isMediaDocument(documentState)) editor.focus();
 }
 
@@ -2853,6 +2945,10 @@ type PaletteCommand = { label: string; hint: string; run: () => void };
 
 function paletteCommands(): PaletteCommand[] {
   return [
+    { label: 'Help: Getting started', hint: '', run: () => openHelp('getting-started') },
+    { label: 'Help: Keyboard shortcuts', hint: '', run: () => openHelp('shortcuts') },
+    { label: `What's new in 7TXT ${APP_VERSION}`, hint: '', run: () => openHelp('whats-new') },
+    { label: 'About 7TXT', hint: '', run: () => openHelp('about') },
     { label: 'New text file', hint: '⌘N', run: () => createDocument() },
     { label: 'New Markdown file', hint: '⇧⌘N', run: () => createDocument(true) },
     { label: 'Open file', hint: '⌘O', run: () => void openFile() },
@@ -3018,6 +3114,11 @@ function handleAction(action?: string) {
     case 'replace-all': replaceAll(); break;
     case 'close-find': closeFind(); break;
     case 'command-palette': openCommandPalette(); break;
+    case 'help-getting-started': openHelp('getting-started'); break;
+    case 'help-keyboard-shortcuts': openHelp('shortcuts'); break;
+    case 'help-whats-new': openHelp('whats-new'); break;
+    case 'help-about': openHelp('about'); break;
+    case 'close-help': closeHelp(); break;
     case 'quick-switch': openQuickSwitcher(); break;
     case 'toggle-open-tabs': toggleOpenTabsMenu(); break;
     case 'close-quick-switch': closeQuickSwitcher(); break;
@@ -3064,6 +3165,12 @@ window.addEventListener('pointercancel', finishTabDrag);
 
 app.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
+  const helpSectionButton = event.target.closest<HTMLButtonElement>('[data-help-section]');
+  if (isHelpSection(helpSectionButton?.dataset.helpSection)) {
+    helpSection = helpSectionButton.dataset.helpSection;
+    renderHelp();
+    return;
+  }
   const themeChoice = event.target.closest<HTMLButtonElement>('[data-theme-choice]');
   if (themeChoice?.dataset.themeChoice) {
     setUiTheme(themeChoice.dataset.themeChoice);
@@ -3229,8 +3336,10 @@ quickSwitchInput.addEventListener('keydown', (event) => {
 });
 quickSwitcher.addEventListener('pointerdown', (event) => { if (event.target === quickSwitcher) closeQuickSwitcher(); });
 timelinePanel.addEventListener('pointerdown', (event) => { if (event.target === timelinePanel) closeTimeline(); });
+helpPanel.addEventListener('pointerdown', (event) => { if (event.target === helpPanel) closeHelp(); });
 
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !helpPanel.hidden) { event.preventDefault(); closeHelp(); return; }
   if (event.key === 'Escape' && !quickSwitcher.hidden) { event.preventDefault(); closeQuickSwitcher(); return; }
   if (event.key === 'Escape' && !timelinePanel.hidden) { event.preventDefault(); closeTimeline(); return; }
   if (event.key === 'Escape') {

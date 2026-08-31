@@ -1,6 +1,6 @@
 {
   "name": "yedit",
-  "version": "0.3.3",
+  "version": "1.0.0",
   "description": "Yedit is a local, source-first editor for diagrams, documents, data, and code on macOS.",
   "author": "Orhan Gökçöl",
   "private": true,

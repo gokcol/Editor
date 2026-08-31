@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "7TXT",
-  "version": "0.1.10",
+  "version": "1.0.0",
   "identifier": "com.gokcol.7txt",
   "mainBinaryName": "7TXT",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "url": "7txt-0.1.10.html",
+        "url": "7txt-1.0.0.html",
         "title": "7TXT",
         "width": 1160,
         "height": 780,

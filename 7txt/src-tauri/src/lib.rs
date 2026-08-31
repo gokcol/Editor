@@ -796,11 +796,24 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .item(&item(app, "writing-goal", "Set Writing Goal…", None)?)
         .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&item(app, "help-getting-started", "Getting Started", None)?)
+        .item(&item(
+            app,
+            "help-keyboard-shortcuts",
+            "Keyboard Shortcuts",
+            None,
+        )?)
+        .item(&item(app, "help-whats-new", "What’s New in 1.0", None)?)
+        .separator()
+        .item(&item(app, "help-about", "About 7TXT", None)?)
+        .build()?;
     MenuBuilder::new(app)
         .item(&application)
         .item(&file)
         .item(&edit)
         .item(&view)
+        .item(&help)
         .build()
 }
 

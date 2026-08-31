@@ -293,6 +293,33 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )?)
         .build()?;
 
+    // Keep help native to macOS while letting React render the actual guide.
+    // The command ids deliberately match the command palette entries, so the
+    // same overlays also work from a browser build and future platform menus.
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&action_item(
+            app,
+            "help-getting-started",
+            "Getting Started",
+            None,
+        )?)
+        .item(&action_item(
+            app,
+            "help-shortcuts",
+            "Keyboard Shortcuts",
+            None,
+        )?)
+        .separator()
+        .item(&action_item(
+            app,
+            "whats-new",
+            "What's New in Yedit 1.0",
+            None,
+        )?)
+        .separator()
+        .item(&action_item(app, "help-about", "About Yedit", None)?)
+        .build()?;
+
     MenuBuilder::new(app)
         .item(&app_menu)
         .item(&file)
@@ -301,6 +328,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&python)
         .item(&diagram)
         .item(&view)
+        .item(&help)
         .build()
 }
 
