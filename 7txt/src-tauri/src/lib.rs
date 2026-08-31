@@ -617,6 +617,32 @@ fn print_window(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_focused_reading_available(app: AppHandle, available: bool) -> Result<(), String> {
+    let menu = app
+        .menu()
+        .ok_or_else(|| "The application menu is unavailable.".to_owned())?;
+    for entry in menu
+        .items()
+        .map_err(|error| format!("Could not inspect the application menu: {error}"))?
+    {
+        let Some(view_menu) = entry.as_submenu() else {
+            continue;
+        };
+        let Some(reading_mode) = view_menu.get("reading-mode") else {
+            continue;
+        };
+        let Some(reading_mode) = reading_mode.as_menuitem() else {
+            continue;
+        };
+        reading_mode
+            .set_enabled(available)
+            .map_err(|error| format!("Could not update Focused Reading Mode: {error}"))?;
+        return Ok(());
+    }
+    Err("Focused Reading Mode is unavailable in the application menu.".to_owned())
+}
+
+#[tauri::command]
 fn save_as(
     suggested_name: String,
     content: String,
@@ -801,6 +827,7 @@ pub fn run() {
             move_browser_entry_to_trash,
             export_document,
             print_window,
+            set_focused_reading_available,
             save_as,
             write_file
         ])

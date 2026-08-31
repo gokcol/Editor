@@ -314,6 +314,7 @@ const sidebar = required<HTMLElement>('.sidebar');
 const sidebarResizer = required<HTMLElement>('.sidebar-resizer');
 const previewResizer = required<HTMLElement>('.preview-resizer');
 const previewToggle = required<HTMLButtonElement>('.preview-toggle');
+const readingModeButton = required<HTMLButtonElement>('[data-action="reading-mode"]');
 const externalChangeBar = required<HTMLElement>('.external-change');
 const commandPalette = required<HTMLElement>('.command-palette');
 const commandPaletteInput = required<HTMLInputElement>('.command-palette input');
@@ -356,6 +357,7 @@ let sidebarResizePointerId: number | null = null;
 let previewEnabled = savedWorkbenchState.previewEnabled ?? readPreviewVisible();
 let previewWidth = savedWorkbenchState.previewWidth === undefined ? readPreviewWidth() : clampPreviewWidth(savedWorkbenchState.previewWidth);
 let previewResizePointerId: number | null = null;
+let focusedReadingAvailable: boolean | undefined;
 let sidebarAutoHideTimer: number | undefined;
 let sidebarPointerInside = false;
 let externalChange: ExternalChange | null = null;
@@ -627,6 +629,14 @@ function applyPreviewLayout() {
   previewToggle.setAttribute('aria-label', previewToggle.title);
   previewResizer.setAttribute('aria-valuenow', String(previewWidth));
   persistWorkbenchState();
+}
+
+function syncFocusedReadingAvailability(available: boolean) {
+  readingModeButton.hidden = !available;
+  readingModeButton.disabled = !available;
+  if (focusedReadingAvailable === available) return;
+  focusedReadingAvailable = available;
+  void invoke('set_focused_reading_available', { available }).catch(() => undefined);
 }
 
 function sidebarIsShown() {
@@ -1718,6 +1728,7 @@ function render() {
   shell.classList.toggle('empty-workspace', workspaceEmpty);
   shell.classList.toggle('zen-mode', zenMode);
   shell.classList.toggle('reading-mode', readingMode && documentState.isMarkdown && !isMedia);
+  syncFocusedReadingAvailability(!workspaceEmpty && documentState.isMarkdown && !isMedia);
   mediaPane.hidden = !isMedia;
   emptyWorkspaceMessage.hidden = !workspaceEmpty;
   editor.disabled = workspaceEmpty;
@@ -2856,7 +2867,7 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Toggle Markdown preview', hint: '', run: togglePreview },
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
-    { label: 'Focused reading mode', hint: '', run: toggleReadingMode },
+    ...(documentState.isMarkdown && !isMediaDocument(documentState) ? [{ label: 'Focused reading mode', hint: '', run: toggleReadingMode }] : []),
     { label: 'Export clean PDF', hint: '', run: () => void exportPdf() },
     { label: 'Print', hint: '⌘P', run: () => void printDocument() },
     { label: 'Export HTML', hint: '', run: () => void exportHtml() },
