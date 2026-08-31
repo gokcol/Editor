@@ -1824,10 +1824,15 @@ function renderRecents() {
 }
 
 function renderTabs() {
+  // Rebuilding the tab controls happens after ordinary editing actions too.
+  // Preserve an open switcher through that work so the user can close several
+  // tabs in sequence; explicit activation, outside click, and Escape still
+  // dismiss it through their own handlers.
+  const keepOpenTabsMenu = !openTabsMenu.hidden;
   tabList.replaceChildren();
   openTabsList.replaceChildren();
-  openTabsMenu.hidden = true;
   openTabsToggle.hidden = workspaceEmpty || documents.length === 0;
+  openTabsMenu.hidden = !(keepOpenTabsMenu && !workspaceEmpty && documents.length > 0);
   updateTabWidth();
   if (workspaceEmpty) return;
   for (const document of documents) {
@@ -1868,12 +1873,32 @@ function renderTabs() {
     menuClose.textContent = '×';
     menuClose.title = `Close ${document.name}`;
     menuClose.setAttribute('aria-label', menuClose.title);
-    menuClose.addEventListener('click', () => { openTabsMenu.hidden = true; closeDocument(document.id); });
+    menuClose.addEventListener('click', () => closeDocument(document.id));
     menuRow.append(menuActivate, menuClose);
     openTabsList.append(menuRow);
 
     tab.addEventListener('pointerdown', (event) => beginTabDrag(event, document.id));
   }
+
+  const menuActions = document.createElement('div');
+  menuActions.className = 'open-tabs-actions';
+  const closeOthers = document.createElement('button');
+  closeOthers.type = 'button';
+  closeOthers.className = 'open-tabs-action';
+  closeOthers.textContent = 'Close all except current';
+  closeOthers.title = `Close every tab except ${documentState.name}`;
+  closeOthers.disabled = documents.length <= 1;
+  closeOthers.setAttribute('role', 'menuitem');
+  closeOthers.addEventListener('click', closeAllExceptCurrent);
+  const closeAll = document.createElement('button');
+  closeAll.type = 'button';
+  closeAll.className = 'open-tabs-action destructive';
+  closeAll.textContent = 'Close all';
+  closeAll.title = 'Close every open tab';
+  closeAll.setAttribute('role', 'menuitem');
+  closeAll.addEventListener('click', closeAllDocuments);
+  menuActions.append(closeOthers, closeAll);
+  openTabsList.append(menuActions);
 }
 
 function updateTabWidth() {
@@ -2262,7 +2287,6 @@ async function save() {
 }
 
 function closeDocument(id = activeDocumentId) {
-  openTabsMenu.hidden = true;
   const target = documents.find((document) => document.id === id);
   if (!target) return;
   const targetDirty = isMediaDocument(target)
@@ -2295,6 +2319,56 @@ function closeDocument(id = activeDocumentId) {
   render();
   scheduleRecovery();
   showToast('Tab closed.');
+}
+
+function closeAllExceptCurrent() {
+  const currentId = activeDocumentId;
+  const targets = documents.filter((document) => document.id !== currentId);
+  if (!targets.length) {
+    showToast('There are no other tabs to close.');
+    return;
+  }
+  const changedSavedFiles = targets.filter((document) => {
+    const dirty = isMediaDocument(document)
+      ? annotationSnapshot(document) !== (document.savedAnnotations || '')
+      : document.content !== document.savedContent;
+    return dirty && Boolean(document.path);
+  });
+  if (changedSavedFiles.length && !window.confirm(`Close ${targets.length} other tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
+  for (const document of targets) histories.delete(document.id);
+  documents = documents.filter((document) => document.id === currentId);
+  documentState = documents[0];
+  activeDocumentId = documentState.id;
+  editor.value = documentState.content;
+  secondaryEditor.value = documentState.content;
+  viewMode = preferredViewMode(documentState);
+  render();
+  scheduleRecovery();
+  showToast(`Closed ${targets.length} other tab${targets.length === 1 ? '' : 's'}.`);
+}
+
+function closeAllDocuments() {
+  const targets = [...documents];
+  const changedSavedFiles = targets.filter((document) => {
+    const dirty = isMediaDocument(document)
+      ? annotationSnapshot(document) !== (document.savedAnnotations || '')
+      : document.content !== document.savedContent;
+    return dirty && Boolean(document.path);
+  });
+  if (changedSavedFiles.length && !window.confirm(`Close all ${targets.length} tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
+  for (const document of targets) histories.delete(document.id);
+  const blank = blankDocument();
+  documents = [blank];
+  documentState = blank;
+  activeDocumentId = blank.id;
+  workspaceEmpty = true;
+  histories.set(blank.id, { entries: [''], index: 0 });
+  editor.value = blank.content;
+  secondaryEditor.value = blank.content;
+  viewMode = 'edit';
+  render();
+  scheduleRecovery();
+  showToast(`Closed ${targets.length} tab${targets.length === 1 ? '' : 's'}.`);
 }
 
 function reopenWithEncoding() {

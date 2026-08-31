@@ -100,6 +100,11 @@ button { border: 0; cursor: pointer; }
 .open-tabs-activate:hover { color: var(--aqua); }
 .open-tabs-close { display: grid; flex: 0 0 26px; width: 26px; margin: 2px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
 .open-tabs-close:hover { background: var(--soft); color: var(--ink); }
+.open-tabs-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; margin-top: 4px; padding: 6px 2px 1px; border-top: 1px solid var(--line); }
+.open-tabs-action { min-width: 0; height: 27px; padding: 0 8px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, transparent); border-radius: 5px; color: var(--muted); background: color-mix(in srgb, var(--soft) 54%, var(--paper)); text-align: center; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 700; }
+.open-tabs-action:hover:not(:disabled) { border-color: color-mix(in srgb, var(--aqua) 42%, var(--line)); color: var(--aqua); background: color-mix(in srgb, var(--aqua) 8%, var(--paper)); }
+.open-tabs-action.destructive:hover:not(:disabled) { border-color: color-mix(in srgb, #d25d65 45%, var(--line)); color: #c44b54; background: color-mix(in srgb, #d25d65 9%, var(--paper)); }
+.open-tabs-action:disabled { cursor: default; opacity: .45; }
 
 .toolbar { gap: 7px; padding: 0 14px; background: var(--paper); border-bottom: 1px solid var(--line); }
 .quick-actions, .markdown-actions, .view-switch { gap: 2px; padding: 3px; border-radius: 9px; background: color-mix(in srgb, var(--soft) 74%, transparent); }
