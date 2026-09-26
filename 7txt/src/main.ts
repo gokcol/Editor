@@ -5,6 +5,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-d
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import brandIconUrl from '../src-tauri/icons/7txt-icon.svg?url';
 import './styles.css';
+import { createRecoveryQueue, flushStableRecovery } from '../../shared/recoveryQueue';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
@@ -15,6 +16,9 @@ type AnnotationDrag =
   | { mode: 'move'; id: string; pointerId: number; dx: number; dy: number }
   | { mode: 'draw'; id: string; pointerId: number; x: number; y: number };
 type TextDocument = {
+  diskVersion?: string;
+  conflict?: boolean;
+  recoveryOrigin?: string;
   id: string;
   name: string;
   path?: string;
@@ -28,8 +32,13 @@ type TextDocument = {
   annotations?: MediaAnnotation[];
   savedAnnotations?: string;
   cursor?: number;
+  /** A formerly saved file that disappeared; retain it as a dirty draft. */
+  recoveryDraft?: boolean;
+  /** The untouched tab created by New/launch, safe to omit from recovery. */
+  defaultUntitled?: boolean;
 };
 type OpenedDocument = {
+  diskVersion?: string;
   name: string;
   path: string;
   content: string;
@@ -39,7 +48,7 @@ type OpenedDocument = {
   mediaData?: string;
   mimeType?: string;
 };
-type SavedTextFile = { name: string; path: string; encoding: string };
+type SavedTextFile = { name: string; path: string; encoding: string; diskVersion: string };
 type RecentEntry = { name: string; path: string; isMarkdown: boolean; kind: DocumentKind; openedAt: number };
 type DocumentHistory = { entries: string[]; index: number };
 type TimelineSnapshot = { id: string; savedAt: number; label: string; content: string };
@@ -49,6 +58,7 @@ type ProjectFolder = { name: string; path: string; parentPath?: string; homePath
 type FolderBookmark = { name: string; path: string };
 type FileFingerprint = { modifiedMillis: number; size: number };
 type ExternalChange = { path: string; name: string; fingerprint?: FileFingerprint };
+type SaveTarget = { id: string; path?: string; generation: number };
 type EditorOptions = { wordWrap: boolean; indentation: 'spaces' | 'tabs'; tabSize: 2 | 4 | 8; lineEnding: 'lf' | 'crlf'; spellLanguage: string };
 type SessionDocument = Omit<TextDocument, 'id'> & { cursor?: number };
 type RestoredSession = { documents: SessionDocument[]; activeIndex: number; savedAt: number };
@@ -84,10 +94,10 @@ const TIMELINE_KEY_PREFIX = '7txt:document-timeline:v1:';
 const SESSION_KEY = '7txt:workspace-session:v1';
 const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
+const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
 const APP_VERSION = '1.0.0';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
-const MAX_RECOVERY_BYTES = 3 * 1024 * 1024;
 const MAX_TIMELINE_SNAPSHOTS = 16;
 const MAX_TIMELINE_SNAPSHOT_CHARS = 280_000;
 const MIN_SIDEBAR_WIDTH = 180;
@@ -237,7 +247,9 @@ app.innerHTML = `
       </aside>
       <div class="sidebar-resizer" role="separator" aria-label="Resize Files sidebar" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="430" tabindex="0"></div>
       <section class="editor-pane">
-        <div class="external-change" hidden><span></span><button data-action="reload-external">Reload</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Ignore</button></div>
+        <div class="external-change" hidden><span></span><button data-action="reload-external">Use disk</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Keep mine…</button><button data-action="save-both-external">Save As…</button></div>
+        <div class="recovery-status" role="status"></div>
+        <div class="recovered-notice" hidden><span></span><button data-action="save-as">Save As…</button></div>
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
         <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
         <div class="empty-workspace" hidden><strong>No file open</strong><span>Create a note or open a file to begin.</span><div><button data-action="new-text">New text</button><button data-action="new-markdown">New Markdown</button><button data-action="open">Open file</button></div></div>
@@ -371,6 +383,9 @@ let focusedReadingAvailable: boolean | undefined;
 let sidebarAutoHideTimer: number | undefined;
 let sidebarPointerInside = false;
 let externalChange: ExternalChange | null = null;
+let recoveryReady = false;
+let recoveryLoadFailed = false;
+const recoveryQueue = createRecoveryQueue<RestoredSession>((payload) => invoke<number>('recovery_save', { payload }));
 const fileFingerprints = new Map<string, FileFingerprint>();
 const histories = new Map<string, DocumentHistory>([[firstDocument.id, { entries: [''], index: 0 }]]);
 let toastTimer: number | undefined;
@@ -717,6 +732,7 @@ function blankDocument(isMarkdown = false): TextDocument {
     isMarkdown,
     encoding: 'auto',
     kind: 'text',
+    defaultUntitled: true,
   };
 }
 
@@ -734,15 +750,84 @@ function isMarkdownName(name: string) {
   return /\.(?:md|markdown)$/i.test(name);
 }
 
+function isTextDocumentDirty(document: Pick<TextDocument, 'content' | 'savedContent' | 'recoveryDraft'>) {
+  return document.recoveryDraft === true || document.content !== document.savedContent;
+}
+
 function isDirty() {
   if (isMediaDocument(documentState)) return annotationSnapshot(documentState) !== (documentState.savedAnnotations || '');
-  return documentState.content !== documentState.savedContent;
+  return isTextDocumentDirty(documentState);
 }
 
 function setCurrentDocument(next: TextDocument) {
   documentState = next;
   activeDocumentId = next.id;
   documents = documents.map((document) => document.id === next.id ? next : document);
+}
+
+const saveTargetGenerations = new Map<string, number>();
+const documentWriteQueues = new Map<string, Promise<void>>();
+// A native Save/Save As dialog can remain open while the idle timer fires.
+// Keep autosave and the file watcher from advancing that document's target
+// generation underneath the user-initiated operation.
+const manualSaveInFlight = new Set<string>();
+let watchFilesInFlight = false;
+
+function targetFor(document: Pick<TextDocument, 'id' | 'path'>): SaveTarget {
+  return {
+    id: document.id,
+    path: document.path,
+    generation: saveTargetGenerations.get(document.id) || 0,
+  };
+}
+
+function sameSaveTarget(document: Pick<TextDocument, 'id' | 'path'>, target: SaveTarget) {
+  return document.id === target.id
+    && document.path === target.path
+    && (saveTargetGenerations.get(document.id) || 0) === target.generation;
+}
+
+function beginSaveTargetOperation(document: Pick<TextDocument, 'id' | 'path'>): SaveTarget | null {
+  const target = targetFor(document);
+  const latest = documents.find((candidate) => candidate.id === target.id);
+  if (!latest || !sameSaveTarget(latest, target)) return null;
+  const operation = { ...target, generation: target.generation + 1 };
+  saveTargetGenerations.set(operation.id, operation.generation);
+  return operation;
+}
+
+function invalidateSaveTarget(id: string) {
+  saveTargetGenerations.set(id, (saveTargetGenerations.get(id) || 0) + 1);
+}
+
+function enqueueDocumentWrite<Result>(target: SaveTarget, write: (version?: string) => Promise<Result>, requireRecovery = true): Promise<Result | null> {
+  const previous = documentWriteQueues.get(target.id) || Promise.resolve();
+  const result = previous.catch(() => undefined).then(async () => {
+    if (!await persistRecovery() && requireRecovery) throw new Error('Recovery is unavailable. Use Save As to rescue your work to another destination.');
+    // A queued write may outlive a close, Save As, rename, or recovery
+    // detachment. Check the target immediately before native I/O rather than
+    // merely ignoring its late result after it has already written a stale
+    // pathname.
+    const latest = documents.find((document) => document.id === target.id);
+    if (!latest || !sameSaveTarget(latest, target)) return null;
+    const written = await write(latest.diskVersion);
+    if (requireRecovery && written && typeof written === 'object' && 'diskVersion' in written && typeof written.diskVersion === 'string') {
+      const diskVersion = written.diskVersion;
+      // Keep the next queued save on our own completed byte version, without
+      // reviving a detached binding or overriding a newer external read.
+      documents = documents.map((document) => document.id === target.id && document.path === target.path && document.diskVersion === latest.diskVersion
+        ? { ...document, diskVersion }
+        : document);
+      documentState = documents.find((document) => document.id === activeDocumentId) ?? documentState;
+    }
+    return written;
+  });
+  const settled = result.then(() => undefined, () => undefined);
+  documentWriteQueues.set(target.id, settled);
+  void settled.finally(() => {
+    if (documentWriteQueues.get(target.id) === settled) documentWriteQueues.delete(target.id);
+  });
+  return result;
 }
 
 function historyFor(document: TextDocument) {
@@ -1157,100 +1242,222 @@ function contentForSave(content: string) {
   return editorOptions.lineEnding === 'crlf' ? normalised.replace(/\n/g, '\r\n') : normalised;
 }
 
-function readSession(): RestoredSession | null {
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingSaveTargetError(error: unknown) {
+  const message = errorMessage(error);
+  // The prefix comes from the native command. Keep the legacy check too so a
+  // workspace restored by an older bundled backend can recover cleanly.
+  return message.startsWith(SAVE_TARGET_MISSING_PREFIX)
+    || /(?:no such file|os error 2|enoent)/i.test(message);
+}
+
+function clearExternalChangeForPath(path?: string) {
+  if (path) documents = documents.map((document) => document.path === path ? { ...document, conflict: false } : document);
+  documentState = documents.find((document) => document.id === activeDocumentId) ?? documentState;
+  if (path && externalChange?.path === path) externalChange = null;
+}
+
+function markConflict(target: SaveTarget) {
+  const latest = documents.find((document) => document.id === target.id);
+  if (!latest || !sameSaveTarget(latest, target) || !target.path) return;
+  invalidateSaveTarget(target.id);
+  const updated = { ...latest, conflict: true };
+  documents = documents.map((document) => document.id === target.id ? updated : document);
+  if (activeDocumentId === target.id) documentState = updated;
+  externalChange = { path: target.path, name: latest.name };
+  render();
+}
+
+function isSaveConflict(error: unknown) { return errorMessage(error).startsWith('SAVE_CONFLICT:'); }
+
+function isEmptyDefaultUntitledDocument(document: Pick<TextDocument, 'name' | 'isMarkdown' | 'path' | 'content' | 'savedContent' | 'recoveryDraft' | 'defaultUntitled'>) {
+  return document.defaultUntitled === true
+    && document.name.toLocaleLowerCase() === `untitled.${document.isMarkdown ? 'md' : 'txt'}`
+    && !document.path
+    && !document.recoveryDraft
+    && !document.content
+    && !document.savedContent;
+}
+
+function detachMissingSaveTarget(target: SaveTarget) {
+  const stalePath = target.path;
+  if (!stalePath) return false;
+  const latest = documents.find((document) => document.id === target.id);
+  if (!latest || !sameSaveTarget(latest, target)) return false;
+  // Preserve the text and its recovery history, but remove the dead path so
+  // autosave does not keep retrying a deleted file. This marker keeps even an
+  // empty real file dirty and recoverable across a relaunch.
+  const recovered = {
+    ...latest,
+    conflict: false,
+    recoveryOrigin: stalePath,
+    path: undefined,
+    defaultUntitled: false,
+    recoveryDraft: true,
+  };
+  documents = documents.map((document) => document.id === recovered.id ? recovered : document);
+  if (activeDocumentId === recovered.id) documentState = recovered;
+  invalidateSaveTarget(recovered.id);
+  fileFingerprints.delete(stalePath);
+  clearExternalChangeForPath(stalePath);
+  // The error path can be the only event before a quit/crash. Persist this
+  // detached binding now rather than relying on a later input debounce.
+  persistRecovery();
+  return true;
+}
+
+function readSession(durable?: unknown): RestoredSession | null {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+    const parsed: unknown = durable ?? JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
     if (!parsed || typeof parsed !== 'object') return null;
     const session = parsed as Partial<RestoredSession>;
     if (!Array.isArray(session.documents) || !session.documents.length) return null;
-    const documents = session.documents.filter((document): document is SessionDocument => Boolean(
+    const restoredDocuments = session.documents.filter((document): document is SessionDocument => Boolean(
       document && typeof document === 'object'
       && typeof document.name === 'string'
       && typeof document.content === 'string'
       && typeof document.savedContent === 'string'
       && typeof document.isMarkdown === 'boolean'
       && typeof document.encoding === 'string',
-    )).map((document) => ({ ...document, kind: 'text' as const }));
-    return documents.length ? { documents, activeIndex: Math.max(0, Math.min(Number(session.activeIndex) || 0, documents.length - 1)), savedAt: Number(session.savedAt) || 0 } : null;
+    )).map((document) => ({
+      ...document,
+      kind: 'text' as const,
+      recoveryDraft: document.recoveryDraft === true,
+      defaultUntitled: document.defaultUntitled === true,
+    }));
+    const requestedActive = restoredDocuments[Math.max(0, Math.min(Number(session.activeIndex) || 0, restoredDocuments.length - 1))];
+    const documents = restoredDocuments.filter((document) => !isEmptyDefaultUntitledDocument(document));
+    if (!documents.length) return null;
+    return {
+      documents,
+      activeIndex: Math.max(0, documents.findIndex((document) => document === requestedActive)),
+      savedAt: Number(session.savedAt) || 0,
+    };
   } catch {
     return null;
   }
 }
 
-function persistRecovery() {
-  if (workspaceEmpty) {
-    localStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(RECOVERY_KEY);
-    return;
-  }
-  const textDocuments = documents.filter((document) => document.kind === 'text');
-  if (!textDocuments.length) {
-    localStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(RECOVERY_KEY);
-    return;
-  }
+async function persistRecovery(): Promise<boolean> {
+  if (!recoveryReady || recoveryLoadFailed) return false;
+  const textDocuments = (workspaceEmpty ? [] : documents)
+    .filter((document) => document.kind === 'text')
+    // A launch/new tab has no recoverable work. Never infer this from a
+    // pathname: a real saved empty untitled file is a recovery draft instead.
+    .filter((document) => !isEmptyDefaultUntitledDocument(document));
   const session: RestoredSession = {
     documents: textDocuments.map(({ id, ...document }) => ({ ...document, cursor: id === activeDocumentId ? editor.selectionStart : document.cursor })),
     activeIndex: Math.max(0, textDocuments.findIndex((document) => document.id === activeDocumentId)),
     savedAt: Date.now(),
   };
   try {
-    const serialized = JSON.stringify(session);
-    if (serialized.length > MAX_RECOVERY_BYTES) return;
-    localStorage.setItem(SESSION_KEY, serialized);
-    const drafts = session.documents.filter((document) => document.content !== document.savedContent);
-    localStorage.setItem(RECOVERY_KEY, JSON.stringify({ drafts, savedAt: session.savedAt }));
-  } catch {
-    // Recovery is best-effort and should never interrupt writing.
+    const { savedAt, current } = await recoveryQueue.save(session);
+    if (current) required<HTMLElement>('.recovery-status').textContent = `Recovery saved ${new Date(savedAt).toLocaleTimeString()}`;
+    try { localStorage.removeItem(SESSION_KEY); localStorage.removeItem(RECOVERY_KEY); } catch { /* native checkpoint acknowledged */ }
+    return true;
+  } catch (error) {
+    required<HTMLElement>('.recovery-status').textContent = `Recovery not saved: ${errorMessage(error)}. Keep this window open.`;
+    return false;
   }
 }
 
 async function autosaveOpenDocuments() {
   if (autosaveInFlight) return;
-  const pending = documents.filter((document) => document.kind === 'text' && document.path && document.content !== document.savedContent);
+  const pending = documents.filter((document) => (
+    document.kind === 'text'
+    && document.path
+    && isTextDocumentDirty(document)
+    && !manualSaveInFlight.has(document.id)
+    && !document.conflict
+    && externalChange?.path !== document.path
+  ));
   if (!pending.length) return;
   autosaveInFlight = true;
   let savedCurrent = false;
+  let recoveredMissingTarget: TextDocument | null = null;
+  let autosaveError: string | null = null;
   try {
-    for (const target of pending) {
-      const snapshot = target.content;
-      const result = await invoke<SavedTextFile>('write_file', { path: target.path, content: contentForSave(snapshot), encoding: target.encoding });
-      const latest = documents.find((document) => document.id === target.id);
-      if (!latest || latest.content !== snapshot) continue;
-      const saved = { ...latest, ...result, savedContent: snapshot, isMarkdown: isMarkdownName(result.name) };
-      documents = documents.map((document) => document.id === saved.id ? saved : document);
-      if (activeDocumentId === saved.id) {
-        documentState = saved;
-        savedCurrent = true;
+    for (const queuedTarget of pending) {
+      const target = beginSaveTargetOperation(queuedTarget);
+      if (!target?.path) continue;
+      const source = documents.find((document) => sameSaveTarget(document, target));
+      if (!source) continue;
+      const snapshot = source.content;
+      try {
+        const result = await enqueueDocumentWrite(target, (diskVersion) => invoke<SavedTextFile>('write_file', {
+          path: target.path!,
+          content: contentForSave(snapshot),
+          encoding: source.encoding,
+          expectedVersion: diskVersion,
+        }));
+        if (!result) continue;
+        const latest = documents.find((document) => document.id === target.id);
+        if (!latest || !sameSaveTarget(latest, target)) continue;
+        // A newer edit is still dirty against the snapshot just written to
+        // disk; retain it instead of discarding it when this async write ends.
+        const saved = {
+          ...latest,
+          ...result,
+          savedContent: snapshot,
+          isMarkdown: isMarkdownName(result.name),
+          recoveryDraft: false,
+          defaultUntitled: false,
+        };
+        documents = documents.map((document) => document.id === saved.id ? saved : document);
+        if (activeDocumentId === saved.id) {
+          documentState = saved;
+          savedCurrent = latest.content === snapshot;
+        }
+        await captureFingerprint(result.path);
+      } catch (error) {
+        if (isSaveConflict(error)) { markConflict(target); continue; }
+        if (isMissingSaveTargetError(error)) {
+          if (detachMissingSaveTarget(target)) {
+            recoveredMissingTarget = source;
+          }
+          // A stale save failure belongs to an older binding/operation and is
+          // already harmless. Never turn it into a repeating autosave toast.
+          continue;
+        }
+        if (sameSaveTarget(documents.find((document) => document.id === target.id) || { id: '', path: undefined }, target)) {
+          autosaveError = errorMessage(error);
+        }
+        break;
       }
-      await captureFingerprint(result.path);
     }
-  } catch (error) {
-    showToast(`Autosave paused: ${error instanceof Error ? error.message : String(error)}`, 'error');
   } finally {
     autosaveInFlight = false;
   }
-  if (savedCurrent) {
+  if (autosaveError) showToast(`Autosave paused: ${autosaveError}`, 'error');
+  if (savedCurrent || recoveredMissingTarget) {
     render();
-    required<HTMLElement>('.editor-status').textContent = 'Autosaved';
+    if (savedCurrent) required<HTMLElement>('.editor-status').textContent = 'Autosaved';
+  }
+  if (recoveredMissingTarget) {
+    showToast(`“${recoveredMissingTarget.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
   }
 }
 
 function scheduleRecovery() {
+  recoveryQueue.invalidate();
   if (recoveryTimer) window.clearTimeout(recoveryTimer);
   recoveryTimer = window.setTimeout(() => {
-    persistRecovery();
+    void persistRecovery();
     recoveryTimer = undefined;
     void autosaveOpenDocuments();
-    if (isDirty()) required<HTMLElement>('.editor-status').textContent = documentState.path ? 'Autosaving…' : 'Recovery saved';
+    if (isDirty()) required<HTMLElement>('.editor-status').textContent = documentState.conflict ? 'Conflict — autosave paused' : documentState.path ? 'Autosaving…' : 'Unsaved draft';
   }, 700);
 }
 
-function restoreSession() {
-  const session = readSession();
+function restoreSession(durable?: unknown) {
+  const session = readSession(durable);
   if (!session) return;
   const restored = session.documents.map((document) => ({
     ...document,
+    ...(isTextDocumentDirty(document) ? { path: undefined, diskVersion: undefined, recoveryOrigin: document.recoveryOrigin ?? document.path, recoveryDraft: true, conflict: false, pinned: false } : {}),
     id: `document-${nextDocumentId++}`,
     content: normaliseLineEndings(document.content),
     savedContent: normaliseLineEndings(document.savedContent),
@@ -1367,7 +1574,13 @@ async function renameBrowserEntry(entry: FolderEntry) {
   if (!name?.trim() || name.trim() === entry.name) return;
   try {
     const path = await invoke<string>('rename_browser_entry', { path: entry.path, name: name.trim() });
+    const renamedIds = documents
+      .filter((document) => document.path === entry.path)
+      .map((document) => document.id);
     documents = documents.map((document) => document.path === entry.path ? { ...document, path, name: name.trim(), isMarkdown: isMarkdownName(name.trim()) } : document);
+    for (const id of renamedIds) invalidateSaveTarget(id);
+    fileFingerprints.delete(entry.path);
+    clearExternalChangeForPath(entry.path);
     if (documentState.path === entry.path) documentState = documents.find((document) => document.id === activeDocumentId) || documentState;
     await refreshProjectFolder(true);
     render();
@@ -1452,7 +1665,7 @@ function recordContent(content: string) {
   if (isMediaDocument(documentState)) return;
   if (content === documentState.content) return;
   workspaceEmpty = false;
-  setCurrentDocument({ ...documentState, content });
+  setCurrentDocument({ ...documentState, content, defaultUntitled: false });
   if (editor.value !== content) editor.value = content;
   if (secondaryEditor.value !== content) secondaryEditor.value = content;
   const history = historyFor(documentState);
@@ -1843,8 +2056,13 @@ function render() {
   reopenEncodingButton.hidden = isMedia;
   reopenEncodingButton.disabled = isMedia || !documentState.path;
   for (const action of app!.querySelectorAll<HTMLElement>('.markdown-actions')) action.hidden = !documentState.isMarkdown;
+  const conflicted = documents.find((document) => document.id === activeDocumentId && document.conflict && document.path)
+    ?? documents.find((document) => document.conflict && document.path);
+  externalChange = conflicted ? { path: conflicted.path!, name: conflicted.name } : null;
   externalChangeBar.hidden = !externalChange;
-  required<HTMLElement>('.external-change span').textContent = externalChange ? `${externalChange.name} changed on disk.` : '';
+  required<HTMLElement>('.external-change span').textContent = externalChange ? `${externalChange.name} changed on disk. Autosave paused.` : '';
+  required<HTMLElement>('.recovered-notice').hidden = !documentState.recoveryDraft;
+  required<HTMLElement>('.recovered-notice span').textContent = `Recovered draft${documentState.recoveryOrigin ? ` — ${documentState.recoveryOrigin}` : ''}`;
   required<HTMLElement>('.status-help').textContent = isMedia ? 'Click Highlight or Note, then click the canvas · ⌘S Save notes' : documentState.isMarkdown ? '⌘1 Edit · ⌘2 Split · ⌘3 Preview' : '⌘O Open · ⌘S Save · ⌘F Find';
   for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-mode-button]')) {
     button.hidden = isMedia;
@@ -1944,7 +2162,7 @@ function renderTabs() {
     const close = window.document.createElement('button');
     const dirty = isMediaDocument(document)
       ? annotationSnapshot(document) !== (document.savedAnnotations || '')
-      : document.content !== document.savedContent;
+      : isTextDocumentDirty(document);
     tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}`;
     tab.dataset.tabId = document.id;
     tab.setAttribute('role', 'tab');
@@ -2328,9 +2546,7 @@ function openResultInTab(result: OpenedDocument, replacePristineBlank = false) {
     savedAnnotations: normalised.kind === 'text' ? undefined : JSON.stringify({ version: 1, annotations: [] }),
   };
   const onlyPristineBlank = documents.length === 1
-    && !documents[0].path
-    && documents[0].content === ''
-    && documents[0].savedContent === '';
+    && isEmptyDefaultUntitledDocument(documents[0]);
   if (replacePristineBlank && onlyPristineBlank) {
     histories.delete(documents[0].id);
     documents = [next];
@@ -2358,17 +2574,50 @@ async function saveAs() {
     await saveMediaAnnotations(true);
     return;
   }
+  const source = documentState;
+  if (manualSaveInFlight.has(source.id)) return;
+  manualSaveInFlight.add(source.id);
+  const target = beginSaveTargetOperation(source);
+  if (!target) {
+    manualSaveInFlight.delete(source.id);
+    return;
+  }
+  const snapshot = source.content;
   try {
-    const result = await invoke<SavedTextFile | null>('save_as', { suggestedName: documentState.name, content: contentForSave(documentState.content), encoding: documentState.encoding });
+    const result = await enqueueDocumentWrite(target, () => invoke<SavedTextFile | null>('save_as', {
+      suggestedName: source.name,
+      content: contentForSave(snapshot),
+      encoding: source.encoding,
+    }), false);
     if (!result) return;
-    setCurrentDocument({ ...documentState, ...result, savedContent: documentState.content, isMarkdown: isMarkdownName(result.name) });
-    updateRecent({ ...result, isMarkdown: documentState.isMarkdown, kind: 'text' });
-    if (externalChange?.path === result.path) externalChange = null;
+    const latest = documents.find((document) => document.id === target.id);
+    if (!latest || !sameSaveTarget(latest, target)) return;
+    // If the user typed while the native Save As sheet was open, bind the
+    // chosen destination but keep those newer edits dirty against the exact
+    // snapshot that was written.
+    const saved = {
+      ...latest,
+      ...result,
+      savedContent: snapshot,
+      isMarkdown: isMarkdownName(result.name),
+      recoveryDraft: false,
+      defaultUntitled: false,
+    };
+    documents = documents.map((document) => document.id === saved.id ? saved : document);
+    if (activeDocumentId === saved.id) documentState = saved;
+    updateRecent({ ...result, isMarkdown: saved.isMarkdown, kind: 'text' });
+    clearExternalChangeForPath(target.path);
+    clearExternalChangeForPath(result.path);
     render();
     await captureFingerprint(result.path);
-    captureTimeline('Saved');
+    if (activeDocumentId === saved.id) captureTimeline('Saved');
     showToast(`Saved ${result.name}.`, 'success');
-  } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+  } catch (error) {
+    const latest = documents.find((document) => document.id === target.id);
+    if (latest && sameSaveTarget(latest, target)) showToast(errorMessage(error), 'error');
+  } finally {
+    manualSaveInFlight.delete(source.id);
+  }
 }
 
 async function save() {
@@ -2377,16 +2626,57 @@ async function save() {
     return;
   }
   if (!documentState.path) { await saveAs(); return; }
+  if (documentState.conflict) { showToast('Resolve the disk conflict or use Save As before saving.', 'info'); render(); return; }
+  const source = documentState;
+  if (manualSaveInFlight.has(source.id)) return;
+  manualSaveInFlight.add(source.id);
+  const target = beginSaveTargetOperation(source);
+  if (!target?.path) {
+    manualSaveInFlight.delete(source.id);
+    return;
+  }
+  const snapshot = source.content;
   try {
-    const result = await invoke<SavedTextFile>('write_file', { path: documentState.path, content: contentForSave(documentState.content), encoding: documentState.encoding });
-    setCurrentDocument({ ...documentState, ...result, savedContent: documentState.content, isMarkdown: isMarkdownName(result.name) });
-    updateRecent({ ...result, isMarkdown: documentState.isMarkdown, kind: 'text' });
-    if (externalChange?.path === result.path) externalChange = null;
+    const result = await enqueueDocumentWrite(target, (diskVersion) => invoke<SavedTextFile>('write_file', {
+      path: target.path!,
+      content: contentForSave(snapshot),
+      encoding: source.encoding,
+      expectedVersion: diskVersion,
+    }));
+    if (!result) return;
+    const latest = documents.find((document) => document.id === target.id);
+    if (!latest || !sameSaveTarget(latest, target)) return;
+    const saved = {
+      ...latest,
+      ...result,
+      savedContent: snapshot,
+      isMarkdown: isMarkdownName(result.name),
+      recoveryDraft: false,
+      defaultUntitled: false,
+    };
+    documents = documents.map((document) => document.id === saved.id ? saved : document);
+    if (activeDocumentId === saved.id) documentState = saved;
+    updateRecent({ ...result, isMarkdown: saved.isMarkdown, kind: 'text' });
+    clearExternalChangeForPath(target.path);
+    clearExternalChangeForPath(result.path);
     render();
     await captureFingerprint(result.path);
-    captureTimeline('Saved');
+    if (activeDocumentId === saved.id) captureTimeline('Saved');
     showToast('Saved locally.', 'success');
-  } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+  } catch (error) {
+    if (isSaveConflict(error)) { markConflict(target); return; }
+    if (isMissingSaveTargetError(error)) {
+      if (detachMissingSaveTarget(target)) {
+        render();
+        showToast(`“${source.name}” is no longer on disk. Its text is kept here; Save will now choose a new location.`, 'info');
+      }
+      return;
+    }
+    const latest = documents.find((document) => document.id === target.id);
+    if (latest && sameSaveTarget(latest, target)) showToast(errorMessage(error), 'error');
+  } finally {
+    manualSaveInFlight.delete(source.id);
+  }
 }
 
 function closeDocument(id = activeDocumentId) {
@@ -2394,10 +2684,15 @@ function closeDocument(id = activeDocumentId) {
   if (!target) return;
   const targetDirty = isMediaDocument(target)
     ? annotationSnapshot(target) !== (target.savedAnnotations || '')
-    : target.content !== target.savedContent;
-  if (targetDirty && target.path && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
+    : isTextDocumentDirty(target);
+  // Recovery drafts deliberately have no path. They still contain work the
+  // user may want to Save As, so treat them like any other dirty tab here.
+  if (targetDirty && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
   const index = documents.findIndex((document) => document.id === id);
   histories.delete(id);
+  saveTargetGenerations.delete(id);
+  manualSaveInFlight.delete(id);
+  clearExternalChangeForPath(target.path);
   if (documents.length === 1) {
     const blank = blankDocument();
     documents = [blank];
@@ -2434,11 +2729,16 @@ function closeAllExceptCurrent() {
   const changedSavedFiles = targets.filter((document) => {
     const dirty = isMediaDocument(document)
       ? annotationSnapshot(document) !== (document.savedAnnotations || '')
-      : document.content !== document.savedContent;
-    return dirty && Boolean(document.path);
+      : isTextDocumentDirty(document);
+    return dirty;
   });
   if (changedSavedFiles.length && !window.confirm(`Close ${targets.length} other tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
-  for (const document of targets) histories.delete(document.id);
+  for (const document of targets) {
+    histories.delete(document.id);
+    saveTargetGenerations.delete(document.id);
+    manualSaveInFlight.delete(document.id);
+    clearExternalChangeForPath(document.path);
+  }
   documents = documents.filter((document) => document.id === currentId);
   documentState = documents[0];
   activeDocumentId = documentState.id;
@@ -2455,11 +2755,16 @@ function closeAllDocuments() {
   const changedSavedFiles = targets.filter((document) => {
     const dirty = isMediaDocument(document)
       ? annotationSnapshot(document) !== (document.savedAnnotations || '')
-      : document.content !== document.savedContent;
-    return dirty && Boolean(document.path);
+      : isTextDocumentDirty(document);
+    return dirty;
   });
   if (changedSavedFiles.length && !window.confirm(`Close all ${targets.length} tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
-  for (const document of targets) histories.delete(document.id);
+  for (const document of targets) {
+    histories.delete(document.id);
+    saveTargetGenerations.delete(document.id);
+    manualSaveInFlight.delete(document.id);
+  }
+  externalChange = null;
   const blank = blankDocument();
   documents = [blank];
   documentState = blank;
@@ -2478,21 +2783,44 @@ function reopenWithEncoding() {
   const target = documentState;
   if (isMediaDocument(target)) return;
   if (!target.path) return;
-  if (target.content !== target.savedContent && !window.confirm(`Reload “${target.name}” from disk and discard its unsaved changes?`)) return;
+  const targetRef = targetFor(target);
+  const contentAtRequest = target.content;
+  const savedContentAtRequest = target.savedContent;
+  if (isTextDocumentDirty(target) && !window.confirm(`Reload “${target.name}” from disk and discard its unsaved changes?`)) return;
   void (async () => {
     try {
       const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
       const content = normaliseLineEndings(result.content);
-      const reopened = { ...target, ...result, content, savedContent: content };
-      if (documentState.id === target.id) commitDocument(reopened);
+      const latest = documents.find((document) => document.id === targetRef.id);
+      if (!latest
+        || !sameSaveTarget(latest, targetRef)
+        || latest.content !== contentAtRequest
+        || latest.savedContent !== savedContentAtRequest) return;
+      const reopened = {
+        ...latest,
+        ...result,
+        content,
+        savedContent: content,
+        recoveryDraft: false,
+        defaultUntitled: false,
+      };
+      if (documentState.id === targetRef.id) commitDocument(reopened);
       else {
-        documents = documents.map((document) => document.id === target.id ? reopened : document);
-        histories.set(target.id, { entries: [reopened.content], index: 0 });
+        documents = documents.map((document) => document.id === targetRef.id ? reopened : document);
+        histories.set(targetRef.id, { entries: [reopened.content], index: 0 });
       }
       updateRecent(result);
       await captureFingerprint(result.path);
       showToast(`Reloaded ${result.name} using ${encodingSelect.options[encodingSelect.selectedIndex].text}.`, 'success');
-    } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+    } catch (error) {
+      if (isMissingSaveTargetError(error) && detachMissingSaveTarget(targetRef)) {
+        render();
+        showToast(`“${target.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
+        return;
+      }
+      const latest = documents.find((document) => document.id === targetRef.id);
+      if (latest && sameSaveTarget(latest, targetRef)) showToast(errorMessage(error), 'error');
+    }
   })();
 }
 
@@ -3021,23 +3349,42 @@ function fingerprintsMatch(left: FileFingerprint, right: FileFingerprint) {
 }
 
 async function watchFiles() {
-  if (externalChange) return;
-  for (const document of documents) {
-    if (document.kind !== 'text' || !document.path) continue;
-    try {
-      const current = await invoke<FileFingerprint>('file_fingerprint', { path: document.path });
-      const previous = fileFingerprints.get(document.path);
-      if (!previous) { fileFingerprints.set(document.path, current); continue; }
-      if (!fingerprintsMatch(previous, current)) {
-        externalChange = { path: document.path, name: document.name, fingerprint: current };
-        render();
-        return;
+  if (!recoveryReady || watchFilesInFlight) return;
+  watchFilesInFlight = true;
+  try {
+    for (const queuedDocument of documents) {
+      if (queuedDocument.kind !== 'text' || !queuedDocument.path || queuedDocument.conflict || manualSaveInFlight.has(queuedDocument.id)) continue;
+      const target = targetFor(queuedDocument);
+      if (!target.path) continue;
+      try {
+        const current = await invoke<FileFingerprint>('file_fingerprint', { path: target.path });
+        const latest = documents.find((document) => document.id === target.id);
+        if (!latest || !sameSaveTarget(latest, target)) continue;
+        const previous = fileFingerprints.get(target.path);
+        if (!previous) { fileFingerprints.set(target.path, current); continue; }
+        if (!fingerprintsMatch(previous, current)) {
+          // A write already in flight must not restore stale state after an
+          // outside change is surfaced. It will be skipped if it has not
+          // reached native I/O yet, and its late response is ignored either
+          // way.
+          markConflict(target);
+          continue;
+        }
+      } catch (error) {
+        const latest = documents.find((document) => document.id === target.id);
+        if (!latest || !sameSaveTarget(latest, target)) continue;
+        // A restored path can disappear between launches. Keep every former
+        // saved file—including an empty untitled file—as a Save As-able draft.
+        if (isMissingSaveTargetError(error) && detachMissingSaveTarget(target)) {
+          render();
+          showToast(`“${latest.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
+          return;
+        }
+        markConflict(target);
       }
-    } catch {
-      externalChange = { path: document.path, name: document.name };
-      render();
-      return;
     }
+  } finally {
+    watchFilesInFlight = false;
   }
 }
 
@@ -3045,40 +3392,98 @@ async function reloadExternalChange() {
   if (!externalChange) return;
   const target = documents.find((document) => document.path === externalChange!.path);
   if (!target) { externalChange = null; render(); return; }
-  if (target.content !== target.savedContent && !window.confirm(`Reload “${target.name}” and discard unsaved changes?`)) return;
+  const targetRef = targetFor(target);
+  const contentAtRequest = target.content;
+  const savedContentAtRequest = target.savedContent;
+  if (isTextDocumentDirty(target) && !window.confirm(`Reload “${target.name}” and discard unsaved changes?`)) return;
   try {
     const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
-    const reopened = { ...target, ...result, content: normaliseLineEndings(result.content), savedContent: normaliseLineEndings(result.content) };
-    documents = documents.map((document) => document.id === target.id ? reopened : document);
-    if (activeDocumentId === target.id) documentState = reopened;
-    histories.set(target.id, { entries: [reopened.content], index: 0 });
-    externalChange = null;
+    const latest = documents.find((document) => document.id === targetRef.id);
+    if (!latest
+      || !sameSaveTarget(latest, targetRef)
+      || latest.content !== contentAtRequest
+      || latest.savedContent !== savedContentAtRequest) return;
+    const content = normaliseLineEndings(result.content);
+    const reopened = {
+      ...latest,
+      ...result,
+      content,
+      savedContent: content,
+      recoveryDraft: false,
+      defaultUntitled: false,
+    };
+    documents = documents.map((document) => document.id === targetRef.id ? reopened : document);
+    if (activeDocumentId === targetRef.id) documentState = reopened;
+    histories.set(targetRef.id, { entries: [reopened.content], index: 0 });
+    clearExternalChangeForPath(target.path);
+    if (activeDocumentId === targetRef.id) documentState = documents.find((document) => document.id === targetRef.id)!;
     await captureFingerprint(result.path);
     render();
     showToast(`Reloaded ${result.name}.`, 'success');
-  } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+    } catch (error) {
+      if (isMissingSaveTargetError(error) && detachMissingSaveTarget(targetRef)) {
+        render();
+        showToast(`“${target.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
+        return;
+      }
+      const latest = documents.find((document) => document.id === targetRef.id);
+      if (latest && sameSaveTarget(latest, targetRef)) showToast(errorMessage(error), 'error');
+    }
 }
 
 async function compareExternalChange() {
   if (!externalChange) return;
   const target = documents.find((document) => document.path === externalChange!.path);
   if (!target) return;
+  const targetRef = targetFor(target);
   try {
     const result = await invoke<OpenedDocument>('open_recent', { path: target.path, encoding: target.encoding });
+    const latest = documents.find((document) => document.id === targetRef.id);
+    if (!latest || !sameSaveTarget(latest, targetRef)) return;
     addDocument({ id: `document-${nextDocumentId++}`, ...result, name: `${result.name} — disk`, path: undefined, content: normaliseLineEndings(result.content), savedContent: normaliseLineEndings(result.content) });
-    externalChange = null;
-    await captureFingerprint(result.path);
-    showToast('Opened the on-disk copy in a comparison tab.', 'success');
-  } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error'); }
+    // Comparing does not authorize overwriting the original.
+    render();
+    showToast('Opened the disk copy. The original stays paused until you resolve the conflict.', 'info');
+  } catch (error) {
+    if (isMissingSaveTargetError(error) && detachMissingSaveTarget(targetRef)) {
+      render();
+      showToast(`“${target.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
+      return;
+    }
+    const latest = documents.find((document) => document.id === targetRef.id);
+    if (latest && sameSaveTarget(latest, targetRef)) showToast(errorMessage(error), 'error');
+  }
 }
 
-function ignoreExternalChange() {
-  if (externalChange?.fingerprint) fileFingerprints.set(externalChange.path, externalChange.fingerprint);
-  externalChange = null;
-  render();
+async function ignoreExternalChange() {
+  if (!externalChange) return;
+  const source = documents.find((document) => document.path === externalChange!.path);
+  if (!source || manualSaveInFlight.has(source.id)) return;
+  const target = targetFor(source);
+  manualSaveInFlight.add(source.id);
+  try {
+    const disk = await invoke<OpenedDocument>('open_recent', { path: source.path, encoding: source.encoding });
+    if (!sameSaveTarget(documents.find((document) => document.id === source.id) || { id: '' }, target)) return;
+    if (!window.confirm(`Replace the current disk version of “${source.name}” with your edits? Use Compare first if you need to inspect it.`)) return;
+    const result = await enqueueDocumentWrite(target, () => invoke<SavedTextFile>('write_file', {
+      path: source.path, content: contentForSave(source.content), encoding: source.encoding, expectedVersion: disk.diskVersion,
+    }));
+    if (!result) return;
+    const latest = documents.find((document) => document.id === target.id);
+    if (!latest || !sameSaveTarget(latest, target)) return;
+    documents = documents.map((document) => document.id === target.id ? { ...document, ...result, savedContent: source.content, conflict: false } : document);
+    clearExternalChangeForPath(source.path);
+    if (activeDocumentId === source.id) documentState = documents.find((document) => document.id === source.id)!;
+    await captureFingerprint(result.path);
+    render();
+  } catch (error) {
+    if (isMissingSaveTargetError(error)) detachMissingSaveTarget(target);
+    showToast(isSaveConflict(error) ? 'The disk file changed again. Compare before trying again.' : errorMessage(error), 'error');
+  } finally { manualSaveInFlight.delete(source.id); }
 }
 
 function handleAction(action?: string) {
+  if (!recoveryReady || shell.inert) return;
   switch (action) {
     case 'new':
     case 'new-text': createDocument(); break;
@@ -3144,7 +3549,12 @@ function handleAction(action?: string) {
     case 'trim-trailing-whitespace': trimTrailingWhitespace(); break;
     case 'reload-external': void reloadExternalChange(); break;
     case 'compare-external': void compareExternalChange(); break;
-    case 'ignore-external': ignoreExternalChange(); break;
+    case 'ignore-external': void ignoreExternalChange(); break;
+    case 'save-both-external': {
+      const target = documents.find((document) => document.path === externalChange?.path);
+      if (target) { activateDocument(target.id); void saveAs(); }
+      break;
+    }
     case 'clear-recents': localStorage.removeItem(RECENTS_KEY); renderRecents(); showToast('Recent files cleared.'); break;
     case 'refresh-outline': renderOutline(); showToast('Outline refreshed.'); break;
     case 'mode-edit': setViewMode('edit'); break;
@@ -3425,28 +3835,55 @@ window.addEventListener('beforeunload', (event) => {
   persistWorkbenchState();
   persistRecovery();
   captureTimeline('Before close');
-  if (!documents.some((document) => document.content !== document.savedContent)) return;
+  if (!documents.some((document) => document.kind === 'text' && isTextDocumentDirty(document))) return;
   event.preventDefault();
   event.returnValue = '';
 });
 
-restoreSession();
-applyEditorAppearance();
-applyEditorOptions();
-applySidebarLayout();
-applyPreviewLayout();
-applyUiTheme();
-applyUiScale();
-applyEditorSurface();
-setupTransientMenus();
-startSidebarResizing();
-startPreviewResizing();
-startSidebarAutoHide();
-render();
-renderProjectTree();
-void refreshProjectFolder(true);
-void startExternalFileHandling();
-void startDragAndDrop();
+shell.inert = true;
+async function startWorkspace() {
+  await listen('recovery-close-requested', async () => {
+    if (!recoveryReady || shell.inert) return;
+    shell.inert = true;
+    try {
+      persistWorkbenchState();
+      captureTimeline('Before close');
+      await flushStableRecovery(() => documents, async () => {
+        if (!await persistRecovery()) throw new Error('Recovery is unavailable. Use Save As to rescue your work.');
+      });
+      await invoke('recovery_finish_close');
+    } catch (error) {
+      showToast(`Could not close safely: ${errorMessage(error)}`, 'error');
+      if (window.confirm('Recovery could not be saved. Close anyway? Unsaved work from this session may be lost. Choose Cancel to keep editing or use Save As.')) await invoke('recovery_finish_close');
+    } finally { shell.inert = false; }
+  });
+  let durable: unknown;
+  try { durable = (await invoke<{ payload: unknown } | null>('recovery_load'))?.payload; }
+  catch (error) {
+    recoveryLoadFailed = true;
+    required<HTMLElement>('.recovery-status').textContent = `Recovery could not be read: ${errorMessage(error)}. Existing recovery is preserved.`;
+  }
+  restoreSession(durable);
+  recoveryReady = true;
+  shell.inert = false;
+  applyEditorAppearance();
+  applyEditorOptions();
+  applySidebarLayout();
+  applyPreviewLayout();
+  applyUiTheme();
+  applyUiScale();
+  applyEditorSurface();
+  setupTransientMenus();
+  startSidebarResizing();
+  startPreviewResizing();
+  startSidebarAutoHide();
+  render();
+  renderProjectTree();
+  void refreshProjectFolder(true);
+  void startExternalFileHandling();
+  void startDragAndDrop();
+}
+void startWorkspace();
 window.addEventListener('resize', () => {
   const constrained = clampSidebarWidth(sidebarWidth);
   if (constrained !== sidebarWidth) setSidebarWidth(constrained);

@@ -3219,9 +3219,11 @@ dependencies = [
  "base64 0.22.1",
  "cc",
  "encoding_rs",
+ "libc",
  "rfd",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
 ]

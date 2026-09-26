@@ -12,8 +12,15 @@ const desktop = isTauriDesktop()
   ? createTauriDesktopApi()
   : createBrowserDesktopApi();
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App desktop={desktop} />
-  </StrictMode>,
-);
+async function start() {
+  let recovery: unknown;
+  let recoveryError: string | undefined;
+  try { recovery = (await desktop.recovery.load())?.payload; }
+  catch (error) { recoveryError = String(error); }
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App desktop={desktop} initialRecovery={recovery} recoveryLoadError={recoveryError} />
+    </StrictMode>,
+  );
+}
+void start();

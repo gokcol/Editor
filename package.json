@@ -5,6 +5,7 @@
   "author": "Orhan Gökçöl",
   "private": true,
   "scripts": {
+    "test": "node --test shared/*.test.ts",
     "dev": "npm run tauri:dev",
     "dev:web": "vite",
     "build": "node scripts/copy-monaco.cjs && tsc --noEmit && vite build",

@@ -1,8 +1,14 @@
 mod text_encoding;
+#[path = "../../../shared/file_version.rs"]
+mod file_version;
+#[path = "../../../shared/recovery.rs"]
+mod recovery;
 mod pdf_export;
 
 use std::{
-    env, fs,
+    env,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,6 +32,7 @@ const MAX_BROWSER_ENTRIES: usize = 8_000;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenedDocument {
+    disk_version: Option<String>,
     name: String,
     path: String,
     content: String,
@@ -36,9 +43,10 @@ struct OpenedDocument {
     mime_type: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedTextFile {
+    disk_version: String,
     name: String,
     path: String,
     encoding: String,
@@ -231,18 +239,25 @@ fn media_kind_and_mime(path: &Path, bytes: &[u8]) -> Option<(&'static str, &'sta
 }
 
 fn read_document_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedDocument, String> {
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
+    let metadata = fs::symlink_metadata(&path).map_err(read_document_error)?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err("Only regular files can be opened here.".to_owned());
     }
     if metadata.len() > MAX_MEDIA_BYTES {
         return Err("That file is larger than 64 MB.".to_owned());
     }
-    let real_path = fs::canonicalize(&path).map_err(|_| "That file is unavailable.".to_owned())?;
-    let bytes = fs::read(&real_path).map_err(|_| "That file is unavailable.".to_owned())?;
+    let real_path = fs::canonicalize(&path).map_err(read_document_error)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW); }
+    let mut file = options.open(&real_path).map_err(read_document_error)?;
+    let metadata = file.metadata().map_err(read_document_error)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(read_document_error)?;
     if let Some((kind, mime_type)) = media_kind_and_mime(&real_path, &bytes) {
         return Ok(OpenedDocument {
+            disk_version: None,
             name: text_file_name(&real_path),
             path: real_path.to_string_lossy().into_owned(),
             content: String::new(),
@@ -268,6 +283,7 @@ fn read_document_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedD
     }
     let decoded = text_encoding::decode(&bytes, encoding.as_deref())?;
     Ok(OpenedDocument {
+        disk_version: Some(file_version::version(&bytes, &metadata)),
         name: text_file_name(&real_path),
         path: real_path.to_string_lossy().into_owned(),
         content: decoded.content,
@@ -357,22 +373,117 @@ fn checked_content(content: &str) -> Result<(), String> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SaveTargetPolicy {
+    MayCreate,
+    MustExist,
+}
+
+const SAVE_TARGET_MISSING: &str =
+    "SAVE_TARGET_MISSING: This saved file was moved or deleted. Use Save As to choose a new location.";
+
+/// Keep an actual missing source distinguishable from a permission or decoding
+/// problem. The renderer uses this stable marker to retain the existing text
+/// as a recovery draft; other failures should remain actionable errors rather
+/// than silently severing a valid binding.
+fn read_document_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        SAVE_TARGET_MISSING.to_owned()
+    } else {
+        format!("That file is unavailable: {error}")
+    }
+}
+
 fn save_text_file(
     path: PathBuf,
     content: String,
     encoding: Option<String>,
+    policy: SaveTargetPolicy,
+) -> Result<SavedTextFile, String> {
+    save_text_file_versioned(path, content, encoding, policy, None)
+}
+
+fn save_text_file_versioned(
+    path: PathBuf, content: String, encoding: Option<String>, policy: SaveTargetPolicy,
+    expected_version: Option<&str>,
 ) -> Result<SavedTextFile, String> {
     checked_content(&content)?;
-    if let Ok(metadata) = fs::symlink_metadata(&path) {
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            return Err("That save target is not a regular file.".to_owned());
+    let create_new = match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return Err("That save target is not a regular file.".to_owned());
+            }
+            false
         }
-    }
+        Err(error)
+            if matches!(policy, SaveTargetPolicy::MustExist)
+                && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(SAVE_TARGET_MISSING.to_owned());
+        }
+        Err(error)
+            if matches!(policy, SaveTargetPolicy::MayCreate)
+                && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            // Save As is allowed to create a selected, as-yet nonexistent path.
+            // A later write will return the concrete operating-system error if its
+            // containing folder is unavailable or permissions prevent creation.
+            true
+        }
+        Err(error) => {
+            return Err(format!("Could not inspect that save target: {error}"));
+        }
+    };
     let (bytes, encoding) = text_encoding::encode(&content, encoding.as_deref())?;
-    fs::write(&path, bytes).map_err(|error| format!("Could not save this file: {error}"))?;
-    let real_path =
-        fs::canonicalize(&path).map_err(|_| "The saved file could not be resolved.".to_owned())?;
+    // Never use `fs::write` here: it creates a missing target after a prior
+    // metadata check. Opening an existing target without `create` makes an
+    // ordinary Save/autosave fail recoverably if Finder removes the file in
+    // that small interval. Save As intentionally uses create_new instead.
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .create_new(create_new);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&path).map_err(|error| {
+        if matches!(policy, SaveTargetPolicy::MustExist)
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            SAVE_TARGET_MISSING.to_owned()
+        } else {
+            format!("Could not save this file: {error}")
+        }
+    })?;
+    if let Some(version) = expected_version { file_version::check(&mut file, version)?; }
+    let disk_version = file_version::version(&bytes, &file.metadata().map_err(|e| e.to_string())?);
+    file.set_len(0).map_err(|e| e.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            if matches!(policy, SaveTargetPolicy::MustExist)
+                && error.kind() == std::io::ErrorKind::NotFound
+            {
+                SAVE_TARGET_MISSING.to_owned()
+            } else {
+                format!("Could not save this file: {error}")
+            }
+        })?;
+    let real_path = fs::canonicalize(&path).map_err(|error| {
+        if matches!(policy, SaveTargetPolicy::MustExist)
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            SAVE_TARGET_MISSING.to_owned()
+        } else {
+            "The saved file could not be resolved.".to_owned()
+        }
+    })?;
     Ok(SavedTextFile {
+        disk_version,
         name: text_file_name(&real_path),
         path: real_path.to_string_lossy().into_owned(),
         encoding,
@@ -463,8 +574,13 @@ fn take_pending_open_files(state: State<PendingExternalFiles>) -> Vec<String> {
 #[tauri::command]
 fn file_fingerprint(path: String) -> Result<FileFingerprint, String> {
     let path = PathBuf::from(path);
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|_| "That file is unavailable.".to_owned())?;
+    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            SAVE_TARGET_MISSING.to_owned()
+        } else {
+            format!("That file is unavailable: {error}")
+        }
+    })?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err("Only regular text files can be watched here.".to_owned());
     }
@@ -656,7 +772,7 @@ fn save_as(
         format!("{}.txt", suggested_name.trim_end_matches('.'))
     };
     let path = FileDialog::new().set_file_name(&fallback_name).save_file();
-    path.map(|path| save_text_file(path, content, encoding))
+    path.map(|path| save_text_file(path, content, encoding, SaveTargetPolicy::MayCreate))
         .transpose()
 }
 
@@ -665,8 +781,16 @@ fn write_file(
     path: String,
     content: String,
     encoding: Option<String>,
+    expected_version: Option<String>,
 ) -> Result<SavedTextFile, String> {
-    save_text_file(PathBuf::from(path), content, encoding)
+    let version = expected_version.ok_or_else(|| file_version::SAVE_CONFLICT.to_owned())?;
+    save_text_file_versioned(
+        PathBuf::from(path),
+        content,
+        encoding,
+        SaveTargetPolicy::MustExist,
+        Some(&version),
+    )
 }
 
 fn item<R: Runtime>(
@@ -819,12 +943,21 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(recovery::RecoveryStore::default())
         .manage(PendingExternalFiles::default())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if recovery::request_close(window.app_handle(), false) { api.prevent_close(); }
+            }
+        })
         .menu(|app| menu(app))
         .on_menu_event(|app, event| {
             let _ = app.emit_to("main", "menu-action", event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            recovery::recovery_load,
+            recovery::recovery_save,
+            recovery::recovery_finish_close,
             open_file,
             open_recent,
             open_folder,
@@ -848,6 +981,9 @@ pub fn run() {
         .expect("error while building 7TXT");
     queue_external_open_paths(app.handle(), initial_open_paths());
     app.run(|app, event| {
+        if let RunEvent::ExitRequested { api, .. } = &event {
+            if recovery::request_close(app, true) { api.prevent_exit(); }
+        }
         #[cfg(target_os = "macos")]
         if let RunEvent::Opened { urls } = event {
             queue_external_open_paths(
@@ -861,6 +997,45 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflict_checks_bytes_and_rejects_disk_changes_since_review() {
+        let folder = std::env::temp_dir().join(format!("7txt-conflict-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let target = folder.join("draft.txt");
+        fs::write(&target, "original").unwrap();
+        let opened = read_document_file(target.clone(), None).unwrap();
+        let modified = fs::metadata(&target).unwrap().modified().unwrap();
+        fs::write(&target, "external").unwrap();
+        fs::File::options().write(true).open(&target).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        let save = |version: Option<String>| write_file(target.to_string_lossy().into_owned(), "my edits".into(), None, version);
+        assert_eq!(save(opened.disk_version).unwrap_err(), file_version::SAVE_CONFLICT);
+        let reviewed = read_document_file(target.clone(), None).unwrap();
+        fs::write(&target, "changed again").unwrap();
+        assert_eq!(save(reviewed.disk_version).unwrap_err(), file_version::SAVE_CONFLICT);
+        assert_eq!(fs::read(&target).unwrap(), b"changed again");
+        let latest = read_document_file(target.clone(), None).unwrap();
+        let saved = save(latest.disk_version).unwrap();
+        assert_eq!(Some(saved.disk_version), read_document_file(target.clone(), None).unwrap().disk_version);
+        assert_eq!(fs::read(&target).unwrap(), b"my edits");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn conflict_replacement_with_identical_bytes_still_requires_consent() {
+        let folder = std::env::temp_dir().join(format!("7txt-replacement-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let target = folder.join("draft.txt");
+        fs::write(&target, "original").unwrap();
+        let opened = read_document_file(target.clone(), None).unwrap();
+        fs::rename(&target, folder.join("moved.txt")).unwrap();
+        fs::write(&target, "original").unwrap();
+        assert_eq!(write_file(target.to_string_lossy().into_owned(), "my edits".into(), None, opened.disk_version).unwrap_err(), file_version::SAVE_CONFLICT);
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert_eq!(fs::read(folder.join("moved.txt")).unwrap(), b"original");
+        fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn file_browser_lists_folders_and_files() {
@@ -935,5 +1110,50 @@ mod tests {
         assert!(pdf_document.media_data.is_some());
         assert_eq!(image_document.kind, "image");
         assert_eq!(image_document.mime_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn stale_autosave_target_reports_a_recoverable_missing_file_error() {
+        let folder = std::env::temp_dir().join(format!(
+            "7txt-stale-autosave-{}",
+            std::process::id()
+        ));
+        let missing = folder.join("untitled.txt");
+        fs::create_dir_all(&folder).expect("create fixture folder");
+        fs::write(&missing, "Original draft").expect("create source file");
+        let version = read_document_file(missing.clone(), None).unwrap().disk_version;
+        fs::remove_file(&missing).expect("remove source file");
+        let result = write_file(
+            missing.to_string_lossy().into_owned(),
+            "Recovered draft".to_owned(),
+            None,
+            version,
+        );
+
+        assert_eq!(
+            result.err().expect("missing target must not be recreated"),
+            SAVE_TARGET_MISSING
+        );
+        assert!(!missing.exists());
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn stale_read_target_reports_a_recoverable_missing_file_error() {
+        let folder = std::env::temp_dir().join(format!("7txt-stale-read-{}", std::process::id()));
+        let missing = folder.join("untitled.txt");
+        fs::create_dir_all(&folder).expect("create fixture folder");
+        fs::write(&missing, "Original draft").expect("create source file");
+        fs::remove_file(&missing).expect("remove source file");
+
+        let result = read_document_file(missing, None);
+
+        assert_eq!(
+            result
+                .err()
+                .expect("a stale read target must be recoverable"),
+            SAVE_TARGET_MISSING
+        );
+        let _ = fs::remove_dir_all(folder);
     }
 }

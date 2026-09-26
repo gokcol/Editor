@@ -52,13 +52,16 @@ export const TAURI_EXTERNAL_OPEN_FILES_EVENT = 'external-open-files';
  * the workbench.
  */
 type TauriCommandArgs = {
+  recovery_load: EmptyArgs;
+  recovery_save: { payload: unknown };
+  recovery_finish_close: EmptyArgs;
   project_open: EmptyArgs;
   project_open_file: { projectRoot?: Parameters<ProjectApi['openFile']>[0]; encoding?: Parameters<ProjectApi['openFile']>[1] };
   project_reveal_open_file_folder: { fileHandle: Parameters<ProjectApi['revealOpenedFileFolder']>[0] };
   project_create: { name: Parameters<ProjectApi['create']>[0] };
   project_refresh: { root: Parameters<ProjectApi['refresh']>[0] };
-  project_read_file: { root: Parameters<ProjectApi['readFile']>[0]; relativePath: Parameters<ProjectApi['readFile']>[1]; encoding?: Parameters<ProjectApi['readFile']>[2] };
-  project_write_file: { root: Parameters<ProjectApi['writeFile']>[0]; relativePath: Parameters<ProjectApi['writeFile']>[1]; content: Parameters<ProjectApi['writeFile']>[2]; encoding?: Parameters<ProjectApi['writeFile']>[3] };
+  project_read_file: { root: Parameters<ProjectApi['readFile']>[0]; relativePath: Parameters<ProjectApi['readFile']>[1]; encoding?: Parameters<ProjectApi['readFile']>[2]; bindingMode?: Parameters<ProjectApi['readFile']>[3] };
+  project_write_file: { root: Parameters<ProjectApi['writeFile']>[0]; relativePath: Parameters<ProjectApi['writeFile']>[1]; content: Parameters<ProjectApi['writeFile']>[2]; encoding?: Parameters<ProjectApi['writeFile']>[3]; expectedVersion?: Parameters<ProjectApi['writeFile']>[4] };
   project_create_file: { root: Parameters<ProjectApi['createFile']>[0]; relativePath: Parameters<ProjectApi['createFile']>[1]; content: Parameters<ProjectApi['createFile']>[2] };
   project_rename_file: { root: Parameters<ProjectApi['renameFile']>[0]; fromRelativePath: Parameters<ProjectApi['renameFile']>[1]; toRelativePath: Parameters<ProjectApi['renameFile']>[2] };
   project_duplicate_file: { root: Parameters<ProjectApi['duplicateFile']>[0]; fromRelativePath: Parameters<ProjectApi['duplicateFile']>[1]; toRelativePath: Parameters<ProjectApi['duplicateFile']>[2] };
@@ -70,7 +73,7 @@ type TauriCommandArgs = {
   project_build_profiles: EmptyArgs;
   project_run_build: { root: Parameters<ProjectApi['runBuild']>[0]; relativePath: Parameters<ProjectApi['runBuild']>[1]; profileId: Parameters<ProjectApi['runBuild']>[2] };
   project_run_python: { source: Parameters<PythonRunner>[0]; name: Parameters<PythonRunner>[1]; options?: Parameters<PythonRunner>[2] };
-  project_write_open_file: { fileHandle: Parameters<ProjectApi['writeOpenedFile']>[0]; content: Parameters<ProjectApi['writeOpenedFile']>[1]; encoding?: Parameters<ProjectApi['writeOpenedFile']>[2] };
+  project_write_open_file: { fileHandle: Parameters<ProjectApi['writeOpenedFile']>[0]; content: Parameters<ProjectApi['writeOpenedFile']>[1]; encoding?: Parameters<ProjectApi['writeOpenedFile']>[2]; expectedVersion?: Parameters<ProjectApi['writeOpenedFile']>[3] };
   project_read_open_file: { fileHandle: Parameters<ProjectApi['readOpenedFile']>[0]; encoding?: Parameters<ProjectApi['readOpenedFile']>[1] };
   project_save_as: { suggestedName: Parameters<ProjectApi['saveAs']>[0]; content: Parameters<ProjectApi['saveAs']>[1]; sourceType: Parameters<ProjectApi['saveAs']>[2]; projectRoot?: Parameters<ProjectApi['saveAs']>[3]; encoding?: Parameters<ProjectApi['saveAs']>[4] };
   recents_list: EmptyArgs;
@@ -100,6 +103,9 @@ type TauriCommandArgs = {
 };
 
 type TauriCommandResult = {
+  recovery_load: Awaited<ReturnType<DesktopApi['recovery']['load']>>;
+  recovery_save: number;
+  recovery_finish_close: void;
   project_open: Awaited<ReturnType<ProjectApi['open']>>;
   project_open_file: Awaited<ReturnType<ProjectApi['openFile']>>;
   project_reveal_open_file_folder: Awaited<ReturnType<ProjectApi['revealOpenedFileFolder']>>;
@@ -257,8 +263,8 @@ export function createTauriDesktopApi(): DesktopApi {
       revealOpenedFileFolder: (fileHandle) => invokeCommand('project_reveal_open_file_folder', { fileHandle }),
       create: (name) => invokeCommand('project_create', { name }),
       refresh: (root) => invokeCommand('project_refresh', { root }),
-      readFile: (root, relativePath, encoding) => invokeCommand('project_read_file', { root, relativePath, encoding }),
-      writeFile: (root, relativePath, content, encoding) => invokeCommand('project_write_file', { root, relativePath, content, encoding }),
+      readFile: (root, relativePath, encoding, bindingMode) => invokeCommand('project_read_file', { root, relativePath, encoding, bindingMode }),
+      writeFile: (root, relativePath, content, encoding, expectedVersion) => invokeCommand('project_write_file', { root, relativePath, content, encoding, expectedVersion }),
       createFile: (root, relativePath, content) => invokeCommand('project_create_file', { root, relativePath, content }),
       renameFile: (root, fromRelativePath, toRelativePath) => invokeCommand('project_rename_file', { root, fromRelativePath, toRelativePath }),
       duplicateFile: (root, fromRelativePath, toRelativePath) => invokeCommand('project_duplicate_file', { root, fromRelativePath, toRelativePath }),
@@ -289,9 +295,15 @@ export function createTauriDesktopApi(): DesktopApi {
       buildProfiles: () => invokeCommand('project_build_profiles'),
       runBuild: (root, relativePath, profileId) => invokeCommand('project_run_build', { root, relativePath, profileId }),
       runPython: (source, name, options) => invokeCommand('project_run_python', { source, name, options }),
-      writeOpenedFile: (fileHandle, content, encoding) => invokeCommand('project_write_open_file', { fileHandle, content, encoding }),
+      writeOpenedFile: (fileHandle, content, encoding, expectedVersion) => invokeCommand('project_write_open_file', { fileHandle, content, encoding, expectedVersion }),
       readOpenedFile: (fileHandle, encoding) => invokeCommand('project_read_open_file', { fileHandle, encoding }),
       saveAs: (suggestedName, content, sourceType, projectRoot, encoding) => invokeCommand('project_save_as', { suggestedName, content, sourceType, projectRoot, encoding }),
+    },
+    recovery: {
+      load: () => invokeCommand('recovery_load'),
+      save: (payload) => invokeCommand('recovery_save', { payload }),
+      onCloseRequested: (handler) => listen('recovery-close-requested', () => { void handler(); }),
+      finishClose: () => invokeCommand('recovery_finish_close'),
     },
     recents: {
       list: () => invokeCommand('recents_list'),

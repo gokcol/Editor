@@ -7,6 +7,9 @@
   ],
   "permissions": [
     "core:default",
+    "allow-recovery-load",
+    "allow-recovery-save",
+    "allow-recovery-finish-close",
     "allow-project-open",
     "allow-project-open-file",
     "allow-project-reveal-open-file-folder",

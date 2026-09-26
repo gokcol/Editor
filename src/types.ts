@@ -103,22 +103,32 @@ export type Project = {
 };
 
 export type DocumentModel = {
+  diskVersion?: string;
+  conflict?: boolean;
+  recoveryOrigin?: string;
   id: string;
   name: string;
   sourceType: SourceType;
   value: string;
   relativePath?: string;
+  /** Project that owns `relativePath`; prevents a tab from following a later folder switch. */
+  projectRoot?: string;
   /** Opaque main-process permission for a file opened outside a project. */
   fileHandle?: string;
   /** Codec used to decode the file and to preserve its byte representation on save. */
   encoding?: CharacterEncoding;
   /** Pinned tabs stay open until explicitly unpinned. */
   pinned?: boolean;
+  /** A saved target disappeared; retain this as a Save As-able recovery draft. */
+  recoveryDraft?: boolean;
+  /** The untouched launch/new tab may be omitted from scratch-session restore. */
+  defaultUntitled?: boolean;
   dirty: boolean;
   revision: number;
 };
 
 export type OpenedProjectSourceFile = {
+  diskVersion?: string;
   name: string;
   sourceType: SourceType;
   content: string;
@@ -128,6 +138,7 @@ export type OpenedProjectSourceFile = {
 };
 
 export type OpenedStandaloneSourceFile = {
+  diskVersion?: string;
   name: string;
   sourceType: SourceType;
   content: string;
@@ -145,6 +156,7 @@ export type ExternalOpenFilesResult = {
 };
 
 export type DecodedSourceFile = {
+  diskVersion?: string;
   content: string;
   encoding: CharacterEncoding;
 };

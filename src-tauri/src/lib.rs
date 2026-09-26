@@ -3,6 +3,10 @@
 //! filesystem capability.
 
 mod core;
+#[path = "../../shared/file_version.rs"]
+mod file_version;
+#[path = "../../shared/recovery.rs"]
+mod recovery;
 mod html_export;
 mod menu;
 mod models;
@@ -71,6 +75,7 @@ fn queue_external_open_paths<R: Runtime>(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(recovery::RecoveryStore::default())
         .manage(PendingExternalFiles::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -89,6 +94,9 @@ pub fn run() {
             menu::dispatch_menu_action(app, event.id().as_ref());
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if recovery::request_close(window.app_handle(), false) { api.prevent_close(); }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window
                     .state::<state::CoreState>()
@@ -96,6 +104,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            recovery::recovery_load,
+            recovery::recovery_save,
+            recovery::recovery_finish_close,
             core::project_open,
             core::project_open_file,
             core::project_reveal_open_file_folder,
@@ -146,6 +157,9 @@ pub fn run() {
         .expect("error while building Yedit");
     queue_external_open_paths(app.handle(), initial_open_paths());
     app.run(|app, event| {
+        if let RunEvent::ExitRequested { api, .. } = &event {
+            if recovery::request_close(app, true) { api.prevent_exit(); }
+        }
         #[cfg(target_os = "macos")]
         if let RunEvent::Opened { urls } = event {
             queue_external_open_paths(

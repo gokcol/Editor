@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "allow-recovery-load",
+    "allow-recovery-save",
+    "allow-recovery-finish-close",
     "allow-open-file",
     "allow-open-recent",
     "allow-open-folder",

@@ -14,7 +14,8 @@ import { formatJson, inferJsonSchema, inspectJson, minifyJson } from './engine/j
 import { compactPath, documentOutline, findInSource, fuzzyScore, sourceFromAssistantReply, sourceReviewDiff, textStatistics, upsertMarkdownTableOfContents } from './engine/workbench';
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
 import type { DesktopApi } from './desktop/contract';
-import type { AppSettings, CharacterEncoding, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, ProjectTask, ProjectTaskResult, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
+import { createRecoveryQueue, flushStableRecovery } from '../shared/recoveryQueue';
+import type { AppSettings, CharacterEncoding, DecodedSourceFile, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, ProjectTask, ProjectTaskResult, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
 // into `file:///vs` inside a packaged desktop worker, which makes Monaco fall
@@ -299,6 +300,7 @@ function makeBlankDocument(type: SourceType = 'text'): DocumentModel {
     encoding: 'utf-8',
     dirty: false,
     revision: 0,
+    defaultUntitled: true,
   };
 }
 
@@ -367,6 +369,18 @@ function ancestorFolderPaths(relativePath: string) {
   const parts = relativePath.split('/').filter(Boolean);
   parts.pop();
   return parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+}
+
+// File watchers commonly report the directory that changed rather than every
+// file below it. An empty/`.` path denotes the project root itself.
+function projectPathWasChanged(relativePath: string, changedPaths: Set<string>) {
+  const normalizedPath = relativePath.split('/').filter((part) => part && part !== '.').join('/');
+  return [...changedPaths].some((changedPath) => {
+    const normalizedChange = changedPath.split('/').filter((part) => part && part !== '.').join('/');
+    return !normalizedChange
+      || normalizedPath === normalizedChange
+      || normalizedPath.startsWith(`${normalizedChange}/`);
+  });
 }
 
 function sanitizeSvg(svg: string) {
@@ -564,6 +578,13 @@ type WorkbenchSession = {
   previewBackground?: PreviewBackground;
   pythonInspectorView?: 'output' | 'source';
 };
+type SaveTarget = {
+  id: string;
+  relativePath?: string;
+  fileHandle?: string;
+  projectRoot?: string;
+  generation: number;
+};
 
 const LEGACY_RECENT_PROJECTS_KEY = 'diagram-foundry:recent-projects';
 const LEGACY_RECENT_PROJECTS_MIGRATION_KEY = 'yedit:recents-native-migration-v1';
@@ -571,8 +592,10 @@ const PALETTE_HISTORY_KEY = 'diagram-foundry:palette-history';
 const SHORTCUTS_KEY = 'diagram-foundry:shortcuts';
 const SCRATCH_SESSION_KEY = 'yedit:scratch-session-v1';
 const WORKBENCH_SESSION_KEY = 'yedit:workspace-session-v1';
-const MAX_SCRATCH_SESSION_DOCUMENTS = 12;
-const MAX_SCRATCH_SESSION_CHARACTERS = 1_500_000;
+// A stable marker returned by the native shell for a standalone file whose
+// original location was removed. Keep the broader checks too: project files
+// and older packaged shells report the platform's ENOENT wording instead.
+const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
 const MAX_RESTORED_PROJECT_TABS = 30;
 // Fixed-size tabs stay easy to scan. When the strip fills, each step is a
 // 25% reduction; after the last step, the strip scrolls instead of shrinking
@@ -600,8 +623,41 @@ const DEFAULT_SHORTCUTS: ShortcutBindings = {
   build: 'Meta+Shift+B',
 };
 
-function historyScope(project: Project | null, document: DocumentModel) {
-  return project && document.relativePath ? `${project.root}:${document.relativePath}` : `scratch:${document.id}`;
+function historyScope(document: DocumentModel) {
+  const root = document.projectRoot;
+  return root && document.relativePath ? `${root}:${document.relativePath}` : `scratch:${document.id}`;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingSaveTargetError(error: unknown) {
+  const message = errorMessage(error);
+  return message.startsWith(SAVE_TARGET_MISSING_PREFIX)
+    || /(?:no such file(?: or directory)?|os error 2|enoent|source file is no longer available|saved file was moved or deleted)/i.test(message);
+}
+
+function isSaveConflict(error: unknown) { return errorMessage(error).startsWith('SAVE_CONFLICT:'); }
+
+function isEmptyDefaultUntitledDocument(document: Pick<DocumentModel, 'name' | 'sourceType' | 'value' | 'relativePath' | 'fileHandle' | 'pinned' | 'recoveryDraft' | 'defaultUntitled'>) {
+  return document.defaultUntitled === true
+    && document.name.toLocaleLowerCase() === `untitled.${SOURCE_META[document.sourceType].extension}`
+    && !document.pinned
+    && !document.recoveryDraft
+    && !document.value
+    && !document.relativePath
+    && !document.fileHandle;
+}
+
+function sameSaveTarget(
+  document: Pick<DocumentModel, 'id' | 'relativePath' | 'projectRoot' | 'fileHandle'>,
+  target: Pick<SaveTarget, 'id' | 'relativePath' | 'projectRoot' | 'fileHandle'>,
+) {
+  return document.id === target.id
+    && document.relativePath === target.relativePath
+    && document.projectRoot === target.projectRoot
+    && document.fileHandle === target.fileHandle;
 }
 
 function displayTime(timestamp: number) {
@@ -620,9 +676,9 @@ function legacyRecentProjects() {
   }
 }
 
-function restoredScratchSession(fallback: DocumentModel): { documents: DocumentModel[]; activeId: string; restored: boolean } {
+function restoredScratchSession(fallback: DocumentModel, durable?: unknown): { documents: DocumentModel[]; activeId: string; restored: boolean } {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(SCRATCH_SESSION_KEY) || '{}');
+    const parsed: unknown = durable ?? JSON.parse(window.localStorage.getItem(SCRATCH_SESSION_KEY) || '{}');
     const candidate = parsed && typeof parsed === 'object' ? parsed as { documents?: unknown; activeId?: unknown } : {};
     if (!Array.isArray(candidate.documents)) return { documents: [fallback], activeId: fallback.id, restored: false };
     const documents = candidate.documents
@@ -633,6 +689,12 @@ function restoredScratchSession(fallback: DocumentModel): { documents: DocumentM
         value: string;
         revision?: unknown;
         pinned?: unknown;
+        recoveryDraft?: unknown;
+        defaultUntitled?: unknown;
+        encoding?: CharacterEncoding;
+        recoveryOrigin?: string;
+        relativePath?: string;
+        projectRoot?: string;
       } => (
         Boolean(value)
         && typeof value === 'object'
@@ -642,16 +704,23 @@ function restoredScratchSession(fallback: DocumentModel): { documents: DocumentM
         && typeof (value as Record<string, unknown>).sourceType === 'string'
         && SOURCE_TYPES.includes((value as Record<string, unknown>).sourceType as SourceType)
       ))
-      .slice(0, MAX_SCRATCH_SESSION_DOCUMENTS)
       .map((value) => ({
         id: value.id,
         name: value.name,
         sourceType: value.sourceType as SourceType,
-        value: value.value.slice(0, MAX_SCRATCH_SESSION_CHARACTERS),
+        value: value.value,
+        encoding: value.encoding,
+        recoveryOrigin: value.recoveryOrigin ?? (value.relativePath ? `${value.projectRoot || ''}/${value.relativePath}` : undefined),
         dirty: true,
         revision: typeof value.revision === 'number' && Number.isFinite(value.revision) ? Math.max(0, Math.round(value.revision)) : 0,
-        pinned: value.pinned === true,
-      }));
+        pinned: !(value.relativePath || value.recoveryOrigin) && value.pinned === true,
+        recoveryDraft: durable !== undefined || value.recoveryDraft === true,
+        defaultUntitled: value.defaultUntitled === true,
+      }))
+      // A previous version could preserve its untouched launch tab as a
+      // recovery draft. It has no work to recover, so restore a fresh,
+      // clean fallback instead of making the user dismiss it on every launch.
+      .filter((document) => !isEmptyDefaultUntitledDocument(document));
     if (!documents.length) return { documents: [fallback], activeId: fallback.id, restored: false };
     const requestedActive = typeof candidate.activeId === 'string' ? candidate.activeId : '';
     return { documents, activeId: documents.some((document) => document.id === requestedActive) ? requestedActive : documents[0].id, restored: true };
@@ -726,29 +795,6 @@ function rememberWorkbenchSession(session: WorkbenchSession) {
   }
 }
 
-function rememberScratchSession(documents: DocumentModel[], activeId: string) {
-  try {
-    let usedCharacters = 0;
-    const scratch = documents
-      .filter((document) => !document.relativePath && !document.fileHandle)
-      .slice(0, MAX_SCRATCH_SESSION_DOCUMENTS)
-      .filter((document) => {
-        usedCharacters += document.value.length;
-        return usedCharacters <= MAX_SCRATCH_SESSION_CHARACTERS;
-      })
-      .map(({ id, name, sourceType, value, revision, pinned }) => ({ id, name, sourceType, value, revision, pinned: pinned === true }));
-    if (!scratch.length) {
-      window.localStorage.removeItem(SCRATCH_SESSION_KEY);
-      return;
-    }
-    const restoredActive = scratch.some((document) => document.id === activeId) ? activeId : scratch[0].id;
-    window.localStorage.setItem(SCRATCH_SESSION_KEY, JSON.stringify({ documents: scratch, activeId: restoredActive }));
-  } catch {
-    // Session recovery is an enhancement; a full or blocked local store must
-    // never interrupt editing or saving the actual source files.
-  }
-}
-
 function sourceFilenameForDrop(name: string, type: SourceType) {
   // Preserve custom extensions such as `.dat` when a text file is dropped.
   // Its detected source mode may be plain text, but the filename is still
@@ -793,9 +839,22 @@ function shortcutLabel(shortcut: string) {
   return shortcut.replaceAll('Meta', '⌘').replaceAll('Ctrl', '⌃').replaceAll('Alt', '⌥').replaceAll('Shift', '⇧').replaceAll('+', '');
 }
 
-function App({ desktop }: { desktop: DesktopApi }) {
+function recoveryPayload(documents: DocumentModel[], activeId: string) {
+  return { activeId, documents: documents.filter((document) => (
+    !isEmptyDefaultUntitledDocument(document)
+    && (document.dirty || (!document.relativePath && !document.fileHandle))
+  )).map(({ fileHandle: _permission, ...document }) => ({
+    ...document,
+    recoveryOrigin: document.recoveryOrigin ?? (document.relativePath ? `${document.projectRoot || ''}/${document.relativePath}` : _permission ? document.name : undefined),
+  })) };
+}
+
+function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: DesktopApi; initialRecovery?: unknown; recoveryLoadError?: string }) {
   const initialDocument = useMemo(() => makeBlankDocument(), []);
-  const initialScratchSession = useMemo(() => restoredScratchSession(initialDocument), [initialDocument]);
+  const initialScratchSession = useMemo(() => restoredScratchSession(initialDocument, initialRecovery), [initialDocument, initialRecovery]);
+  const recoveryQueue = useMemo(() => createRecoveryQueue(desktop.recovery.save), [desktop]);
+  const [recoveryStatus, setRecoveryStatus] = useState(recoveryLoadError ? `Recovery unavailable: ${recoveryLoadError}` : '');
+  const [conflictReview, setConflictReview] = useState<{ target: SaveTarget; disk: DecodedSourceFile; value: string; revision: number } | null>(null);
   const initialWorkbenchSession = useMemo(() => readWorkbenchSession(), []);
   const [project, setProject] = useState<Project | null>(null);
   const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
@@ -933,6 +992,24 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const panelLayoutRef = useRef(panelLayout);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   const documentsRef = useRef(documents);
+  const projectRootRef = useRef(project?.root);
+  // A project task/build may outlive a folder switch. Its results must never
+  // update the newly opened project's console or preview.
+  const projectOperationGenerationRef = useRef(0);
+  // Startup restoration and project hydration may read from disk for long
+  // enough that the user opens or edits a document first. A synchronous epoch
+  // lets those background operations yield to that newer interaction.
+  const documentInteractionEpochRef = useRef(0);
+  // Keep the launch baseline rather than sampling after a user interaction:
+  // an early Finder/open event must also supersede deferred restoration.
+  const initialWorkspaceRestoreEpochRef = useRef(documentInteractionEpochRef.current);
+  // Only one fresh-tab read may adopt a given project binding at a time.
+  const projectFileReadReservationsRef = useRef(new Set<string>());
+  const saveTargetGenerationsRef = useRef(new Map<string, number>());
+  const documentWriteQueuesRef = useRef(new Map<string, Promise<void>>());
+  // Autosave must not advance a target generation while an explicit Save or
+  // Save As sheet is still pending for the same document.
+  const manualSaveInFlightRef = useRef(new Set<string>());
   const localWritePathsRef = useRef(new Map<string, number>());
   const pendingRevealLineRef = useRef<number | null>(null);
   const externalOpenQueueRef = useRef(Promise.resolve());
@@ -1126,8 +1203,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
   }, [desktop, project?.root, projectTaskRefreshVersion]);
 
   const activeProjectTasks = useMemo(
-    () => project && activeDocument?.relativePath ? projectTasks : [],
-    [activeDocument?.relativePath, project, projectTasks],
+    () => project && activeDocument?.relativePath && activeDocument.projectRoot === project.root ? projectTasks : [],
+    [activeDocument?.projectRoot, activeDocument?.relativePath, project, projectTasks],
   );
   const availableProjectTasks = project ? projectTasks : [];
   const projectBuildTask = useMemo(
@@ -1145,6 +1222,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const taskManagedLatex = Boolean(
     project
     && activeDocument?.relativePath
+    && activeDocument.projectRoot === project.root
     && activeDocument?.sourceType === 'latex'
     && (isProjectTasksLoading || activeProjectTasks.length),
   );
@@ -1397,6 +1475,99 @@ function App({ desktop }: { desktop: DesktopApi }) {
   }, [documents]);
 
   useEffect(() => {
+    projectRootRef.current = project?.root;
+  }, [project?.root]);
+
+  // Native callbacks and timers can run between a setState call and React's
+  // next commit. Keep the guard source in sync immediately for operations
+  // that can write or detach a file, then let the functional state update
+  // merge against React's newest rendered array as usual.
+  const commitDocuments = useCallback((update: (current: DocumentModel[]) => DocumentModel[]) => {
+    documentsRef.current = update(documentsRef.current);
+    setDocuments(update);
+  }, []);
+
+  const beginDocumentInteraction = useCallback(() => {
+    documentInteractionEpochRef.current += 1;
+    return documentInteractionEpochRef.current;
+  }, []);
+
+  const targetFor = useCallback((document: Pick<DocumentModel, 'id' | 'relativePath' | 'projectRoot' | 'fileHandle'>, projectRoot = projectRootRef.current): SaveTarget => ({
+    id: document.id,
+    relativePath: document.relativePath,
+    fileHandle: document.fileHandle,
+    // A relative path is meaningful only inside the folder that originally
+    // produced this tab. Never borrow the currently visible folder merely
+    // because a project switch happened before a deferred operation ran.
+    ...(document.relativePath && document.projectRoot && document.projectRoot === projectRoot
+      ? { projectRoot: document.projectRoot }
+      : {}),
+    generation: saveTargetGenerationsRef.current.get(document.id) || 0,
+  }), []);
+
+  const matchesSaveTarget = useCallback((document: Pick<DocumentModel, 'id' | 'relativePath' | 'projectRoot' | 'fileHandle'>, target: SaveTarget) => (
+    sameSaveTarget(document, target)
+      && (!target.relativePath || (Boolean(target.projectRoot) && target.projectRoot === projectRootRef.current))
+      && (saveTargetGenerationsRef.current.get(document.id) || 0) === target.generation
+  ), []);
+
+  const beginSaveTargetOperation = useCallback((document: Pick<DocumentModel, 'id' | 'relativePath' | 'projectRoot' | 'fileHandle'>, projectRoot = projectRootRef.current): SaveTarget | null => {
+    const target = targetFor(document, projectRoot);
+    const latest = documentsRef.current.find((candidate) => candidate.id === target.id);
+    if (!latest || !matchesSaveTarget(latest, target)) return null;
+    const operation = { ...target, generation: target.generation + 1 };
+    saveTargetGenerationsRef.current.set(operation.id, operation.generation);
+    return operation;
+  }, [matchesSaveTarget, targetFor]);
+
+  const invalidateSaveTarget = useCallback((id: string) => {
+    saveTargetGenerationsRef.current.set(id, (saveTargetGenerationsRef.current.get(id) || 0) + 1);
+  }, []);
+
+  // A workspace replacement must make the old array unreachable to queued
+  // saves before React schedules its next paint. In-flight native writes still
+  // resolve harmlessly because their source generation is now stale.
+  const replaceDocuments = useCallback((next: DocumentModel[]) => {
+    for (const document of documentsRef.current) invalidateSaveTarget(document.id);
+    documentsRef.current = next;
+    setDocuments(next);
+  }, [invalidateSaveTarget]);
+
+  const enqueueDocumentWrite = useCallback(function enqueueDocumentWrite<Result>(target: SaveTarget, write: (version?: string) => Promise<Result>, requireRecovery = true): Promise<Result | null> {
+    const previous = documentWriteQueuesRef.current.get(target.id) || Promise.resolve();
+    const result = previous.catch(() => undefined).then(async () => {
+      try {
+        if (recoveryLoadError) throw new Error('Recovery could not be loaded. Existing recovery was preserved; use Save As to rescue your work.');
+        await recoveryQueue.save(recoveryPayload(documentsRef.current, target.id));
+      } catch (error) {
+        // An explicit Save As must remain available when the recovery disk is
+        // full/unreadable, so the user can rescue text to another destination.
+        if (requireRecovery) throw error;
+        setRecoveryStatus(`Recovery unavailable: ${errorMessage(error)}. Saving your chosen copy instead.`);
+      }
+      const latest = documentsRef.current.find((document) => document.id === target.id);
+      if (!latest || !matchesSaveTarget(latest, target)) return null;
+      const written = await write(latest.diskVersion);
+      // A newer Save may supersede this operation while native I/O finishes.
+      // Carry its byte receipt forward only for the unchanged binding/baseline;
+      // never replace a newer read, clear a conflict, or mark newer text clean.
+      if (requireRecovery && written && typeof written === 'object' && 'diskVersion' in written && typeof written.diskVersion === 'string') {
+        const diskVersion = written.diskVersion;
+        commitDocuments((documents) => documents.map((document) => sameSaveTarget(document, target) && document.diskVersion === latest.diskVersion
+          ? { ...document, diskVersion }
+          : document));
+      }
+      return written;
+    });
+    const settled = result.then(() => undefined, () => undefined);
+    documentWriteQueuesRef.current.set(target.id, settled);
+    void settled.finally(() => {
+      if (documentWriteQueuesRef.current.get(target.id) === settled) documentWriteQueuesRef.current.delete(target.id);
+    });
+    return result;
+  }, [commitDocuments, matchesSaveTarget, recoveryLoadError, recoveryQueue]);
+
+  useEffect(() => {
     if (!settingsReady) return;
     const loadedLayout = panelLayoutFromSettings(settings);
     panelLayoutRef.current = loadedLayout;
@@ -1450,32 +1621,186 @@ function App({ desktop }: { desktop: DesktopApi }) {
   }, [shortcutBindings]);
 
   useEffect(() => {
-    rememberScratchSession(documents, activeId);
-  }, [activeId, documents]);
+    if (recoveryLoadError) return;
+    recoveryQueue.invalidate();
+    setRecoveryStatus('Saving recovery…');
+    const timer = window.setTimeout(() => {
+      void recoveryQueue.save(recoveryPayload(documentsRef.current, activeId)).then(({ savedAt, current }) => {
+        if (!current) return;
+        setRecoveryStatus(`Recovery saved ${new Date(savedAt).toLocaleTimeString()}`);
+        // Migrate only after the native checkpoint has acknowledged the bytes.
+        try { localStorage.removeItem(SCRATCH_SESSION_KEY); } catch { /* native copy is durable */ }
+      }).catch((error) => setRecoveryStatus(`Recovery not saved: ${errorMessage(error)}. Save your work before closing.`));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [activeId, documents, recoveryLoadError, recoveryQueue]);
+
+  useEffect(() => {
+    if (!desktop.recovery.onCloseRequested) return;
+    let disposed = false;
+    let closing = false;
+    const subscription = desktop.recovery.onCloseRequested(async () => {
+      if (disposed || closing) return;
+      closing = true;
+      const shell = document.querySelector<HTMLElement>('.app-shell');
+      if (shell) shell.inert = true;
+      try {
+        if (recoveryLoadError) throw new Error(recoveryLoadError);
+        await flushStableRecovery(() => documentsRef.current, (snapshot) => recoveryQueue.save(recoveryPayload(snapshot, activeId)));
+        await desktop.recovery.finishClose?.();
+      } catch (error) {
+        setRecoveryStatus(`Cannot close safely: ${errorMessage(error)}. Save your work with Save As and retry.`);
+        showToast('Recovery could not be saved. Your window has been kept open.', 'error');
+        if (window.confirm('Recovery could not be saved. Close anyway? Unsaved work from this session may be lost. Choose Cancel to keep editing or use Save As.')) {
+          await desktop.recovery.finishClose?.();
+        }
+      } finally {
+        closing = false;
+        if (shell) shell.inert = false;
+      }
+    });
+    return () => { disposed = true; void subscription.then((unlisten) => unlisten()); };
+  }, [activeId, desktop, recoveryLoadError, recoveryQueue, showToast]);
 
   useEffect(() => {
     if (!activeDocument) return;
-    setSnapshots(readSnapshots(historyScope(project, activeDocument)));
-  }, [activeDocument?.id, activeDocument?.relativePath, project?.root]);
+    setSnapshots(readSnapshots(historyScope(activeDocument)));
+  }, [activeDocument?.id, activeDocument?.relativePath, activeDocument?.projectRoot]);
 
   useEffect(() => {
     if (!activeDocument?.dirty) return undefined;
     const documentId = activeDocument.id;
     const timer = window.setTimeout(() => {
-      setSnapshots(rememberSnapshot(historyScope(project, activeDocument), activeDocument.value));
+      setSnapshots(rememberSnapshot(historyScope(activeDocument), activeDocument.value));
     }, 1150);
     return () => {
       window.clearTimeout(timer);
       if (documentId !== activeDocument.id) return;
     };
-  }, [activeDocument?.id, activeDocument?.value, activeDocument?.dirty, project]);
+  }, [activeDocument?.id, activeDocument?.value, activeDocument?.dirty, activeDocument?.projectRoot]);
 
   const updateDocument = useCallback((id: string, value: string) => {
-    setDocuments((current) => current.map((document) => {
+    const current = documentsRef.current.find((document) => document.id === id);
+    if (!current || current.value === value) return;
+    beginDocumentInteraction();
+    commitDocuments((current) => current.map((document) => {
       if (document.id !== id || document.value === value) return document;
-      return { ...document, value, dirty: true, revision: document.revision + 1 };
+      return {
+        ...document,
+        value,
+        dirty: true,
+        revision: document.revision + 1,
+        defaultUntitled: false,
+      };
     }));
-  }, []);
+  }, [beginDocumentInteraction, commitDocuments]);
+
+  /**
+   * A file can disappear while its tab is open: Finder may move it, another
+   * tool may remove it, or an older standalone-file permission may no longer
+   * resolve after a relaunch. Preserve the editor buffer but drop the dead
+   * binding, so it becomes a normal Save As-able scratch document instead of
+   * causing each idle autosave to fail again.
+   */
+  const recoverMissingSaveTarget = useCallback((target: SaveTarget) => {
+    if (!target.relativePath && !target.fileHandle) return null;
+    const latest = documentsRef.current.find((document) => document.id === target.id);
+    if (!latest || !matchesSaveTarget(latest, target)) return null;
+
+    // Invalidate first so every late success/error for this former binding is
+    // ignored before React has a chance to paint the detached scratch state.
+    invalidateSaveTarget(target.id);
+    const recoveryGeneration = target.generation + 1;
+
+    // Once a document has had a real path or opaque handle, retain it even if
+    // it is empty and named `untitled.*`: the explicit recovery marker keeps
+    // it out of stale-default cleanup after a relaunch.
+    commitDocuments((currentDocuments) => {
+      const currentDocument = currentDocuments.find((document) => document.id === target.id);
+      if (!currentDocument
+        || !sameSaveTarget(currentDocument, target)
+        || (saveTargetGenerationsRef.current.get(target.id) || 0) !== recoveryGeneration) return currentDocuments;
+      return currentDocuments.map((document) => document.id === target.id
+        ? {
+          ...document,
+          relativePath: undefined,
+          projectRoot: undefined,
+          fileHandle: undefined,
+          diskVersion: undefined,
+          conflict: false,
+          recoveryOrigin: document.recoveryOrigin ?? (document.relativePath ? `${document.projectRoot || ''}/${document.relativePath}` : document.name),
+          dirty: true,
+          pinned: false,
+          recoveryDraft: true,
+          defaultUntitled: false,
+        }
+        : document);
+    });
+    return 'detached' as const;
+  }, [commitDocuments, invalidateSaveTarget, matchesSaveTarget]);
+
+  const flagConflict = useCallback((target: SaveTarget) => {
+    const latest = documentsRef.current.find((document) => document.id === target.id);
+    if (!latest || !matchesSaveTarget(latest, target)) return;
+    invalidateSaveTarget(target.id);
+    commitDocuments((current) => current.map((document) => document.id === target.id ? { ...document, conflict: true } : document));
+    showToast('This file changed on disk. Autosave is paused until you resolve the conflict.', 'info');
+  }, [commitDocuments, invalidateSaveTarget, matchesSaveTarget, showToast]);
+
+  const reviewConflict = useCallback(async (document: DocumentModel) => {
+    const target = targetFor(document);
+    try {
+      const disk = target.relativePath && target.projectRoot
+        ? await desktop.project.readFile(target.projectRoot, target.relativePath, document.encoding, 'none')
+        : target.fileHandle ? await desktop.project.readOpenedFile(target.fileHandle, document.encoding) : null;
+      const latest = documentsRef.current.find((candidate) => candidate.id === target.id);
+      if (disk && latest && matchesSaveTarget(latest, target)) {
+        setConflictReview({ target, disk, value: latest.value, revision: latest.revision });
+      }
+    } catch (error) {
+      if (isMissingSaveTargetError(error)) recoverMissingSaveTarget(target);
+      else showToast(errorMessage(error), 'error');
+    }
+  }, [desktop, matchesSaveTarget, recoverMissingSaveTarget, showToast, targetFor]);
+
+  const resolveConflict = useCallback(async (choice: 'disk' | 'mine') => {
+    if (!conflictReview) return;
+    const { target, disk, value, revision } = conflictReview;
+    const latest = documentsRef.current.find((document) => document.id === target.id);
+    if (!latest || !matchesSaveTarget(latest, target) || latest.value !== value || latest.revision !== revision) {
+      setConflictReview(null);
+      showToast('The document changed while comparing. Compare again to use the current text.', 'info');
+      return;
+    }
+    if (manualSaveInFlightRef.current.has(target.id)) return;
+    manualSaveInFlightRef.current.add(target.id);
+    try {
+      if (choice === 'disk') {
+        // Preserve the editor version before the deliberate discard.
+        await recoveryQueue.save(recoveryPayload(documentsRef.current, target.id));
+        const current = documentsRef.current.find((document) => document.id === target.id);
+        if (!current || !matchesSaveTarget(current, target) || current.value !== value || current.revision !== revision) return;
+        invalidateSaveTarget(target.id);
+        commitDocuments((documents) => documents.map((document) => document.id === target.id ? {
+          ...document, value: disk.content, encoding: disk.encoding, diskVersion: disk.diskVersion,
+          dirty: false, conflict: false, revision: document.revision + 1,
+        } : document));
+      } else {
+        const result = await enqueueDocumentWrite<{ diskVersion?: string }>(target, () => target.relativePath && target.projectRoot
+          ? desktop.project.writeFile(target.projectRoot, target.relativePath, value, latest.encoding, disk.diskVersion)
+          : desktop.project.writeOpenedFile(target.fileHandle!, value, latest.encoding, disk.diskVersion));
+        if (!result) return;
+        commitDocuments((documents) => documents.map((document) => matchesSaveTarget(document, target) ? {
+          ...document, diskVersion: result.diskVersion, dirty: document.value !== value, conflict: false,
+        } : document));
+      }
+      setConflictReview(null);
+    } catch (error) {
+      if (isMissingSaveTargetError(error)) recoverMissingSaveTarget(target);
+      showToast(isSaveConflict(error) ? 'The disk file changed again. Compare again before resolving.' : errorMessage(error), 'error');
+      setConflictReview(null);
+    } finally { manualSaveInFlightRef.current.delete(target.id); }
+  }, [commitDocuments, conflictReview, desktop, enqueueDocumentWrite, flagConflict, invalidateSaveTarget, matchesSaveTarget, recoverMissingSaveTarget, recoveryQueue, showToast]);
 
   const revealEditorLine = useCallback((line: number, column = 1) => {
     const editor = editorRef.current;
@@ -1634,16 +1959,24 @@ function App({ desktop }: { desktop: DesktopApi }) {
     const baseName = filenameWithoutExtension(seed.name);
     let name = seed.name;
     let index = 2;
-    while (documents.some((document) => document.name === name)) {
+    while (documentsRef.current.some((document) => document.name === name)) {
       name = `${baseName} ${index}.${SOURCE_META[seed.sourceType].extension}`;
       index += 1;
     }
-    const next = { ...seed, name, dirty: true };
-    setDocuments((current) => [...current, next]);
+    const next = {
+      ...seed,
+      name,
+      dirty: true,
+      // A duplicate/default-looking name selected deliberately by the user is
+      // not the untouched launch tab and must remain recoverable if empty.
+      ...(name === seed.name ? {} : { defaultUntitled: false }),
+    };
+    beginDocumentInteraction();
+    commitDocuments((current) => [...current, next]);
     setActiveId(next.id);
     setPreview(EMPTY_PREVIEW);
     editorRef.current?.focus();
-  }, [documents]);
+  }, [beginDocumentInteraction, commitDocuments]);
 
   const createUnsavedStarterDocument = useCallback((type: SourceType) => {
     if (!isSourceTypeEnabled(type)) {
@@ -1662,13 +1995,23 @@ function App({ desktop }: { desktop: DesktopApi }) {
     addScratchpadDocument(makeBlankDocument(type));
   }, [addScratchpadDocument, defaultCreationSourceType, isSourceTypeEnabled, showToast]);
 
-  const syncProjectTree = useCallback((nextProject: Project, resetLocation = false) => {
+  const syncProjectTree = useCallback((nextProject: Project, resetLocation = false, expectedCurrentRoot?: string) => {
+    // Async refreshes are scoped to the root that started them. Without this
+    // guard, a late refresh from project A can rebind project B's tabs to A.
+    if (expectedCurrentRoot !== undefined && projectRootRef.current !== expectedCurrentRoot) return false;
+    if (projectRootRef.current !== nextProject.root) {
+      projectOperationGenerationRef.current += 1;
+      setIsTaskRunning(false);
+      setTaskOutput('No local task has run in this project.');
+    }
+    projectRootRef.current = nextProject.root;
     const directories = folderPaths(nextProject.tree);
     setProject(nextProject);
     setCollapsedPaths((current) => resetLocation
       ? new Set()
       : new Set([...current].filter((relativePath) => directories.has(relativePath))));
     setSelectedFolderPath((current) => resetLocation || !directories.has(current) ? '' : current);
+    return true;
   }, []);
 
   // Projects, tabs, tree location, and a few transient viewing choices are
@@ -1692,9 +2035,19 @@ function App({ desktop }: { desktop: DesktopApi }) {
         return;
       }
 
+      const restoreEpoch = initialWorkspaceRestoreEpochRef.current;
+      const restoreWasSuperseded = () => (
+        cancelled
+        || documentInteractionEpochRef.current !== restoreEpoch
+        || projectRootRef.current !== undefined
+      );
+
       try {
         const restoredProject = await desktop.project.refresh(root);
-        if (cancelled) return;
+        // Do not let a slow startup restore replace a folder the user opened
+        // or a document the user opened/edited while it was reading the
+        // previous session.
+        if (restoreWasSuperseded()) return;
         const sourceByPath = new Map(
           flattenFiles(restoredProject.tree)
             .filter((node) => node.kind === 'file' && node.supported)
@@ -1714,14 +2067,17 @@ function App({ desktop }: { desktop: DesktopApi }) {
           const node = sourceByPath.get(tab.relativePath);
           if (!node) continue;
           try {
-            const source = await desktop.project.readFile(restoredProject.root, tab.relativePath, tab.encoding ?? 'auto');
+            const source = await desktop.project.readFile(restoredProject.root, tab.relativePath, tab.encoding ?? 'auto', 'adopt');
+            if (restoreWasSuperseded()) return;
             reopenedTabs.push({
               id: `file-${crypto.randomUUID()}`,
               name: node.name,
               sourceType: node.sourceType ?? sourceTypeForName(node.name),
               value: source.content,
               encoding: source.encoding,
+              diskVersion: source.diskVersion,
               relativePath: tab.relativePath,
+              projectRoot: restoredProject.root,
               dirty: false,
               revision: 0,
               pinned: tab.pinned === true,
@@ -1731,9 +2087,10 @@ function App({ desktop }: { desktop: DesktopApi }) {
             // restoring the remaining tabs, just as a normal editor would.
           }
         }
-        if (cancelled) return;
+        if (restoreWasSuperseded()) return;
 
         const directories = folderPaths(restoredProject.tree);
+        projectRootRef.current = restoredProject.root;
         setProject(restoredProject);
         setCollapsedPaths(new Set((initialWorkbenchSession.collapsedPaths ?? []).filter((path) => directories.has(path))));
         setSelectedFolderPath(directories.has(initialWorkbenchSession.selectedFolderPath ?? '') ? initialWorkbenchSession.selectedFolderPath ?? '' : '');
@@ -1743,7 +2100,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
           const restoredDocuments = [...reopenedTabs, ...scratchTabs];
           const projectActive = reopenedTabs.find((document) => document.relativePath === initialWorkbenchSession.activeProjectPath);
           const scratchActive = scratchTabs.find((document) => document.id === initialScratchSession.activeId);
-          setDocuments(restoredDocuments);
+          replaceDocuments(restoredDocuments);
           setActiveId(projectActive?.id ?? scratchActive?.id ?? reopenedTabs[0].id);
           setPreview(EMPTY_PREVIEW);
         }
@@ -1758,13 +2115,13 @@ function App({ desktop }: { desktop: DesktopApi }) {
 
     void restore();
     return () => { cancelled = true; };
-  }, [desktop.project, initialScratchSession, initialWorkbenchSession, refreshRecentProjects, settingsReady]);
+  }, [desktop.project, initialScratchSession, initialWorkbenchSession, refreshRecentProjects, replaceDocuments, settingsReady]);
 
   useEffect(() => {
     if (!workspaceSessionReady) return;
     const projectTabs = project
       ? documents
-        .filter((document) => Boolean(document.relativePath))
+        .filter((document) => Boolean(document.relativePath) && document.projectRoot === project.root)
         .slice(0, MAX_RESTORED_PROJECT_TABS)
         .map((document) => ({
           relativePath: document.relativePath!,
@@ -1775,7 +2132,9 @@ function App({ desktop }: { desktop: DesktopApi }) {
     rememberWorkbenchSession({
       ...(project ? { projectRoot: project.root } : {}),
       ...(projectTabs.length ? { projectTabs } : {}),
-      ...(project && activeDocument?.relativePath ? { activeProjectPath: activeDocument.relativePath } : {}),
+      ...(project && activeDocument?.relativePath && activeDocument.projectRoot === project.root
+        ? { activeProjectPath: activeDocument.relativePath }
+        : {}),
       ...(collapsedPaths.size ? { collapsedPaths: [...collapsedPaths] } : {}),
       ...(selectedFolderPath ? { selectedFolderPath } : {}),
       zenMode,
@@ -1787,39 +2146,49 @@ function App({ desktop }: { desktop: DesktopApi }) {
   }, [activeDocument?.relativePath, collapsedPaths, documents, latexPreviewMode, previewBackground, project, pythonInspectorView, selectedFolderPath, texPdfEngine, workspaceSessionReady, zenMode]);
 
   const hydrateProject = useCallback(async (openedProject: Project) => {
+    const hydrationEpoch = beginDocumentInteraction();
+    const projectRoot = openedProject.root;
     const sourceFiles = flattenFiles(openedProject.tree).filter((item) => item.supported);
+    // The user has confirmed this workspace replacement. Retire every old
+    // target before awaiting the initial project read, otherwise a queued
+    // standalone autosave can still write the document they just discarded.
+    const blank = makeBlankDocument(defaultCreationSourceType);
+    replaceDocuments([blank]);
+    setActiveId(blank.id);
+    setPreview(EMPTY_PREVIEW);
     // Folder names are often reused across projects (for example, `notes`).
     // Always start an opened folder at its real root instead of carrying old
     // collapsed/selected paths into the new workspace.
     syncProjectTree(openedProject, true);
     void refreshRecentProjects();
     if (!sourceFiles.length) {
-      const blank = makeBlankDocument(defaultCreationSourceType);
-      setDocuments([blank]);
-      setActiveId(blank.id);
+      if (documentInteractionEpochRef.current !== hydrationEpoch || projectRootRef.current !== projectRoot) return;
       showToast('Project opened. Add a source file when you are ready.');
       return;
     }
     const first = sourceFiles[0];
-    const source = await desktop.project.readFile(openedProject.root, first.relativePath, openingEncoding);
+    const source = await desktop.project.readFile(projectRoot, first.relativePath, openingEncoding, 'adopt');
+    if (documentInteractionEpochRef.current !== hydrationEpoch || projectRootRef.current !== projectRoot) return;
     const document: DocumentModel = {
       id: `file-${crypto.randomUUID()}`,
       name: first.name,
       sourceType: first.sourceType ?? sourceTypeForName(first.name),
       value: source.content,
       encoding: source.encoding,
+      diskVersion: source.diskVersion,
       relativePath: first.relativePath,
+      projectRoot,
       dirty: false,
       revision: 0,
     };
-    setDocuments([document]);
+    replaceDocuments([document]);
     setActiveId(document.id);
-    setPreview(EMPTY_PREVIEW);
     showToast(`Opened ${openedProject.name}.`, 'success');
-  }, [defaultCreationSourceType, openingEncoding, refreshRecentProjects, showToast, syncProjectTree]);
+  }, [beginDocumentInteraction, defaultCreationSourceType, openingEncoding, refreshRecentProjects, replaceDocuments, showToast, syncProjectTree]);
 
   const openProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Opening a project will close the current scratchpad tabs. Continue without saving those edits?')) return;
+    beginDocumentInteraction();
     try {
       const opened = await desktop.project.open();
       if ('canceled' in opened) return;
@@ -1827,13 +2196,18 @@ function App({ desktop }: { desktop: DesktopApi }) {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not open the project.', 'error');
     }
-  }, [documents, hydrateProject, showToast]);
+  }, [beginDocumentInteraction, documents, hydrateProject, showToast]);
 
-  const activateOpenedSource = useCallback((opened: OpenedSourceFile) => {
+  const activateOpenedSource = useCallback((opened: OpenedSourceFile, openedProjectRoot?: string) => {
     const isProjectFile = 'relativePath' in opened;
+    // `relativePath` is only valid for the root passed to the native open
+    // request. A folder switch while its sheet is open must not make that
+    // relative path belong to the newly visible project.
+    if (isProjectFile && (!openedProjectRoot || projectRootRef.current !== openedProjectRoot)) return;
     const existing = isProjectFile
-      ? documents.find((document) => document.relativePath === opened.relativePath)
-      : documents.find((document) => document.fileHandle === opened.fileHandle);
+      ? documentsRef.current.find((document) => document.relativePath === opened.relativePath && document.projectRoot === openedProjectRoot)
+      : documentsRef.current.find((document) => document.fileHandle === opened.fileHandle);
+    beginDocumentInteraction();
     if (existing) {
       setActiveId(existing.id);
       return;
@@ -1843,8 +2217,11 @@ function App({ desktop }: { desktop: DesktopApi }) {
       name: opened.name,
       sourceType: opened.sourceType,
       value: opened.content,
-      encoding: opened.encoding,
-      ...(isProjectFile ? { relativePath: opened.relativePath } : { fileHandle: opened.fileHandle }),
+encoding: opened.encoding,
+      diskVersion: opened.diskVersion,
+      ...(isProjectFile
+        ? { relativePath: opened.relativePath, projectRoot: openedProjectRoot }
+        : { fileHandle: opened.fileHandle }),
       dirty: false,
       revision: 0,
     };
@@ -1856,36 +2233,96 @@ function App({ desktop }: { desktop: DesktopApi }) {
         return next;
       });
     }
-    setDocuments((current) => [...current, document]);
-    setActiveId(document.id);
-    setPreview(EMPTY_PREVIEW);
-  }, [documents]);
+    let activated = document;
+    let added = false;
+    commitDocuments((current) => {
+      const duplicate = isProjectFile
+        ? current.find((candidate) => candidate.relativePath === opened.relativePath && candidate.projectRoot === openedProjectRoot)
+        : current.find((candidate) => candidate.fileHandle === opened.fileHandle);
+      if (duplicate) {
+        activated = duplicate;
+        return current;
+      }
+      added = true;
+      return [...current, document];
+    });
+    setActiveId(activated.id);
+    if (added) setPreview(EMPTY_PREVIEW);
+  }, [beginDocumentInteraction, commitDocuments]);
 
   const revealOpenedFileFolder = useCallback(async (fileHandle: string, name: string) => {
+    const rootAtRequest = projectRootRef.current;
+    const interactionEpochAtRequest = documentInteractionEpochRef.current;
     try {
       const folder = await desktop.project.revealOpenedFileFolder(fileHandle);
+      // The folder can take time to resolve. Do not let a closed tab or an
+      // A → B → A workspace round trip turn this late standalone callback
+      // into a new project switch.
+      const standaloneDocumentStillOpen = documentsRef.current.some((document) => (
+        document.fileHandle === fileHandle && !document.relativePath
+      ));
+      if (projectRootRef.current !== rootAtRequest
+        || documentInteractionEpochRef.current !== interactionEpochAtRequest
+        || !standaloneDocumentStillOpen) return;
+      beginDocumentInteraction();
       // The native command resolves the opaque handle first, so this folder
       // is necessarily the parent of the exact file the user opened.
       syncProjectTree(folder, true);
-      setDocuments((current) => current.map((document) => {
+      const currentDocuments = documentsRef.current;
+      const existingProjectDocument = currentDocuments.find((document) => (
+        document.fileHandle !== fileHandle
+        && document.relativePath === name
+        && document.projectRoot === folder.root
+      ));
+      let mayTransferBinding = !existingProjectDocument;
+      let preservedRecovery = false;
+      let changed = false;
+      const nextDocuments = currentDocuments.map((document) => {
         if (document.fileHandle !== fileHandle) return document;
+        changed = true;
+        // The standalone handle and project path are different native write
+        // targets. Retire the former before either transferring or detaching
+        // its tab so a queued standalone write cannot win later.
+        invalidateSaveTarget(document.id);
+        if (!mayTransferBinding) {
+          preservedRecovery = true;
+          return {
+            ...document,
+            relativePath: undefined,
+            projectRoot: undefined,
+            fileHandle: undefined,
+            dirty: true,
+            pinned: false,
+            recoveryDraft: true,
+            defaultUntitled: false,
+          };
+        }
+        mayTransferBinding = false;
         const { fileHandle: _fileHandle, ...projectDocument } = document;
-        return { ...projectDocument, relativePath: name };
-      }));
+        return { ...projectDocument, relativePath: name, projectRoot: folder.root };
+      });
+      if (changed) {
+        documentsRef.current = nextDocuments;
+        setDocuments(nextDocuments);
+      }
       updatePanel('explorerOpen', true);
       setZenMode(false);
       void refreshRecentProjects();
-      showToast(`Showing ${folder.name} in Files.`, 'success');
+      showToast(preservedRecovery
+        ? `Showing ${folder.name} in Files. An existing project tab owns “${name}”; this tab is kept as an unsaved recovery draft.`
+        : `Showing ${folder.name} in Files.`, preservedRecovery ? 'info' : 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not show this file’s folder.', 'error');
     }
-  }, [desktop.project, refreshRecentProjects, showToast, syncProjectTree, updatePanel]);
+  }, [beginDocumentInteraction, desktop.project, invalidateSaveTarget, refreshRecentProjects, showToast, syncProjectTree, updatePanel]);
 
   const openStandaloneFile = useCallback(async () => {
+    const openedProjectRoot = project?.root;
     try {
-      const opened = await desktop.project.openFile(project?.root, openingEncoding);
+      const opened = await desktop.project.openFile(openedProjectRoot, openingEncoding);
       if ('canceled' in opened) return;
-      activateOpenedSource(opened);
+      if ('relativePath' in opened && projectRootRef.current !== openedProjectRoot) return;
+      activateOpenedSource(opened, openedProjectRoot);
       if ('fileHandle' in opened) void revealOpenedFileFolder(opened.fileHandle, opened.name);
       void refreshRecentProjects();
       showToast(`Opened ${opened.name}.`, 'success');
@@ -1898,11 +2335,13 @@ function App({ desktop }: { desktop: DesktopApi }) {
     // Finder can send paths while the React app is mounting or while another
     // file is still decoding. Serialize the drains to keep tab activation and
     // recent-file updates deterministic.
+    const openedProjectRoot = project?.root;
     externalOpenQueueRef.current = externalOpenQueueRef.current.then(async () => {
       try {
-        const opened = await desktop.externalFiles.takePending(project?.root);
+        const opened = await desktop.externalFiles.takePending(openedProjectRoot);
         for (const file of opened.files) {
-          activateOpenedSource(file);
+          if ('relativePath' in file && projectRootRef.current !== openedProjectRoot) continue;
+          activateOpenedSource(file, openedProjectRoot);
           if ('fileHandle' in file) void revealOpenedFileFolder(file.fileHandle, file.name);
         }
         if (opened.files.length) {
@@ -1930,12 +2369,13 @@ function App({ desktop }: { desktop: DesktopApi }) {
   const setActiveDocumentEncoding = useCallback(() => {
     if (!activeDocument) return;
     const nextEncoding = encodingChoice === 'auto' ? 'utf-8' : encodingChoice;
-    setDocuments((current) => current.map((document) => document.id === activeDocument.id
+    beginDocumentInteraction();
+    commitDocuments((current) => current.map((document) => document.id === activeDocument.id
       ? { ...document, encoding: nextEncoding }
       : document));
     setEncodingOpen(false);
     showToast(`${activeDocument.name} will save as ${encodingLabel(nextEncoding)}.`, 'success');
-  }, [activeDocument, encodingChoice, showToast]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, encodingChoice, showToast]);
 
   const reopenActiveWithEncoding = useCallback(async () => {
     if (!activeDocument) return;
@@ -1944,28 +2384,61 @@ function App({ desktop }: { desktop: DesktopApi }) {
       return;
     }
     if (activeDocument.dirty && !window.confirm(`Reopen “${activeDocument.name}” using ${encodingLabel(encodingChoice)}? Unsaved changes will be lost.`)) return;
+    const sourceDocument = activeDocument;
+    const projectRoot = project?.root;
+    if (sourceDocument.relativePath && sourceDocument.projectRoot !== projectRoot) return;
+    beginDocumentInteraction();
+    const target = targetFor(sourceDocument, projectRoot);
+    const valueAtRequest = sourceDocument.value;
+    const revisionAtRequest = sourceDocument.revision;
     try {
-      const source = project && activeDocument.relativePath
-        ? await desktop.project.readFile(project.root, activeDocument.relativePath, encodingChoice)
-        : activeDocument.fileHandle
-          ? await desktop.project.readOpenedFile(activeDocument.fileHandle, encodingChoice)
+      const source = projectRoot && target.relativePath
+        ? await desktop.project.readFile(projectRoot, target.relativePath, encodingChoice, 'none')
+        : target.fileHandle
+          ? await desktop.project.readOpenedFile(target.fileHandle, encodingChoice)
           : undefined;
       if (!source) return;
-      setDocuments((current) => current.map((document) => document.id === activeDocument.id
-        ? { ...document, value: source.content, encoding: source.encoding, dirty: false, revision: document.revision + 1 }
+      const latest = documentsRef.current.find((document) => document.id === target.id);
+      if (!latest
+        || !matchesSaveTarget(latest, target)
+        || latest.value !== valueAtRequest
+        || latest.revision !== revisionAtRequest) return;
+      commitDocuments((current) => current.map((document) => matchesSaveTarget(document, target)
+        ? {
+          ...document,
+          value: source.content,
+          encoding: source.encoding,
+          diskVersion: source.diskVersion,
+          dirty: false,
+          revision: document.revision + 1,
+          conflict: false,
+          recoveryDraft: false,
+          defaultUntitled: false,
+        }
         : document));
       setEncodingOpen(false);
       setPreview(EMPTY_PREVIEW);
-      showToast(`Reopened ${activeDocument.name} as ${encodingLabel(source.encoding)}.`, 'success');
+      showToast(`Reopened ${sourceDocument.name} as ${encodingLabel(source.encoding)}.`, 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not reopen this file with that encoding.', 'error');
+      if (isMissingSaveTargetError(error)) {
+        const recovery = recoverMissingSaveTarget(target);
+        if (recovery === 'detached') {
+          showToast(`“${sourceDocument.name}” is no longer on disk. Its text is kept as an unsaved tab. Use Save As to choose a new location.`, 'info');
+        }
+        return;
+      }
+      const latest = documentsRef.current.find((document) => document.id === target.id);
+      if (latest && matchesSaveTarget(latest, target)) {
+        showToast(errorMessage(error) || 'Could not reopen this file with that encoding.', 'error');
+      }
     }
-  }, [activeDocument, encodingChoice, project, setActiveDocumentEncoding, showToast]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, encodingChoice, matchesSaveTarget, project?.root, recoverMissingSaveTarget, setActiveDocumentEncoding, showToast, targetFor]);
 
   const newProject = useCallback(async () => {
     if (documents.some((document) => document.dirty) && !window.confirm('Creating a new project will close the current scratchpad tabs. Continue without saving those edits?')) return;
     const name = window.prompt('Name your new diagram project:', 'Diagram Project');
     if (!name?.trim()) return;
+    beginDocumentInteraction();
     try {
       const created = await desktop.project.create(name.trim());
       if ('canceled' in created) return;
@@ -1973,28 +2446,34 @@ function App({ desktop }: { desktop: DesktopApi }) {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not create the project.', 'error');
     }
-  }, [documents, hydrateProject, showToast]);
+  }, [beginDocumentInteraction, documents, hydrateProject, showToast]);
 
   const refreshProject = useCallback(async () => {
     if (!project) {
       showToast('Open a folder before refreshing its project files.', 'info');
       return;
     }
+    const projectRoot = project.root;
     try {
-      const refreshed = await desktop.project.refresh(project.root);
-      syncProjectTree(refreshed);
+      const refreshed = await desktop.project.refresh(projectRoot);
+      if (!syncProjectTree(refreshed, false, projectRoot)) return;
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not refresh files.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not refresh files.', 'error');
+      }
     }
   }, [project, showToast, syncProjectTree]);
 
   const openRecentEntry = useCallback(async (recent: RecentEntry) => {
     if (recent.kind === 'project' && documents.some((document) => document.dirty) && !window.confirm('Opening a recent folder will close the current scratchpad tabs. Continue without saving those edits?')) return false;
+    if (recent.kind === 'project') beginDocumentInteraction();
+    const openedProjectRoot = project?.root;
     try {
-      const opened = await desktop.recents.open(recent.id, project?.root, openingEncoding);
+      const opened = await desktop.recents.open(recent.id, openedProjectRoot, openingEncoding);
       if (opened.kind === 'project') await hydrateProject(opened.project);
       else {
-        activateOpenedSource(opened.file);
+        if ('relativePath' in opened.file && projectRootRef.current !== openedProjectRoot) return false;
+        activateOpenedSource(opened.file, openedProjectRoot);
         if ('fileHandle' in opened.file) void revealOpenedFileFolder(opened.file.fileHandle, opened.file.name);
         showToast(`Opened ${recent.name}.`, 'success');
       }
@@ -2013,7 +2492,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       showToast(message, 'error');
       return false;
     }
-  }, [activateOpenedSource, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
+  }, [activateOpenedSource, beginDocumentInteraction, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
 
   const openLatestRecentEntry = useCallback(() => {
     const latest = recentProjects[0];
@@ -2045,58 +2524,89 @@ function App({ desktop }: { desktop: DesktopApi }) {
       showToast('Open a project file before renaming it.', 'info');
       return;
     }
-    const destination = window.prompt('Rename file (relative to this project):', activeDocument.relativePath)?.trim().replace(/^\/+/, '');
-    if (!destination || destination === activeDocument.relativePath) return;
+    const document = activeDocument;
+    const projectRoot = project.root;
+    const relativePath = document.relativePath;
+    if (!relativePath || document.projectRoot !== projectRoot) return;
+    const destination = window.prompt('Rename file (relative to this project):', relativePath)?.trim().replace(/^\/+/, '');
+    if (!destination || destination === relativePath) return;
+    if (projectRootRef.current !== projectRoot) return;
+    if (manualSaveInFlightRef.current.has(document.id)) {
+      showToast('Finish the current save before renaming this file.', 'info');
+      return;
+    }
+    manualSaveInFlightRef.current.add(document.id);
+    // A rename changes the binding, not just its label. Cancel queued writes
+    // before Finder/native I/O can move the old pathname.
+    invalidateSaveTarget(document.id);
+    const target = targetFor(document, projectRoot);
     try {
-      localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
+      localWritePathsRef.current.set(relativePath, Date.now());
       localWritePathsRef.current.set(destination, Date.now());
-      const result = await desktop.project.renameFile(project.root, activeDocument.relativePath, destination);
-      setDocuments((current) => current.map((document) => document.id === activeDocument.id ? {
-        ...document,
+      const result = await desktop.project.renameFile(projectRoot, relativePath, destination);
+      const latest = documentsRef.current.find((candidate) => candidate.id === target.id);
+      if (projectRootRef.current !== projectRoot || !latest || !matchesSaveTarget(latest, target)) return;
+      commitDocuments((current) => current.map((candidate) => candidate.id === document.id ? {
+        ...candidate,
         relativePath: result.relativePath,
-        name: result.relativePath.split('/').at(-1) || document.name,
+        name: result.relativePath.split('/').at(-1) || candidate.name,
         sourceType: sourceTypeForName(result.relativePath),
-      } : document));
+      } : candidate));
       setSelectedFolderPath(parentFolderPath(result.relativePath));
       setCollapsedPaths((current) => {
         const next = new Set(current);
         for (const ancestor of ancestorFolderPaths(result.relativePath)) next.delete(ancestor);
         return next;
       });
-      syncProjectTree(await desktop.project.refresh(project.root));
+      const refreshed = await desktop.project.refresh(projectRoot);
+      if (!syncProjectTree(refreshed, false, projectRoot)) return;
       showToast('File renamed.', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not rename this file.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not rename this file.', 'error');
+      }
+    } finally {
+      manualSaveInFlightRef.current.delete(document.id);
     }
-  }, [activeDocument, project, showToast, syncProjectTree]);
+  }, [activeDocument, commitDocuments, invalidateSaveTarget, matchesSaveTarget, project, showToast, syncProjectTree, targetFor]);
 
   const duplicateActiveProjectFile = useCallback(async () => {
     if (!project || !activeDocument?.relativePath) {
       showToast('Open a project file before duplicating it.', 'info');
       return;
     }
-    const currentExtension = activeDocument.name.match(/\.[^/.]+$/)?.[0] ?? '';
-    const extension = activeDocument.sourceType === 'latex' && /\.(?:tex|latex|ltx)$/i.test(currentExtension)
+    const document = activeDocument;
+    const projectRoot = project.root;
+    const relativePath = document.relativePath;
+    if (!relativePath || document.projectRoot !== projectRoot) return;
+    const currentExtension = document.name.match(/\.[^/.]+$/)?.[0] ?? '';
+    const extension = document.sourceType === 'latex' && /\.(?:tex|latex|ltx)$/i.test(currentExtension)
       ? currentExtension
-      : `.${SOURCE_META[activeDocument.sourceType].extension}`;
-    const base = activeDocument.relativePath.replace(new RegExp(`${extension.replace('.', '\\.')}$`, 'i'), '');
+      : `.${SOURCE_META[document.sourceType].extension}`;
+    const base = relativePath.replace(new RegExp(`${extension.replace('.', '\\.')}$`, 'i'), '');
     const destination = window.prompt('Duplicate file as (relative to this project):', `${base} copy${extension}`)?.trim().replace(/^\/+/, '');
     if (!destination) return;
+    if (projectRootRef.current !== projectRoot) return;
+    beginDocumentInteraction();
     try {
       localWritePathsRef.current.set(destination, Date.now());
-      const result = await desktop.project.duplicateFile(project.root, activeDocument.relativePath, destination);
-      const source = await desktop.project.readFile(project.root, result.relativePath, activeDocument.encoding);
+      const result = await desktop.project.duplicateFile(projectRoot, relativePath, destination);
+      if (projectRootRef.current !== projectRoot) return;
+      const source = await desktop.project.readFile(projectRoot, result.relativePath, document.encoding, 'adopt');
+      if (projectRootRef.current !== projectRoot) return;
       const copy: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
-        name: result.relativePath.split('/').at(-1) || activeDocument.name,
+        name: result.relativePath.split('/').at(-1) || document.name,
         sourceType: sourceTypeForName(result.relativePath),
         value: source.content,
         encoding: source.encoding,
+        diskVersion: source.diskVersion,
         relativePath: result.relativePath,
+        projectRoot,
         dirty: false,
         revision: 0,
       };
-      setDocuments((current) => [...current, copy]);
+      commitDocuments((current) => [...current, copy]);
       setActiveId(copy.id);
       setSelectedFolderPath(parentFolderPath(result.relativePath));
       setCollapsedPaths((current) => {
@@ -2104,131 +2614,323 @@ function App({ desktop }: { desktop: DesktopApi }) {
         for (const ancestor of ancestorFolderPaths(result.relativePath)) next.delete(ancestor);
         return next;
       });
-      syncProjectTree(await desktop.project.refresh(project.root));
+      const refreshed = await desktop.project.refresh(projectRoot);
+      if (!syncProjectTree(refreshed, false, projectRoot)) return;
       showToast('Duplicate opened in a new tab.', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not duplicate this file.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not duplicate this file.', 'error');
+      }
     }
-  }, [activeDocument, project, showToast, syncProjectTree]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, project, showToast, syncProjectTree]);
 
   const deleteActiveProjectFile = useCallback(async () => {
     if (!project || !activeDocument?.relativePath) {
       showToast('Open a project file before deleting it.', 'info');
       return;
     }
-    if (!window.confirm(`Move “${activeDocument.relativePath}” out of this project permanently? This cannot be undone by Yedit.`)) return;
+    const document = activeDocument;
+    const projectRoot = project.root;
+    const relativePath = document.relativePath;
+    if (!relativePath || document.projectRoot !== projectRoot) return;
+    if (!window.confirm(`Move “${relativePath}” out of this project permanently? This cannot be undone by Yedit.`)) return;
+    if (projectRootRef.current !== projectRoot) return;
+    if (manualSaveInFlightRef.current.has(document.id)) {
+      showToast('Finish the current save before deleting this file.', 'info');
+      return;
+    }
+    beginDocumentInteraction();
+    manualSaveInFlightRef.current.add(document.id);
+    invalidateSaveTarget(document.id);
+    const target = targetFor(document, projectRoot);
     try {
-      localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-      await desktop.project.deleteFile(project.root, activeDocument.relativePath);
-      const index = documents.findIndex((document) => document.id === activeDocument.id);
-      const next = documents.filter((document) => document.id !== activeDocument.id);
+      localWritePathsRef.current.set(relativePath, Date.now());
+      await desktop.project.deleteFile(projectRoot, relativePath);
+      const latest = documentsRef.current.find((candidate) => candidate.id === target.id);
+      if (projectRootRef.current !== projectRoot || !latest || !matchesSaveTarget(latest, target)) return;
+      const currentDocuments = documentsRef.current;
+      const index = currentDocuments.findIndex((candidate) => candidate.id === document.id);
+      const next = currentDocuments.filter((candidate) => candidate.id !== document.id);
+      if (index < 0) return;
       if (!next.length) {
         const fresh = makeBlankDocument(defaultCreationSourceType);
+        documentsRef.current = [fresh];
         setDocuments([fresh]);
         setActiveId(fresh.id);
       } else {
+        documentsRef.current = next;
         setDocuments(next);
         setActiveId(next[Math.max(0, index - 1)].id);
       }
-      syncProjectTree(await desktop.project.refresh(project.root));
+      const refreshed = await desktop.project.refresh(projectRoot);
+      if (!syncProjectTree(refreshed, false, projectRoot)) return;
       showToast('File deleted from the project.', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not delete this file.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not delete this file.', 'error');
+      }
+    } finally {
+      manualSaveInFlightRef.current.delete(document.id);
     }
-  }, [activeDocument, defaultCreationSourceType, documents, project, showToast, syncProjectTree]);
+  }, [activeDocument, beginDocumentInteraction, defaultCreationSourceType, invalidateSaveTarget, matchesSaveTarget, project, showToast, syncProjectTree, targetFor]);
 
   useEffect(() => {
     if (!project) return undefined;
+    const watchRoot = project.root;
     let watchId: string | undefined;
+    let disposed = false;
+    let refreshInFlight = false;
+    const pendingChangedPaths = new Set<string>();
+
+    const processExternalChanges = async () => {
+      if (refreshInFlight || disposed) return;
+      refreshInFlight = true;
+      try {
+        while (!disposed && pendingChangedPaths.size) {
+          const changedPaths = new Set(pendingChangedPaths);
+          pendingChangedPaths.clear();
+          const refreshed = await desktop.project.refresh(watchRoot);
+          if (disposed || projectRootRef.current !== watchRoot) return;
+          if (!syncProjectTree(refreshed, false, watchRoot)) return;
+          if (projectPathWasChanged(PROJECT_TASKS_FILENAME, changedPaths)) {
+            setProjectTaskRefreshVersion((current) => current + 1);
+          }
+
+          // A rename/remove event is the earliest reliable point to notice a
+          // clean project tab whose old path vanished. Watchers may name a
+          // containing directory (or the root), so include its descendants
+          // without guessing unrelated/unlisted paths.
+          const availablePaths = new Set(
+            flattenFiles(refreshed.tree)
+              .filter((node) => node.kind === 'file')
+              .map((node) => node.relativePath),
+          );
+          let detached = 0;
+          const reloadRequests: Array<{
+            target: SaveTarget;
+            value: string;
+            revision: number;
+            encoding?: CharacterEncoding;
+          }> = [];
+
+          for (const document of documentsRef.current) {
+            if (!document.relativePath
+              || !projectPathWasChanged(document.relativePath, changedPaths)
+              || manualSaveInFlightRef.current.has(document.id)) continue;
+            const target = targetFor(document, watchRoot);
+            if (!availablePaths.has(document.relativePath)) {
+              if (recoverMissingSaveTarget(target) === 'detached') detached += 1;
+              continue;
+            }
+            if (document.dirty) {
+              // Directory notifications and our own writes are not conflicts.
+              try {
+                const disk = await desktop.project.readFile(watchRoot, document.relativePath, document.encoding, 'none');
+                const latest = documentsRef.current.find((candidate) => candidate.id === target.id);
+                if (latest && matchesSaveTarget(latest, target) && disk.diskVersion !== latest.diskVersion) flagConflict(target);
+              } catch (error) {
+                if (isMissingSaveTargetError(error)) recoverMissingSaveTarget(target);
+              }
+              continue;
+            }
+            // Stop an older autosave/read result before fetching the outside
+            // version. The replacement read carries the newer target epoch.
+            invalidateSaveTarget(document.id);
+            reloadRequests.push({
+              target: targetFor(document, watchRoot),
+              value: document.value,
+              revision: document.revision,
+              encoding: document.encoding,
+            });
+          }
+
+          const reloads = await Promise.all(reloadRequests.map(async (request) => {
+            try {
+              const source = await desktop.project.readFile(
+                watchRoot,
+                request.target.relativePath!,
+                request.encoding,
+                'none',
+              );
+              return { request, source } as const;
+            } catch (error) {
+              return isMissingSaveTargetError(error)
+                ? { request, missing: true } as const
+                : null;
+            }
+          }));
+          if (disposed || projectRootRef.current !== watchRoot) return;
+
+          for (const reload of reloads) {
+            if (reload && 'missing' in reload && recoverMissingSaveTarget(reload.request.target) === 'detached') {
+              detached += 1;
+            }
+          }
+          const availableReloads = reloads.filter((reload): reload is {
+            request: (typeof reloadRequests)[number];
+            source: DecodedSourceFile;
+          } => Boolean(reload && 'source' in reload));
+          if (availableReloads.length) {
+            commitDocuments((current) => current.map((document) => {
+              const reload = availableReloads.find((candidate) => candidate.request.target.id === document.id);
+              if (!reload
+                || !matchesSaveTarget(document, reload.request.target)
+                || document.dirty
+                || document.value !== reload.request.value
+                || document.revision !== reload.request.revision) return document;
+              return {
+                ...document,
+                value: reload.source.content,
+encoding: reload.source.encoding,
+                diskVersion: reload.source.diskVersion,
+                revision: document.revision + 1,
+                dirty: false,
+                recoveryDraft: false,
+                defaultUntitled: false,
+              };
+            }));
+          }
+
+          const plural = changedPaths.size === 1 ? '' : 's';
+          const recoveryNote = detached
+            ? ` ${detached === 1 ? 'A file is' : `${detached} files are`} no longer on disk; their text is kept as unsaved tab${detached === 1 ? '' : 's'}. Use Save As to choose a new location.`
+            : '';
+          showToast(`Project changed outside Yedit (${changedPaths.size} update${plural}).${recoveryNote}`);
+        }
+      } catch (error) {
+        if (isMissingSaveTargetError(error) && !disposed && projectRootRef.current === watchRoot) {
+          let detached = 0;
+          for (const document of documentsRef.current) {
+            if (!document.relativePath) continue;
+            if (recoverMissingSaveTarget(targetFor(document, watchRoot)) === 'detached') detached += 1;
+          }
+          if (detached) {
+            showToast(`${detached === 1 ? 'The project file is' : `${detached} project files are`} no longer on disk. Their text is kept as unsaved tab${detached === 1 ? '' : 's'}. Use Save As to choose a new location.`, 'info');
+          }
+        }
+        // A later watcher event or a direct Save will surface a missing root
+        // through the stable recovery error. Do not let an old watcher toast
+        // replace a newer project's UI.
+      } finally {
+        refreshInFlight = false;
+        if (!disposed && pendingChangedPaths.size) void processExternalChanges();
+      }
+    };
+
     const unsubscribe = desktop.project.onChanged((update) => {
-      if (update.root !== project.root || !update.changes?.length) return;
+      if (disposed || update.root !== watchRoot || !update.changes?.length) return;
       const now = Date.now();
       const externalChanges = update.changes.filter((change) => {
         const localWriteAt = localWritePathsRef.current.get(change.relativePath);
         return !localWriteAt || now - localWriteAt > 1800;
       });
       if (!externalChanges.length) return;
-      if (externalChanges.some((change) => change.relativePath === PROJECT_TASKS_FILENAME)) {
-        setProjectTaskRefreshVersion((current) => current + 1);
-      }
-      void desktop.project.refresh(project.root).then(syncProjectTree).catch(() => undefined);
-      const changedPaths = new Set(externalChanges.map((change) => change.relativePath));
-      const reloadable = documentsRef.current.filter((document) => document.relativePath && changedPaths.has(document.relativePath) && !document.dirty);
-      if (reloadable.length) {
-        void Promise.all(reloadable.map(async (document) => ({ id: document.id, source: await desktop.project.readFile(project.root, document.relativePath!, document.encoding) })))
-          .then((reloaded) => {
-            const values = new Map(reloaded.map((entry) => [entry.id, entry.source]));
-            setDocuments((current) => current.map((document) => {
-              const source = values.get(document.id);
-              return source ? { ...document, value: source.content, encoding: source.encoding, revision: document.revision + 1, dirty: false } : document;
-            }));
-          })
-          .catch(() => undefined);
-      }
-      showToast(`Project changed outside Yedit (${externalChanges.length} update${externalChanges.length === 1 ? '' : 's'}).`);
+      for (const change of externalChanges) pendingChangedPaths.add(change.relativePath);
+      void processExternalChanges();
     });
-    void desktop.project.watch(project.root).then((watch) => { watchId = watch.watchId; }).catch(() => undefined);
+    void desktop.project.watch(watchRoot).then((watch) => {
+      if (disposed) void desktop.project.unwatch(watch.watchId);
+      else watchId = watch.watchId;
+    }).catch(() => undefined);
     return () => {
+      disposed = true;
       unsubscribe();
       if (watchId) void desktop.project.unwatch(watchId);
     };
-  }, [project?.root, showToast, syncProjectTree]);
+  }, [commitDocuments, flagConflict, invalidateSaveTarget, matchesSaveTarget, project?.root, recoverMissingSaveTarget, showToast, syncProjectTree, targetFor]);
 
   const openFile = useCallback(async (node: FileNode, revealLine?: number) => {
     if (!project || node.kind !== 'file' || !node.supported) return;
+    const projectRoot = project.root;
+    if (projectRootRef.current !== projectRoot) return;
+    const reservationKey = `${projectRoot}\0${node.relativePath}`;
     setSelectedFolderPath(parentFolderPath(node.relativePath));
     setCollapsedPaths((current) => {
       const next = new Set(current);
       for (const ancestor of ancestorFolderPaths(node.relativePath)) next.delete(ancestor);
       return next;
     });
-    const existing = documents.find((document) => document.relativePath === node.relativePath);
+    beginDocumentInteraction();
+    const existing = documentsRef.current.find((document) => document.relativePath === node.relativePath && document.projectRoot === projectRoot);
     if (existing) {
       if (revealLine) pendingRevealLineRef.current = revealLine;
       setActiveId(existing.id);
       return;
     }
+    if (projectFileReadReservationsRef.current.has(reservationKey)) return;
+    projectFileReadReservationsRef.current.add(reservationKey);
     try {
-      const source = await desktop.project.readFile(project.root, node.relativePath, openingEncoding);
+      const source = await desktop.project.readFile(projectRoot, node.relativePath, openingEncoding, 'adopt');
+      if (projectRootRef.current !== projectRoot) return;
+      const existingAfterRead = documentsRef.current.find((document) => document.relativePath === node.relativePath && document.projectRoot === projectRoot);
+      if (existingAfterRead) {
+        if (revealLine) pendingRevealLineRef.current = revealLine;
+        setActiveId(existingAfterRead.id);
+        return;
+      }
       const document: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
         name: node.name,
         sourceType: node.sourceType ?? sourceTypeForName(node.name),
         value: source.content,
         encoding: source.encoding,
+        diskVersion: source.diskVersion,
         relativePath: node.relativePath,
+        projectRoot,
         dirty: false,
         revision: 0,
       };
+      let activated = document;
+      let added = false;
+      commitDocuments((current) => {
+        const duplicate = current.find((candidate) => candidate.relativePath === node.relativePath && candidate.projectRoot === projectRoot);
+        if (duplicate) {
+          activated = duplicate;
+          return current;
+        }
+        added = true;
+        return [...current, document];
+      });
       if (revealLine) pendingRevealLineRef.current = revealLine;
-      setDocuments((current) => [...current, document]);
-      setActiveId(document.id);
-      setPreview(EMPTY_PREVIEW);
+      setActiveId(activated.id);
+      if (added) setPreview(EMPTY_PREVIEW);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not read that file.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not read that file.', 'error');
+      }
+    } finally {
+      projectFileReadReservationsRef.current.delete(reservationKey);
     }
-  }, [documents, openingEncoding, project, showToast]);
+  }, [beginDocumentInteraction, commitDocuments, openingEncoding, project, showToast]);
 
   const createProjectTaskConfig = useCallback(async () => {
     if (!project) {
       showToast('Open a project before creating its task configuration.', 'info');
       return;
     }
+    const projectRoot = project.root;
     const existing = flattenFiles(project.tree).find((node) => node.kind === 'file' && node.relativePath === PROJECT_TASKS_FILENAME);
     if (existing) {
       await openFile(existing);
+      if (projectRootRef.current !== projectRoot) return;
       showToast('Opened the existing yedit.tasks.json file.', 'info');
       return;
     }
     try {
+      if (projectRootRef.current !== projectRoot) return;
       localWritePathsRef.current.set(PROJECT_TASKS_FILENAME, Date.now());
-      await desktop.project.createFile(project.root, PROJECT_TASKS_FILENAME, PROJECT_TASKS_TEMPLATE);
+      await desktop.project.createFile(projectRoot, PROJECT_TASKS_FILENAME, PROJECT_TASKS_TEMPLATE);
+      if (projectRootRef.current !== projectRoot) return;
       await openFile({ name: PROJECT_TASKS_FILENAME, relativePath: PROJECT_TASKS_FILENAME, kind: 'file', sourceType: 'json', supported: true });
-      syncProjectTree(await desktop.project.refresh(project.root));
+      if (projectRootRef.current !== projectRoot) return;
+      const refreshed = await desktop.project.refresh(projectRoot);
+      if (!syncProjectTree(refreshed, false, projectRoot)) return;
       setProjectTaskRefreshVersion((current) => current + 1);
       showToast('Created yedit.tasks.json. Adjust the example task, then run it from Task Console.', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not create yedit.tasks.json.', 'error');
+      if (projectRootRef.current === projectRoot) {
+        showToast(error instanceof Error ? error.message : 'Could not create yedit.tasks.json.', 'error');
+      }
     }
   }, [openFile, project, showToast, syncProjectTree]);
 
@@ -2305,13 +3007,14 @@ function App({ desktop }: { desktop: DesktopApi }) {
     const name = `${nameWithoutKnownExtension}.${SOURCE_META[newSourceType].extension}`;
     const type = newSourceType;
     setIsCreatingSource(true);
+    beginDocumentInteraction();
     try {
       if (!project) {
         const requestedTabName = name.includes('/') ? name.split('/').at(-1)! : name;
         const tabBaseName = filenameWithoutExtension(requestedTabName);
         let tabName = requestedTabName;
         let index = 2;
-        while (documents.some((document) => document.name === tabName)) {
+        while (documentsRef.current.some((document) => document.name === tabName)) {
           tabName = `${tabBaseName} ${index}.${SOURCE_META[type].extension}`;
           index += 1;
         }
@@ -2319,8 +3022,9 @@ function App({ desktop }: { desktop: DesktopApi }) {
           ...makeBlankDocument(type),
           name: tabName,
           dirty: true,
+          defaultUntitled: false,
         };
-        setDocuments((current) => [...current, document]);
+        commitDocuments((current) => [...current, document]);
         setActiveId(document.id);
         setPreview(EMPTY_PREVIEW);
         setNewSourceOpen(false);
@@ -2328,19 +3032,24 @@ function App({ desktop }: { desktop: DesktopApi }) {
         return;
       }
       const source = '';
+      const projectRoot = project.root;
+      if (projectRootRef.current !== projectRoot) return;
       localWritePathsRef.current.set(name, Date.now());
-      await desktop.project.createFile(project.root, name, source);
+      const created = await desktop.project.createFile(projectRoot, name, source);
+      if (projectRootRef.current !== projectRoot) return;
       const document: DocumentModel = {
         id: `file-${crypto.randomUUID()}`,
         name: name.split('/').at(-1) ?? name,
         sourceType: type,
         value: source,
+        diskVersion: created.diskVersion,
         encoding: 'utf-8',
         relativePath: name,
+        projectRoot,
         dirty: false,
         revision: 0,
       };
-      setDocuments((current) => [...current, document]);
+      commitDocuments((current) => [...current, document]);
       setActiveId(document.id);
       setSelectedFolderPath(parentFolderPath(name));
       setCollapsedPaths((current) => {
@@ -2350,102 +3059,278 @@ function App({ desktop }: { desktop: DesktopApi }) {
       });
       setPreview(EMPTY_PREVIEW);
       try {
-        syncProjectTree(await desktop.project.refresh(project.root));
+        const refreshed = await desktop.project.refresh(projectRoot);
+        if (!syncProjectTree(refreshed, false, projectRoot)) return;
       } catch {
         // The source is already open; the user can refresh the tree later if needed.
       }
       setNewSourceOpen(false);
       showToast(`Created ${name}.`, 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not create the file.', 'error');
+      if (!project || projectRootRef.current === project.root) {
+        showToast(error instanceof Error ? error.message : 'Could not create the file.', 'error');
+      }
     } finally {
       setIsCreatingSource(false);
     }
-  }, [documents, isSourceTypeEnabled, newSourceName, newSourceType, project, showToast, syncProjectTree]);
+  }, [beginDocumentInteraction, commitDocuments, isSourceTypeEnabled, newSourceName, newSourceType, project, showToast, syncProjectTree]);
+
+  /**
+   * Tasks and build profiles execute against files in the project folder, so
+   * their pre-save must follow the same existing-target policy and late-result
+   * guards as the normal Save command. Returning a state rather than showing
+   * a toast here lets the caller explain why its task did not start.
+   */
+  const persistProjectSource = useCallback(async (
+    document: DocumentModel,
+    projectRoot: string,
+  ): Promise<'saved' | 'recovered' | 'stale'> => {
+    if (!document.relativePath || document.conflict || manualSaveInFlightRef.current.has(document.id)) return 'stale';
+    manualSaveInFlightRef.current.add(document.id);
+    const source = document;
+    const saveTarget = beginSaveTargetOperation(source, projectRoot);
+    if (!saveTarget?.relativePath) {
+      manualSaveInFlightRef.current.delete(source.id);
+      return 'stale';
+    }
+    try {
+      const written = await enqueueDocumentWrite(saveTarget, (diskVersion) => {
+        localWritePathsRef.current.set(saveTarget.relativePath!, Date.now());
+        return desktop.project.writeFile(projectRoot, saveTarget.relativePath!, source.value, source.encoding, diskVersion);
+      });
+      if (written === null) return 'stale';
+      const latest = documentsRef.current.find((candidate) => candidate.id === saveTarget.id);
+      if (!latest || !matchesSaveTarget(latest, saveTarget)) return 'stale';
+      commitDocuments((current) => current.map((candidate) => (
+        matchesSaveTarget(candidate, saveTarget)
+          ? {
+            ...candidate,
+            dirty: candidate.value !== source.value,
+            diskVersion: written.diskVersion,
+            conflict: false,
+            recoveryDraft: false,
+            defaultUntitled: false,
+          }
+          : candidate
+      )));
+      if (saveTarget.relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
+      return 'saved';
+    } catch (error) {
+      if (isMissingSaveTargetError(error)) {
+        return recoverMissingSaveTarget(saveTarget) === 'detached' ? 'recovered' : 'stale';
+      }
+      if (isSaveConflict(error)) { flagConflict(saveTarget); return 'stale'; }
+      throw error;
+    } finally {
+      manualSaveInFlightRef.current.delete(source.id);
+    }
+  }, [beginSaveTargetOperation, commitDocuments, enqueueDocumentWrite, flagConflict, matchesSaveTarget, recoverMissingSaveTarget]);
 
   const saveDocument = useCallback(async (saveAs = false) => {
     if (!activeDocument) return;
+    if (!saveAs && activeDocument.conflict) { await reviewConflict(activeDocument); return; }
+    let source = activeDocument;
+    if (manualSaveInFlightRef.current.has(source.id)) return;
+    beginDocumentInteraction();
+    manualSaveInFlightRef.current.add(source.id);
+    const projectRoot = project?.root;
+
+    // A relative path belongs only to the folder that created this tab. If a
+    // folder switch left this tab open, a normal save is intentionally unable
+    // to borrow the new project's root. An explicit Save As is different: it
+    // is the user's request to choose a new destination. Detach first so the
+    // chooser cannot race an old project binding or let autosave revive it.
+    if (saveAs && source.relativePath && source.projectRoot !== projectRoot) {
+      invalidateSaveTarget(source.id);
+      commitDocuments((current) => current.map((document) => (
+        document.id === source.id
+          ? {
+            ...document,
+            relativePath: undefined,
+            projectRoot: undefined,
+            fileHandle: undefined,
+            dirty: true,
+            pinned: false,
+            recoveryDraft: true,
+            defaultUntitled: false,
+          }
+          : document
+      )));
+      source = documentsRef.current.find((document) => document.id === source.id) ?? source;
+    }
+    const saveTarget = beginSaveTargetOperation(source, projectRoot);
+    if (!saveTarget) {
+      manualSaveInFlightRef.current.delete(source.id);
+      return;
+    }
     try {
-      const content = settings.formatOnSave ? formatSource(activeDocument.sourceType, activeDocument.value) : activeDocument.value;
-      if (content !== activeDocument.value) {
+      const content = settings.formatOnSave ? formatSource(source.sourceType, source.value) : source.value;
+      if (content !== source.value) {
         const editor = editorRef.current;
         const model = editor?.getModel();
         if (editor && model) {
           editor.executeEdits('format-on-save', [{ range: model.getFullModelRange(), text: content, forceMoveMarkers: true }]);
         } else {
-          setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, revision: document.revision + 1 } : document));
+          commitDocuments((current) => current.map((document) => document.id === source.id
+            ? { ...document, value: content, revision: document.revision + 1, defaultUntitled: false }
+            : document));
         }
       }
-      if (project && activeDocument.relativePath && !saveAs) {
-        localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-        await desktop.project.writeFile(project.root, activeDocument.relativePath, content, activeDocument.encoding);
-        setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, dirty: false } : document));
-        if (activeDocument.relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
-        refreshProject();
-        showToast(`${activeDocument.name} saved.`, 'success');
+      const savedDocument = (document: DocumentModel, binding: Partial<DocumentModel> = {}) => {
+        // Do not replace a newer/undone edit with an older save result. When
+        // format-on-save has not reached React yet, apply only that exact
+        // formatter result to the unchanged original revision.
+        const value = document.value === source.value && document.revision === source.revision
+          ? content
+          : document.value;
+        return {
+          ...document,
+          ...binding,
+          value,
+          dirty: value !== content,
+          recoveryDraft: false,
+          defaultUntitled: false,
+        };
+      };
+      if (projectRoot && source.relativePath && !saveAs) {
+        const written = await enqueueDocumentWrite(saveTarget, (diskVersion) => {
+          localWritePathsRef.current.set(source.relativePath!, Date.now());
+          return desktop.project.writeFile(projectRoot, source.relativePath!, content, source.encoding, diskVersion);
+        });
+        if (written === null) return;
+        const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+        if (!latest || !matchesSaveTarget(latest, saveTarget)) return;
+        commitDocuments((current) => current.map((document) => (
+          matchesSaveTarget(document, saveTarget)
+            ? savedDocument(document, { diskVersion: written.diskVersion, conflict: false })
+            : document
+        )));
+        if (source.relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
+        void desktop.project.refresh(projectRoot)
+          .then((refreshed) => { syncProjectTree(refreshed, false, projectRoot); })
+          .catch(() => undefined);
+        showToast(`${source.name} saved.`, 'success');
         return;
       }
-      if (activeDocument.fileHandle && !saveAs) {
-        await desktop.project.writeOpenedFile(activeDocument.fileHandle, content, activeDocument.encoding);
-        setDocuments((current) => current.map((document) => document.id === activeDocument.id ? { ...document, value: content, dirty: false } : document));
-        showToast(`${activeDocument.name} saved.`, 'success');
+      if (source.fileHandle && !saveAs) {
+        const written = await enqueueDocumentWrite(saveTarget, (diskVersion) => desktop.project.writeOpenedFile(source.fileHandle!, content, source.encoding, diskVersion));
+        if (written === null) return;
+        const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+        if (!latest || !matchesSaveTarget(latest, saveTarget)) return;
+        commitDocuments((current) => current.map((document) => (
+          matchesSaveTarget(document, saveTarget)
+            ? savedDocument(document, { diskVersion: written.diskVersion, conflict: false })
+            : document
+        )));
+        showToast(`${source.name} saved.`, 'success');
         return;
       }
-      const result = await desktop.project.saveAs(activeDocument.name, content, activeDocument.sourceType, project?.root, activeDocument.encoding);
+      const result = await enqueueDocumentWrite(saveTarget, () => desktop.project.saveAs(source.name, content, source.sourceType, projectRoot, source.encoding), false);
+      if (result === null) return;
       if (result.canceled) return;
-      const name = result.name ?? activeDocument.name;
+      const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+      if (!latest || !matchesSaveTarget(latest, saveTarget)) return;
+      const name = result.name ?? source.name;
       const savedRelativePath = result.relativePath;
-      setDocuments((current) => current.map((document) => document.id === activeDocument.id ? {
-        ...document,
-        name,
-        value: content,
-        relativePath: savedRelativePath,
-        fileHandle: result.fileHandle,
-        dirty: false,
-      } : document));
-      if (project && savedRelativePath) {
+      commitDocuments((current) => current.map((document) => (
+        matchesSaveTarget(document, saveTarget)
+          ? savedDocument(document, {
+            name,
+            relativePath: savedRelativePath,
+            projectRoot: savedRelativePath && projectRoot ? projectRoot : undefined,
+            fileHandle: result.fileHandle,
+            diskVersion: result.diskVersion,
+            conflict: false,
+          })
+          : document
+      )));
+      if (projectRoot && savedRelativePath && projectRootRef.current === projectRoot) {
         setSelectedFolderPath(parentFolderPath(savedRelativePath));
         setCollapsedPaths((current) => {
           const next = new Set(current);
           for (const ancestor of ancestorFolderPaths(savedRelativePath)) next.delete(ancestor);
           return next;
         });
-        await refreshProject();
+        void desktop.project.refresh(projectRoot)
+          .then((refreshed) => { syncProjectTree(refreshed, false, projectRoot); })
+          .catch(() => undefined);
       }
       showToast(`${name} saved.`, 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not save the file.', 'error');
+      if (!saveAs && isSaveConflict(error)) { flagConflict(saveTarget); return; }
+      if (!saveAs && isMissingSaveTargetError(error)) {
+        const recovery = recoverMissingSaveTarget(saveTarget);
+        if (recovery === 'detached') {
+          showToast(`“${source.name}” is no longer on disk. Its text is kept as an unsaved tab. Use Save As to choose a new location.`, 'info');
+        }
+        return;
+      }
+      const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+      if (latest && matchesSaveTarget(latest, saveTarget)) showToast(errorMessage(error) || 'Could not save the file.', 'error');
+    } finally {
+      manualSaveInFlightRef.current.delete(source.id);
     }
-  }, [activeDocument, project, refreshProject, settings.formatOnSave, showToast]);
+  }, [activeDocument, beginDocumentInteraction, beginSaveTargetOperation, commitDocuments, enqueueDocumentWrite, flagConflict, invalidateSaveTarget, matchesSaveTarget, project?.root, recoverMissingSaveTarget, reviewConflict, settings.formatOnSave, showToast, syncProjectTree]);
 
   useEffect(() => {
-    if (!settings.autoSave || !activeDocument?.dirty) return undefined;
-    const documentId = activeDocument.id;
-    const relativePath = activeDocument.relativePath;
-    const fileHandle = activeDocument.fileHandle;
-    const encoding = activeDocument.encoding;
-    const source = activeDocument.value;
-    const persist = project && relativePath
-      ? () => {
-        localWritePathsRef.current.set(relativePath, Date.now());
-        return desktop.project.writeFile(project.root, relativePath, source, encoding);
-      }
-      : fileHandle
-        ? () => desktop.project.writeOpenedFile(fileHandle, source, encoding)
-        : undefined;
-    if (!persist) return undefined;
+    if (!settings.autoSave || !activeDocument?.dirty || activeDocument.conflict || manualSaveInFlightRef.current.has(activeDocument.id)) return undefined;
+    const source = activeDocument;
+    const projectRoot = project?.root;
+    if (!source.relativePath && !source.fileHandle) return undefined;
     const timer = window.setTimeout(() => {
+      if (manualSaveInFlightRef.current.has(source.id)) return;
+      const latestBeforeSave = documentsRef.current.find((document) => document.id === source.id);
+      if (!latestBeforeSave
+        || latestBeforeSave.value !== source.value
+        || latestBeforeSave.revision !== source.revision
+        || !sameSaveTarget(latestBeforeSave, source)) return;
+      const saveTarget = beginSaveTargetOperation(source, projectRoot);
+      if (!saveTarget) return;
+      const persist = saveTarget.relativePath && projectRoot
+        ? () => enqueueDocumentWrite(saveTarget, (diskVersion) => {
+          localWritePathsRef.current.set(saveTarget.relativePath!, Date.now());
+          return desktop.project.writeFile(projectRoot, saveTarget.relativePath!, source.value, source.encoding, diskVersion);
+        })
+        : saveTarget.fileHandle
+          ? () => enqueueDocumentWrite(saveTarget, (diskVersion) => desktop.project.writeOpenedFile(saveTarget.fileHandle!, source.value, source.encoding, diskVersion))
+          : undefined;
+      if (!persist) return;
       setAutoSaving(true);
       void persist()
-        .then(() => {
-          setDocuments((current) => current.map((document) => document.id === documentId && document.value === source ? { ...document, dirty: false } : document));
-          if (relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
+        .then((written) => {
+          if (written === null) return;
+          const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+          if (!latest || !matchesSaveTarget(latest, saveTarget)) return;
+          commitDocuments((current) => current.map((document) => (
+            matchesSaveTarget(document, saveTarget)
+              ? {
+                ...document,
+                dirty: document.value !== source.value,
+                diskVersion: written.diskVersion,
+                conflict: false,
+                recoveryDraft: false,
+                defaultUntitled: false,
+              }
+              : document
+          )));
+          if (saveTarget.relativePath === PROJECT_TASKS_FILENAME) setProjectTaskRefreshVersion((current) => current + 1);
         })
-        .catch((error) => showToast(error instanceof Error ? error.message : 'Auto-save could not write this file.', 'error'))
+        .catch((error) => {
+          if (isSaveConflict(error)) { flagConflict(saveTarget); return; }
+          if (isMissingSaveTargetError(error)) {
+            const recovery = recoverMissingSaveTarget(saveTarget);
+            if (recovery === 'detached') {
+              showToast(`“${source.name}” is no longer on disk. Its text is kept as an unsaved tab. Use Save As to choose a new location.`, 'info');
+            }
+            return;
+          }
+          const latest = documentsRef.current.find((document) => document.id === saveTarget.id);
+          if (latest && matchesSaveTarget(latest, saveTarget)) showToast(errorMessage(error) || 'Auto-save could not write this file.', 'error');
+        })
         .finally(() => setAutoSaving(false));
     }, 1050);
     return () => window.clearTimeout(timer);
-  }, [activeDocument?.dirty, activeDocument?.encoding, activeDocument?.fileHandle, activeDocument?.id, activeDocument?.relativePath, activeDocument?.value, project?.root, settings.autoSave, showToast]);
+  }, [activeDocument, beginSaveTargetOperation, commitDocuments, enqueueDocumentWrite, flagConflict, matchesSaveTarget, project?.root, recoverMissingSaveTarget, settings.autoSave, showToast]);
 
   const closeDocument = useCallback((document: DocumentModel, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -2454,6 +3339,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
       return;
     }
     if (document.dirty && !window.confirm(`Discard unsaved changes to “${document.name}”?`)) return;
+    beginDocumentInteraction();
+    invalidateSaveTarget(document.id);
     const index = documents.findIndex((candidate) => candidate.id === document.id);
     const next = documents.filter((candidate) => candidate.id !== document.id);
     if (!next.length) {
@@ -2464,6 +3351,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       renderTokenRef.current += 1;
       editorRef.current = null;
       pendingRevealLineRef.current = null;
+      documentsRef.current = [];
       setDocuments([]);
       setActiveId('');
       setPreview(EMPTY_PREVIEW);
@@ -2471,17 +3359,19 @@ function App({ desktop }: { desktop: DesktopApi }) {
       setSnapshots([]);
       return;
     }
+    documentsRef.current = next;
     setDocuments(next);
     if (activeId === document.id) setActiveId(next[Math.max(0, index - 1)].id);
-  }, [activeId, documents, showToast]);
+  }, [activeId, beginDocumentInteraction, documents, invalidateSaveTarget, showToast]);
 
   const toggleActiveTabPin = useCallback(() => {
     if (!activeDocument) return;
-    setDocuments((current) => current.map((document) => document.id === activeDocument.id
+    beginDocumentInteraction();
+    commitDocuments((current) => current.map((document) => document.id === activeDocument.id
       ? { ...document, pinned: !document.pinned }
       : document));
     showToast(activeDocument.pinned ? 'Tab unpinned.' : 'Tab pinned for this workspace session.', 'success');
-  }, [activeDocument, showToast]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, showToast]);
 
   const formatActive = useCallback(() => {
     if (!activeDocument) return;
@@ -2572,7 +3462,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
     const base = filenameWithoutExtension(activeDocument.name);
     let name = `${base}.schema.json`;
     let index = 2;
-    while (documents.some((document) => document.name === name)) {
+    while (documentsRef.current.some((document) => document.name === name)) {
       name = `${base}.schema ${index}.json`;
       index += 1;
     }
@@ -2584,10 +3474,11 @@ function App({ desktop }: { desktop: DesktopApi }) {
       dirty: true,
       revision: 0,
     };
-    setDocuments((current) => [...current, document]);
+    beginDocumentInteraction();
+    commitDocuments((current) => [...current, document]);
     setActiveId(document.id);
     showToast('Permissive JSON Schema draft opened in a new tab.', 'success');
-  }, [activeDocument, documents, revealEditorLine, showToast]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, revealEditorLine, showToast]);
 
   const openJsonPrompt = useCallback((intent: JsonPromptIntent) => {
     if (!activeDocument || activeDocument.sourceType !== 'json') {
@@ -2839,7 +3730,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
         dirty: true,
         revision: 0,
       };
-      setDocuments((current) => [...current, review]);
+      beginDocumentInteraction();
+      commitDocuments((current) => [...current, review]);
       setActiveId(review.id);
       setPromptReply('');
       setPromptOpen(false);
@@ -2892,7 +3784,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
     setPromptReply('');
     setPromptOpen(false);
     showToast('Review the proposed source change before applying it.', 'info');
-  }, [activeDocument, promptApplyMode, promptReply, promptSpec.jsonIntent, showToast]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, promptApplyMode, promptReply, promptSpec.jsonIntent, showToast]);
 
   const applyReviewedAiSource = useCallback(() => {
     if (!pendingAiReview) return;
@@ -2906,7 +3798,8 @@ function App({ desktop }: { desktop: DesktopApi }) {
         dirty: true,
         revision: 0,
       };
-      setDocuments((current) => [...current, document]);
+      beginDocumentInteraction();
+      commitDocuments((current) => [...current, document]);
       setActiveId(document.id);
       setPendingAiReview(null);
       showToast('Reviewed LLM response opened as a new draft.', 'success');
@@ -2930,7 +3823,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
     }
     setPendingAiReview(null);
     showToast(pendingAiReview.mode === 'replace' ? 'Reviewed LLM source applied.' : 'Reviewed LLM source inserted.', 'success');
-  }, [activeDocument, pendingAiReview, showToast, updateDocument]);
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, pendingAiReview, showToast, updateDocument]);
 
   const restoreSnapshot = useCallback((snapshot: LocalSnapshot) => {
     if (!activeDocument || !window.confirm(`Restore the local snapshot from ${displayTime(snapshot.createdAt)}? Your current source stays available through Undo.`)) return;
@@ -3158,7 +4051,15 @@ function App({ desktop }: { desktop: DesktopApi }) {
       return;
     }
 
-    const document = activeDocument;
+    const projectRoot = project.root;
+    const document = activeDocument?.projectRoot === projectRoot ? activeDocument : undefined;
+    if (projectRootRef.current !== projectRoot) return;
+    const runGeneration = projectOperationGenerationRef.current + 1;
+    projectOperationGenerationRef.current = runGeneration;
+    const isCurrentRun = () => (
+      projectRootRef.current === projectRoot
+      && projectOperationGenerationRef.current === runGeneration
+    );
     setTaskConsoleOpen(true);
     if (!panelLayoutRef.current.previewOpen) updatePanel('previewOpen', true);
     setTaskOutput(`Running ${task.label}…`);
@@ -3167,19 +4068,27 @@ function App({ desktop }: { desktop: DesktopApi }) {
       // A task builds the actual project folder, so persist an edited project
       // file first. Standalone tabs deliberately stay out of this workflow.
       if (document?.relativePath && document.dirty) {
-        const source = document.value;
-        localWritePathsRef.current.set(document.relativePath, Date.now());
         setTaskOutput(`Saving ${document.relativePath} before ${task.label}…`);
-        await desktop.project.writeFile(project.root, document.relativePath, source, document.encoding);
-        setDocuments((current) => current.map((candidate) => (
-          candidate.id === document.id && candidate.value === source
-            ? { ...candidate, dirty: false }
-            : candidate
-        )));
+        const persisted = await persistProjectSource(document, projectRoot);
+        if (!isCurrentRun()) return;
+        if (persisted === 'recovered') {
+          const message = `“${document.name}” was moved or deleted. Its text is kept as an unsaved tab; use Save As before running ${task.label}.`;
+          setTaskOutput(message);
+          showToast(message, 'info');
+          return;
+        }
+        if (persisted === 'stale') {
+          const message = 'The active file changed while it was being saved. Finish saving it, then run the task again.';
+          setTaskOutput(message);
+          showToast(message, 'info');
+          return;
+        }
       }
 
+      if (!isCurrentRun()) return;
       setTaskOutput(`Running ${task.label}…`);
-      const result = await desktop.project.runTask(project.root, task.id);
+      const result = await desktop.project.runTask(projectRoot, task.id);
+      if (!isCurrentRun()) return;
       setTaskOutput(projectTaskConsoleText(result));
       if (!result.ok) {
         showToast(`${task.label} failed — see the Task Console.`, 'error');
@@ -3200,13 +4109,14 @@ function App({ desktop }: { desktop: DesktopApi }) {
       }
       showToast(result.dataUri ? `${task.label} completed and opened its PDF.` : `${task.label} completed.`, 'success');
     } catch (error) {
+      if (!isCurrentRun()) return;
       const message = error instanceof Error ? error.message : `Could not run ${task.label}.`;
       setTaskOutput(message);
       showToast(message, 'error');
     } finally {
-      setIsTaskRunning(false);
+      if (projectOperationGenerationRef.current === runGeneration) setIsTaskRunning(false);
     }
-  }, [activeDocument, isTaskRunning, project, projectTasks, settings.safeMode, showToast, updatePanel]);
+  }, [activeDocument, isTaskRunning, persistProjectSource, project, projectTasks, settings.safeMode, showToast, updatePanel]);
 
   const renderActivePreview = useCallback(() => {
     if (!activeDocument) return;
@@ -3234,9 +4144,14 @@ function App({ desktop }: { desktop: DesktopApi }) {
       showToast('Save the active TikZ, LaTeX, or MetaFont source into a project before running a build profile.', 'info');
       return;
     }
-    const isTikz = activeDocument.sourceType === 'tikz';
-    const isLatex = activeDocument.sourceType === 'latex';
-    const isMetafont = activeDocument.sourceType === 'metafont';
+    const document = activeDocument;
+    const projectRoot = project.root;
+    const relativePath = document.relativePath;
+    if (!relativePath || document.projectRoot !== projectRoot) return;
+    if (projectRootRef.current !== projectRoot) return;
+    const isTikz = document.sourceType === 'tikz';
+    const isLatex = document.sourceType === 'latex';
+    const isMetafont = document.sourceType === 'metafont';
     if (!isTikz && !isLatex && !isMetafont) {
       showToast('Local build profiles are available for TikZ, LaTeX, and MetaFont source.', 'info');
       return;
@@ -3257,15 +4172,35 @@ function App({ desktop }: { desktop: DesktopApi }) {
         ? 'latex-dvi'
         : engine === 'pdflatex' ? 'latex-pdf' : `latex-${engine}-pdf`
       : engine === 'pdflatex' ? 'tikz-pdf' : `tikz-${engine}-pdf`;
+    const runGeneration = projectOperationGenerationRef.current + 1;
+    projectOperationGenerationRef.current = runGeneration;
+    const isCurrentRun = () => (
+      projectRootRef.current === projectRoot
+      && projectOperationGenerationRef.current === runGeneration
+    );
     setTaskConsoleOpen(true);
     setIsTaskRunning(true);
-    setTaskOutput(`Running ${buildLabel} for ${activeDocument.relativePath}…`);
+    setTaskOutput(`Running ${buildLabel} for ${relativePath}…`);
     try {
-      if (activeDocument.dirty) {
-        localWritePathsRef.current.set(activeDocument.relativePath, Date.now());
-        await desktop.project.writeFile(project.root, activeDocument.relativePath, activeDocument.value, activeDocument.encoding);
+      if (document.dirty) {
+        const persisted = await persistProjectSource(document, projectRoot);
+        if (!isCurrentRun()) return;
+        if (persisted === 'recovered') {
+          const message = `“${document.name}” was moved or deleted. Its text is kept as an unsaved tab; use Save As before running this build.`;
+          setTaskOutput(message);
+          showToast(message, 'info');
+          return;
+        }
+        if (persisted === 'stale') {
+          const message = 'The active file changed while it was being saved. Finish saving it, then run the build again.';
+          setTaskOutput(message);
+          showToast(message, 'info');
+          return;
+        }
       }
-      const result = await desktop.project.runBuild(project.root, activeDocument.relativePath, profileId);
+      if (!isCurrentRun()) return;
+      const result = await desktop.project.runBuild(projectRoot, relativePath, profileId);
+      if (!isCurrentRun()) return;
       if (!result.ok) {
         setTaskOutput(result.error || 'The build did not finish.');
         showToast('Build failed — see the Task Console.', 'error');
@@ -3276,13 +4211,14 @@ function App({ desktop }: { desktop: DesktopApi }) {
         ? 'MetaFont TTF build completed.'
         : `${isLatex ? 'LaTeX' : 'TikZ'} ${output} build completed${isLatex && latexMode === 'dvi' ? ' with classic LaTeX.' : ` with ${compilerLabel}.`}`, 'success');
     } catch (error) {
+      if (!isCurrentRun()) return;
       const message = error instanceof Error ? error.message : 'Could not run the local build profile.';
       setTaskOutput(message);
       showToast(message, 'error');
     } finally {
-      setIsTaskRunning(false);
+      if (projectOperationGenerationRef.current === runGeneration) setIsTaskRunning(false);
     }
-  }, [activeDocument, project, settings.safeMode, showToast, texPdfEngine]);
+  }, [activeDocument, persistProjectSource, project, settings.safeMode, showToast, texPdfEngine]);
 
   const runPrimaryTask = useCallback(() => {
     if (activeDocument?.sourceType === 'python') return runActivePython('run');
@@ -3457,6 +4393,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
 
   useEffect(() => {
     const unsubscribe = desktop.onMenuAction((action) => {
+      if (document.querySelector<HTMLElement>('.app-shell')?.inert) return;
       if (action === 'palette') { setPaletteOpen(true); return; }
       if (action === 'help-about') { openAbout(); return; }
       const requestedType = /^(?:new|select)-(.+)$/.exec(action)?.[1];
@@ -3738,7 +4675,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
       const extension = dotIndex > 0 ? requestedName.slice(dotIndex) : '';
       let name = requestedName;
       let index = 2;
-      while (documents.some((document) => document.name === name)) {
+      while (documentsRef.current.some((document) => document.name === name)) {
         name = `${base} ${index}${extension}`;
         index += 1;
       }
@@ -3750,14 +4687,15 @@ function App({ desktop }: { desktop: DesktopApi }) {
         dirty: true,
         revision: 0,
       };
-      setDocuments((current) => [...current, document]);
+      beginDocumentInteraction();
+      commitDocuments((current) => [...current, document]);
       setActiveId(document.id);
       setPreview(EMPTY_PREVIEW);
       showToast(`${name} opened as a scratchpad tab. Save it into a project when ready.`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not read that dropped file.', 'error');
     }
-  }, [documents, showToast]);
+  }, [beginDocumentInteraction, commitDocuments, showToast]);
 
   const aboutDialog = aboutOpen && (
     <div className="modal-backdrop about-backdrop" onMouseDown={() => setAboutOpen(false)}>
@@ -3968,6 +4906,7 @@ function App({ desktop }: { desktop: DesktopApi }) {
             <div className="empty-workspace-mark" aria-hidden="true"><span></span><span></span><span></span></div>
             <p className="eyebrow">Workspace ready</p>
             <h1>No source tabs open</h1>
+            <p className="recovery-status" role="status">{recoveryStatus}</p>
             <p>Start with an empty source file, open one file, open a folder, or drop an existing source here. Closing the last tab leaves this workspace ready for the next task.</p>
             <div className="empty-workspace-actions">
               <button className="accent-button" onClick={() => openNewSource()}>＋ New source</button>
@@ -4254,6 +5193,18 @@ function App({ desktop }: { desktop: DesktopApi }) {
             </div>
           </div>
 
+          <div className="document-safety">
+          <div className="recovery-status" role="status">{recoveryStatus}</div>
+          {activeDocument.recoveryDraft && <div className="document-notice" role="status">
+            <span>Recovered draft{activeDocument.recoveryOrigin ? ` — ${activeDocument.recoveryOrigin}` : ''}</span>
+            <button onClick={() => void saveDocument(true)}>Save As…</button>
+          </div>}
+          {activeDocument.conflict && <div className="document-notice" role="status">
+            <span>Changed on disk. Autosave is paused.</span>
+            <button onClick={() => void reviewConflict(activeDocument)}>Compare and resolve…</button>
+            <button onClick={() => void saveDocument(true)}>Save As…</button>
+          </div>}
+          </div>
           <div className="monaco-wrap" data-background-pattern={settings.editorBackgroundPattern} style={monacoWrapStyle}>
             <Editor
               key={activeDocument.id}
@@ -4466,6 +5417,15 @@ function App({ desktop }: { desktop: DesktopApi }) {
       {whatsNewDialog}
 
       {recentProjectsDialog}
+
+      {conflictReview && <div className="modal-backdrop" onMouseDown={() => setConflictReview(null)}>
+        <section className="workbench-modal conflict-modal" role="dialog" aria-modal="true" aria-label="Resolve file conflict" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="modal-title"><h2>Resolve file conflict</h2><button onClick={() => setConflictReview(null)} aria-label="Close comparison">×</button></div>
+          <p>Autosave stays paused while you compare. Keep mine replaces the disk version shown here; a newer disk change will stop the save.</p>
+          <div className="conflict-columns"><div><h3>Your edits</h3><pre>{conflictReview.value}</pre></div><div><h3>On disk</h3><pre>{conflictReview.disk.content}</pre></div></div>
+          <footer><button onClick={() => void resolveConflict('disk')}>Use disk</button><button onClick={() => void resolveConflict('mine')}>Keep mine</button><button disabled={activeDocument.id !== conflictReview.target.id} onClick={() => { setConflictReview(null); void saveDocument(true); }}>Save As…</button></footer>
+        </section>
+      </div>}
 
       {encodingOpen && (
         <div className="modal-backdrop" onMouseDown={() => setEncodingOpen(false)}>

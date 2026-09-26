@@ -40,6 +40,14 @@ const readBrowserSettings = () => window.localStorage.getItem(browserSettingsKey
  */
 export function createBrowserDesktopApi(): DesktopApi {
   return {
+    recovery: {
+      load: async () => JSON.parse(localStorage.getItem('yedit:durable-recovery') || 'null'),
+      save: async (payload) => {
+        const savedAt = Date.now();
+        localStorage.setItem('yedit:durable-recovery', JSON.stringify({ savedAt, payload }));
+        return savedAt;
+      },
+    },
     project: {
       open: async () => ({ canceled: true }),
       openFile: async () => ({ canceled: true }),

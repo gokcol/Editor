@@ -23,12 +23,26 @@ import type {
 } from '../types';
 
 /**
+ * A project read normally observes bytes only. `adopt` is reserved for an
+ * explicit fresh open that creates a new tab. Reload and reopen flows must
+ * remain `none` until the renderer has accepted their async result; a
+ * two-phase adoption API would be required to bind them safely.
+ */
+export type ProjectReadBindingMode = 'none' | 'adopt';
+
+/**
  * The renderer's intentionally small, local-only desktop boundary.
  *
  * The native shell implements this contract without making the React
  * workbench aware of its IPC or runtime details.
  */
 export interface DesktopApi {
+  recovery: {
+    load: () => Promise<{ savedAt: number; payload: unknown } | null>;
+    save: (payload: unknown) => Promise<number>;
+    onCloseRequested?: (handler: () => Promise<void>) => Promise<() => void>;
+    finishClose?: () => Promise<void>;
+  };
   project: {
     open: () => Promise<Project | { canceled: true }>;
     openFile: (projectRoot?: string, encoding?: CharacterEncoding) => Promise<OpenedSourceFile | { canceled: true }>;
@@ -36,9 +50,9 @@ export interface DesktopApi {
     revealOpenedFileFolder: (fileHandle: string) => Promise<Project>;
     create: (name: string) => Promise<Project | { canceled: true }>;
     refresh: (root: string) => Promise<Project>;
-    readFile: (root: string, relativePath: string, encoding?: CharacterEncoding) => Promise<DecodedSourceFile>;
-    writeFile: (root: string, relativePath: string, content: string, encoding?: CharacterEncoding) => Promise<{ relativePath: string }>;
-    createFile: (root: string, relativePath: string, content: string) => Promise<{ relativePath: string }>;
+    readFile: (root: string, relativePath: string, encoding?: CharacterEncoding, bindingMode?: ProjectReadBindingMode) => Promise<DecodedSourceFile>;
+    writeFile: (root: string, relativePath: string, content: string, encoding?: CharacterEncoding, expectedVersion?: string) => Promise<{ relativePath: string; diskVersion?: string }>;
+    createFile: (root: string, relativePath: string, content: string) => Promise<{ relativePath: string; diskVersion?: string }>;
     renameFile: (root: string, fromRelativePath: string, toRelativePath: string) => Promise<{ relativePath: string; previousRelativePath: string }>;
     duplicateFile: (root: string, fromRelativePath: string, toRelativePath: string) => Promise<{ relativePath: string; sourceRelativePath: string }>;
     deleteFile: (root: string, relativePath: string) => Promise<{ relativePath: string }>;
@@ -53,9 +67,9 @@ export interface DesktopApi {
     runBuild: (root: string, relativePath: string, profileId: string) => Promise<{ ok: boolean; profile: string; outputPath?: string; outputRelativePath?: string; error?: string }>;
     /** Runs the editor's current Python buffer locally; no source must be saved first. */
     runPython?: (source: string, name: string, options?: PythonRunOptions) => Promise<PythonRunResult>;
-    writeOpenedFile: (fileHandle: string, content: string, encoding?: CharacterEncoding) => Promise<{ name: string }>;
+    writeOpenedFile: (fileHandle: string, content: string, encoding?: CharacterEncoding, expectedVersion?: string) => Promise<{ name: string; diskVersion?: string }>;
     readOpenedFile: (fileHandle: string, encoding?: CharacterEncoding) => Promise<DecodedSourceFile>;
-    saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string, encoding?: CharacterEncoding) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; canceled?: boolean }>;
+    saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string, encoding?: CharacterEncoding) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; diskVersion?: string; canceled?: boolean }>;
   };
   recents: {
     list: () => Promise<RecentEntry[]>;

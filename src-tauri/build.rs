@@ -1,4 +1,7 @@
 const COMMANDS: &[&str] = &[
+    "recovery_load",
+    "recovery_save",
+    "recovery_finish_close",
     "project_open",
     "project_open_file",
     "project_reveal_open_file_folder",

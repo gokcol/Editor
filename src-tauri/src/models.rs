@@ -366,6 +366,7 @@ pub enum ProjectOrCanceled {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSourceFile {
+    pub disk_version: String,
     pub name: String,
     pub source_type: String,
     pub content: String,
@@ -376,6 +377,7 @@ pub struct ProjectSourceFile {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StandaloneSourceFile {
+    pub disk_version: String,
     pub name: String,
     pub source_type: String,
     pub content: String,
@@ -404,6 +406,7 @@ pub struct ExternalOpenFilesResult {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecodedSourceFile {
+    pub disk_version: String,
     pub content: String,
     pub encoding: String,
 }
@@ -419,6 +422,7 @@ pub enum OpenedSourceOrCanceled {
 #[serde(rename_all = "camelCase")]
 pub struct RelativePathResult {
     pub relative_path: String,
+    pub disk_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -439,11 +443,13 @@ pub struct DuplicatedFileResult {
 #[serde(rename_all = "camelCase")]
 pub struct WriteOpenedFileResult {
     pub name: String,
+    pub disk_version: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveAsResult {
+    pub disk_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -125,7 +125,23 @@ button:disabled { cursor: wait; opacity: .65; }
 .explorer-footer button { padding: 7px 4px; border: 0; border-radius: 6px; background: transparent; color: #8794ab; font-size: 10px; white-space: nowrap; }
 .explorer-footer button:hover { color: #dce6f8; background: #1d2736; }
 
-.editor-shell { grid-column: 3; min-width: 0; min-height: 0; display: grid; grid-template-rows: 41px 36px minmax(0, 1fr); overflow: hidden; background: #111622; }
+.editor-shell { grid-column: 3; min-width: 0; min-height: 0; display: grid; grid-template-rows: 41px 36px auto minmax(0, 1fr); overflow: hidden; background: #111622; }
+.document-safety { min-width: 0; }
+.recovery-status { margin: 0; padding: 3px 12px; color: #91a6bc; font-size: 10px; overflow-wrap: anywhere; }
+.recovery-status:empty { display: none; }
+.document-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 6px 12px; background: rgba(221, 169, 72, .12); color: #f0cf91; font-size: 11px; border-bottom: 1px solid var(--border); }
+.document-notice span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.document-notice button, .conflict-modal footer button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; color: inherit; background: transparent; }
+.conflict-modal { width: min(1000px, calc(100vw - 40px)); grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.conflict-modal > p { color: #91a6bc; font-size: 12px; }
+.conflict-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-height: 0; }
+.conflict-columns > div { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.conflict-columns h3 { font-size: 12px; }
+.conflict-columns pre { min-height: 120px; max-height: 45vh; margin: 0; padding: 10px; overflow: auto; border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 "SFMono-Regular", monospace; }
+.conflict-modal footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.app-shell[data-theme="light"] .recovery-status, .app-shell[data-theme="light"] .conflict-modal > p { color: #596c82; }
+.app-shell[data-theme="light"] .document-notice { color: #70500e; }
+@media (max-width: 600px) { .conflict-columns { grid-template-columns: 1fr; overflow: auto; } }
 /* Tabs are individual, bounded workbench chips.  App.tsx supplies
    --editor-tab-width after measuring the available strip width. */
 .tab-strip { position: relative; z-index: 12; display: flex; min-width: 0; align-items: center; gap: 5px; padding: 5px 8px; border-bottom: 1px solid var(--border); overflow: visible; background: #121824; }
