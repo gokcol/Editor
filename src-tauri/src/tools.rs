@@ -1422,7 +1422,9 @@ fn export_payload_sync(payload: Value) -> Value {
                 Ok(output)
             }
             "markdown" | "text" | "yaml" | "json" | "javascript" | "typescript" | "python"
-            | "fortran" | "sql" | "html" | "css" => {
+            | "php" | "fortran" | "sql" | "html" | "css" | "c" | "cpp" | "pascal" | "go"
+            | "ruby" | "bash" | "csh" | "powershell" | "batch" | "vbscript" | "swift"
+            | "objectivec" | "kotlin" => {
                 let document =
                     html.unwrap_or_else(|| if source_type == "html" { source } else { "" });
                 let fallback;
@@ -1931,78 +1933,15 @@ fn run_project_task_sync(root: String, task_id: String) -> Result<Value, String>
 }
 
 fn is_supported_source_path(path: &Path) -> bool {
-    matches!(
-        path.extension()
+    crate::models::source_kind_for_path(path) != "text"
+        || path
+            .extension()
             .and_then(OsStr::to_str)
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "tex"
-            | "latex"
-            | "ltx"
-            | "tikz"
-            | "mf"
-            | "svg"
-            | "mmd"
-            | "mermaid"
-            | "md"
-            | "markdown"
-            | "txt"
-            | "yaml"
-            | "yml"
-            | "json"
-            | "js"
-            | "cjs"
-            | "mjs"
-            | "jsx"
-            | "ts"
-            | "cts"
-            | "mts"
-            | "tsx"
-            | "py"
-            | "pyw"
-            | "f"
-            | "for"
-            | "f90"
-            | "f95"
-            | "f03"
-            | "f08"
-            | "f18"
-            | "sql"
-            | "ddl"
-            | "html"
-            | "htm"
-            | "xhtml"
-            | "css"
-    )
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
 }
 
 fn source_type_for_path(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "tex" | "latex" | "ltx" => "latex",
-        "tikz" => "tikz",
-        "mf" => "metafont",
-        "svg" => "svg",
-        "mmd" | "mermaid" => "mermaid",
-        "md" | "markdown" => "markdown",
-        "txt" => "text",
-        "yaml" | "yml" => "yaml",
-        "json" => "json",
-        "js" | "cjs" | "mjs" | "jsx" => "javascript",
-        "ts" | "cts" | "mts" | "tsx" => "typescript",
-        "py" | "pyw" => "python",
-        "f" | "for" | "f90" | "f95" | "f03" | "f08" | "f18" => "fortran",
-        "sql" | "ddl" => "sql",
-        "html" | "htm" | "xhtml" => "html",
-        "css" => "css",
-        _ => "tikz",
-    }
+    crate::models::source_kind_for_path(path)
 }
 
 fn relative_display_path(relative_path: &Path) -> String {
@@ -3182,6 +3121,36 @@ pub async fn shell_reveal(target: String) -> Result<(), String> {
 #[cfg(test)]
 mod project_task_tests {
     use super::*;
+
+    #[test]
+    fn added_code_sources_export_as_escaped_text_without_build_profiles() {
+        for kind in crate::models::EXTRA_SOURCE_TYPE_IDS {
+            let name = format!("source.{}", crate::models::extension_for_source_type(kind));
+            assert!(is_supported_source_path(Path::new(&name)));
+            assert_eq!(source_type_for_path(Path::new(&name)), *kind);
+            let preview = source_text_preview_html("<script>alert(1)</script>", kind);
+            assert!(preview.contains("&lt;script&gt;"));
+            assert!(!preview.contains("<script>alert(1)</script>"));
+            assert!(BUILD_PROFILES
+                .iter()
+                .all(|profile| !profile.source_types.contains(kind)));
+        }
+        assert!(!is_supported_source_path(Path::new("source.cpp.bak")));
+    }
+
+    #[test]
+    fn php_sources_are_supported_and_previewed_as_escaped_text() {
+        for extension in [
+            "php", "phtml", "php3", "php4", "php5", "php6", "php7", "php8", "PHP", "PHTML",
+        ] {
+            let name = format!("index.{extension}");
+            assert!(is_supported_source_path(Path::new(&name)));
+            assert_eq!(source_type_for_path(Path::new(&name)), "php");
+        }
+        let preview = source_text_preview_html("<?php echo '<script>alert(1)</script>'; ?>", "php");
+        assert!(preview.contains("&lt;?php"));
+        assert!(!preview.contains("<script>alert(1)</script>"));
+    }
 
     fn temporary_project(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("yedit-{name}-{}", Uuid::new_v4()));

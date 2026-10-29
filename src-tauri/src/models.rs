@@ -21,16 +21,68 @@ pub const SOURCE_TYPE_IDS: &[&str] = &[
     "javascript",
     "typescript",
     "python",
+    "php",
     "fortran",
     "sql",
     "html",
     "css",
+    "c",
+    "cpp",
+    "pascal",
+    "go",
+    "ruby",
+    "bash",
+    "csh",
+    "powershell",
+    "batch",
+    "vbscript",
+    "swift",
+    "objectivec",
+    "kotlin",
 ];
+pub const EXTRA_SOURCE_TYPE_IDS: &[&str] = &[
+    "c",
+    "cpp",
+    "pascal",
+    "go",
+    "ruby",
+    "bash",
+    "csh",
+    "powershell",
+    "batch",
+    "vbscript",
+    "swift",
+    "objectivec",
+    "kotlin",
+];
+pub const SOURCE_TYPES_VERSION: u64 = 2;
 
 pub const MAX_RECENT_ENTRIES: usize = 12;
 pub const MAX_PROJECT_TREE_DEPTH: usize = 32;
 
 pub fn source_type_for_path(path: &Path) -> String {
+    source_kind_for_path(path).to_owned()
+}
+
+/// The same filename policy is used by file open, recovery, and build checks.
+pub fn source_kind_for_path(path: &Path) -> &'static str {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("C" | "H")
+    ) {
+        return "cpp";
+    }
+    match name.to_ascii_lowercase().as_str() {
+        ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".profile" | ".zshrc"
+        | ".zprofile" | ".kshrc" => return "bash",
+        ".cshrc" | ".tcshrc" | ".login" | ".logout" => return "csh",
+        "rakefile" | "gemfile" | "guardfile" | "vagrantfile" => return "ruby",
+        _ => {}
+    }
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -49,8 +101,23 @@ pub fn source_type_for_path(path: &Path) -> String {
         "js" | "cjs" | "mjs" | "jsx" => "javascript",
         "ts" | "cts" | "mts" | "tsx" => "typescript",
         "py" | "pyw" => "python",
+        "php" | "php3" | "php4" | "php5" | "php6" | "php7" | "php8" | "phtml" => "php",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "tpp" | "ixx"
+        | "cppm" => "cpp",
+        "pas" | "pp" | "p" | "lpr" | "dpr" => "pascal",
+        "go" => "go",
+        "rb" | "rake" | "gemspec" | "ru" => "ruby",
+        "sh" | "bash" | "zsh" | "ksh" => "bash",
+        "csh" | "tcsh" => "csh",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bat" | "cmd" => "batch",
+        "vbs" => "vbscript",
+        "swift" => "swift",
+        "m" | "mm" => "objectivec",
+        "kt" | "kts" => "kotlin",
         "f" | "for" | "f90" | "f95" | "f03" | "f08" | "f18" => "fortran",
-        "sql" | "ddl" => "sql",
+        "sql" | "ddl" | "dml" | "dql" => "sql",
         "html" | "htm" | "xhtml" => "html",
         "css" => "css",
         // An unrecognised filename is still an ordinary text document.  It
@@ -58,7 +125,6 @@ pub fn source_type_for_path(path: &Path) -> String {
         // Yedit's first-class extensions.
         _ => "text",
     }
-    .to_owned()
 }
 
 pub fn extension_for_source_type(source_type: &str) -> &'static str {
@@ -75,6 +141,20 @@ pub fn extension_for_source_type(source_type: &str) -> &'static str {
         "javascript" => "js",
         "typescript" => "ts",
         "python" => "py",
+        "php" => "php",
+        "c" => "c",
+        "cpp" => "cpp",
+        "pascal" => "pas",
+        "go" => "go",
+        "ruby" => "rb",
+        "bash" => "sh",
+        "csh" => "csh",
+        "powershell" => "ps1",
+        "batch" => "bat",
+        "vbscript" => "vbs",
+        "swift" => "swift",
+        "objectivec" => "m",
+        "kotlin" => "kt",
         "fortran" => "f90",
         "sql" => "sql",
         "html" => "html",
@@ -93,6 +173,7 @@ pub struct AppSettings {
     pub editor_background_color: String,
     pub editor_background_pattern: String,
     pub enabled_source_types: Vec<String>,
+    pub source_types_version: u64,
     pub reference_font_size: i64,
     pub explorer_open: bool,
     pub preview_open: bool,
@@ -123,6 +204,7 @@ impl Default for AppSettings {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
+            source_types_version: SOURCE_TYPES_VERSION,
             reference_font_size: 10,
             explorer_open: true,
             preview_open: true,
@@ -189,12 +271,29 @@ impl AppSettings {
             .get("enabledSourceTypes")
             .and_then(Value::as_array)
             .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>());
+        // Only upgrade an older all-enabled default. Never undo custom subsets
+        // or opt-outs saved by a version that already knows these modes.
+        let version = candidate
+            .get("sourceTypesVersion")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let upgrade_default = version < SOURCE_TYPES_VERSION
+            && requested_source_types.as_ref().is_some_and(|values| {
+                SOURCE_TYPE_IDS
+                    .iter()
+                    .filter(|kind| {
+                        !EXTRA_SOURCE_TYPE_IDS.contains(kind) && !(version < 1 && **kind == "php")
+                    })
+                    .all(|kind| values.contains(kind))
+            });
         let mut enabled_source_types = SOURCE_TYPE_IDS
             .iter()
             .filter(|source_type| {
                 requested_source_types
                     .as_ref()
-                    .map(|values| values.iter().any(|value| value == *source_type))
+                    .map(|values| {
+                        values.iter().any(|value| value == *source_type) || upgrade_default
+                    })
                     .unwrap_or_else(|| {
                         defaults
                             .enabled_source_types
@@ -216,6 +315,7 @@ impl AppSettings {
             editor_background_color,
             editor_background_pattern,
             enabled_source_types,
+            source_types_version: SOURCE_TYPES_VERSION,
             reference_font_size: clamped_number(
                 candidate,
                 "referenceFontSize",
@@ -525,7 +625,10 @@ pub struct ProjectWatchUpdate {
 
 #[cfg(test)]
 mod settings_tests {
-    use super::{source_type_for_path, AppSettings};
+    use super::{
+        extension_for_source_type, source_kind_for_path, source_type_for_path, AppSettings,
+        SOURCE_TYPE_IDS,
+    };
     use serde_json::json;
     use std::path::Path;
 
@@ -553,5 +656,108 @@ mod settings_tests {
     fn unknown_filename_extensions_open_as_plain_text() {
         assert_eq!(source_type_for_path(Path::new("settings.conf")), "text");
         assert_eq!(source_type_for_path(Path::new("README")), "text");
+    }
+
+    #[test]
+    fn extended_languages_detect_files_and_preserve_default_migrations() {
+        for (name, kind) in [
+            ("source.c", "c"),
+            ("header.h", "c"),
+            ("source.C", "cpp"),
+            ("header.H", "cpp"),
+            ("header.hpp", "cpp"),
+            ("module.cppm", "cpp"),
+            ("unit.pas", "pascal"),
+            ("app.dpr", "pascal"),
+            ("main.go", "go"),
+            ("Gemfile", "ruby"),
+            ("folder/Rakefile", "ruby"),
+            ("script.rb", "ruby"),
+            ("script.sh", "bash"),
+            (".bashrc", "bash"),
+            ("folder/.zshrc", "bash"),
+            ("script.tcsh", "csh"),
+            (".cshrc", "csh"),
+            ("script.ps1", "powershell"),
+            ("module.psm1", "powershell"),
+            ("script.cmd", "batch"),
+            ("script.vbs", "vbscript"),
+            ("main.swift", "swift"),
+            ("main.m", "objectivec"),
+            ("main.mm", "objectivec"),
+            ("main.kt", "kotlin"),
+            ("build.kts", "kotlin"),
+            ("query.dml", "sql"),
+            ("query.dql", "sql"),
+            ("Gemfile.lock", "text"),
+            ("source.cpp.bak", "text"),
+        ] {
+            assert_eq!(source_kind_for_path(Path::new(name)), kind, "{name}");
+        }
+        for kind in super::EXTRA_SOURCE_TYPE_IDS {
+            let name = format!("source.{}", extension_for_source_type(kind));
+            assert_eq!(source_kind_for_path(Path::new(&name)), *kind);
+        }
+        let old_default: Vec<_> = SOURCE_TYPE_IDS
+            .iter()
+            .filter(|kind| !super::EXTRA_SOURCE_TYPE_IDS.contains(kind))
+            .collect();
+        let upgraded = AppSettings::normalize(
+            &json!({ "enabledSourceTypes": old_default, "sourceTypesVersion": 1 }),
+        );
+        assert_eq!(upgraded.enabled_source_types, SOURCE_TYPE_IDS);
+        let opted_out = AppSettings::normalize(
+            &json!({ "enabledSourceTypes": old_default, "sourceTypesVersion": 2 }),
+        );
+        assert!(!opted_out
+            .enabled_source_types
+            .iter()
+            .any(|kind| kind == "swift"));
+        let custom = AppSettings::normalize(
+            &json!({ "enabledSourceTypes": ["text", "sql"], "sourceTypesVersion": 1 }),
+        );
+        assert_eq!(custom.enabled_source_types, ["text", "sql"]);
+    }
+
+    #[test]
+    fn php_file_types_and_save_extension() {
+        for extension in [
+            "php", "phtml", "php3", "php4", "php5", "php6", "php7", "php8", "PHP", "PHTML",
+        ] {
+            assert_eq!(
+                source_type_for_path(Path::new(&format!("index.{extension}"))),
+                "php"
+            );
+        }
+        assert_eq!(extension_for_source_type("php"), "php");
+        assert_eq!(source_type_for_path(Path::new("index.php.txt")), "text");
+        assert_eq!(source_type_for_path(Path::new("settings.inc")), "text");
+    }
+
+    #[test]
+    fn php_settings_upgrade_default_once_and_preserve_custom_choices() {
+        let old_types: Vec<_> = SOURCE_TYPE_IDS
+            .iter()
+            .filter(|kind| **kind != "php")
+            .collect();
+        let upgraded = AppSettings::normalize(&json!({ "enabledSourceTypes": old_types }));
+        assert!(upgraded
+            .enabled_source_types
+            .iter()
+            .any(|kind| kind == "php"));
+        assert_eq!(upgraded.source_types_version, super::SOURCE_TYPES_VERSION);
+        let disabled = AppSettings::normalize(
+            &json!({ "enabledSourceTypes": old_types, "sourceTypesVersion": 1 }),
+        );
+        assert!(!disabled
+            .enabled_source_types
+            .iter()
+            .any(|kind| kind == "php"));
+        let custom = AppSettings::normalize(&json!({ "enabledSourceTypes": ["text", "json"] }));
+        assert_eq!(custom.enabled_source_types, ["text", "json"]);
+        assert!(AppSettings::default()
+            .enabled_source_types
+            .iter()
+            .any(|kind| kind == "php"));
     }
 }

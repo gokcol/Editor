@@ -1,3 +1,4 @@
+import type { RecentMenuItem } from '../../shared/recentMenu';
 import type {
   AppSettings,
   BuildProfile,
@@ -72,6 +73,7 @@ export interface DesktopApi {
     saveAs: (suggestedName: string, content: string, type: SourceType, projectRoot?: string, encoding?: CharacterEncoding) => Promise<{ name?: string; relativePath?: string; fileHandle?: string; diskVersion?: string; canceled?: boolean }>;
   };
   recents: {
+    syncMenu: (entries: RecentMenuItem[]) => Promise<void>;
     list: () => Promise<RecentEntry[]>;
     /** Imports folders remembered by pre-Yedit renderer builds once. */
     migrateLegacyProjects: (projects: Array<{ root: string; name: string }>) => Promise<RecentEntry[]>;

@@ -1,5 +1,6 @@
 import type { SourceType } from '../types';
-import { formatJson as formatStrictJson } from './jsonTools';
+import { isExtraSourceType } from './extraSources.ts';
+import { formatJson as formatStrictJson } from './jsonTools.ts';
 
 const trimTrailing = (line: string) => line.replace(/[ \t]+$/g, '');
 
@@ -131,6 +132,10 @@ export function formatSource(type: SourceType, source: string): string {
   if (type === 'mermaid') return formatMermaid(source);
   if (type === 'markdown') return formatMarkdown(source);
   if (type === 'text') return formatText(source);
+  // Multiline literals, heredocs, macros, and continuation whitespace can be
+  // significant. New language modes stay byte-for-byte unchanged; users can
+  // explicitly run their own language-aware formatter as a project task.
+  if (type === 'php' || isExtraSourceType(type)) return source;
   if (type === 'metafont') return formatMetafont(source);
   if (type === 'latex') return formatLatex(source);
   if (type === 'json') return formatJson(source);

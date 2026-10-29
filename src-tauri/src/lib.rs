@@ -3,12 +3,16 @@
 //! filesystem capability.
 
 mod core;
+#[path = "../../shared/codex_ai.rs"]
+mod codex_ai;
 #[path = "../../shared/file_version.rs"]
 mod file_version;
 #[path = "../../shared/recovery.rs"]
 mod recovery;
 mod html_export;
 mod menu;
+#[path = "../../shared/recent_menu.rs"]
+mod recent_menu;
 mod models;
 mod state;
 mod text_encoding;
@@ -75,6 +79,7 @@ fn queue_external_open_paths<R: Runtime>(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(codex_ai::CodexAiState::default())
         .manage(recovery::RecoveryStore::default())
         .manage(PendingExternalFiles::default())
         .plugin(tauri_plugin_dialog::init())
@@ -98,12 +103,17 @@ pub fn run() {
                 if recovery::request_close(window.app_handle(), false) { api.prevent_close(); }
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<codex_ai::CodexAiState>().cancel_all();
                 window
                     .state::<state::CoreState>()
                     .release_window(window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            codex_ai::codex_ai_status,
+            codex_ai::codex_ai_login,
+            codex_ai::codex_ai_ask,
+            codex_ai::codex_ai_cancel,
             recovery::recovery_load,
             recovery::recovery_save,
             recovery::recovery_finish_close,
@@ -128,6 +138,7 @@ pub fn run() {
             core::project_write_open_file,
             core::project_read_open_file,
             core::project_save_as,
+            recent_menu::sync_recent_menu,
             core::recents_list,
             core::recents_migrate_legacy_projects,
             core::recents_open,
@@ -157,6 +168,7 @@ pub fn run() {
         .expect("error while building Yedit");
     queue_external_open_paths(app.handle(), initial_open_paths());
     app.run(|app, event| {
+        if matches!(&event, RunEvent::Exit) { app.state::<codex_ai::CodexAiState>().cancel_all(); }
         if let RunEvent::ExitRequested { api, .. } = &event {
             if recovery::request_close(app, true) { api.prevent_exit(); }
         }

@@ -1,4 +1,5 @@
 import type { SourceType } from '../types';
+import { EXTRA_FENCE_ALIASES, extraDeclaration, isExtraSourceType } from './extraSources.ts';
 
 export type OutlineEntry = {
   id: string;
@@ -138,6 +139,11 @@ export function documentOutline(type: SourceType, source: string): OutlineEntry[
 
   lines.forEach((line, index) => {
     const lineNumber = index + 1;
+    if (isExtraSourceType(type)) {
+      const declaration = extraDeclaration(type, line);
+      if (declaration) entries.push({ id: `${type}-${lineNumber}`, line: lineNumber, depth: /^\s+/.test(line) ? 1 : 0, label: declaration.name, kind: declaration.group ? 'group' : 'node' });
+      return;
+    }
     if (type === 'markdown') {
       const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
       if (match) entries.push({ id: `md-${lineNumber}`, line: lineNumber, depth: match[1].length - 1, label: cleanLabel(match[2]), kind: 'section' });
@@ -186,9 +192,11 @@ export function documentOutline(type: SourceType, source: string): OutlineEntry[
       return;
     }
 
-    if (type === 'javascript' || type === 'typescript' || type === 'python') {
+    if (type === 'javascript' || type === 'typescript' || type === 'python' || type === 'php') {
       const declaration = type === 'python'
         ? /^\s*(?:async\s+)?(def|class)\s+([A-Za-z_][\w]*)/.exec(line)
+        : type === 'php'
+          ? /^\s*(?:(?:abstract|final|readonly|public|protected|private|static)\s+)*(function|class|interface|trait|enum)\s+&?\s*([A-Za-z_][\w]*)/i.exec(line)
         : /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(line);
       if (declaration) {
         const declarationKind = declaration[1].toLowerCase();
@@ -287,7 +295,9 @@ export function findInSource(source: string, query: string, maxResults = 80): Se
 
 export function sourceFromAssistantReply(reply: string, type: SourceType): string {
   const trimmed = reply.trim();
-  const preferred = type === 'tikz'
+  const preferred = isExtraSourceType(type)
+    ? `(?:${EXTRA_FENCE_ALIASES[type].map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})?`
+    : type === 'tikz'
     ? '(?:tikz|tex|latex)?'
     : type === 'latex'
       ? '(?:tex|latex|ltx)?'
@@ -309,6 +319,8 @@ export function sourceFromAssistantReply(reply: string, type: SourceType): strin
                   ? '(?:ts|typescript|tsx|mts|cts)?'
                   : type === 'python'
                     ? '(?:py|python)?'
+                    : type === 'php'
+                      ? '(?:php|phtml)?'
                     : type === 'fortran'
                       ? '(?:fortran|f90|f95|f03|f08)?'
                       : type === 'sql'

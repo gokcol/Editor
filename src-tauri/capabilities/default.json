@@ -7,6 +7,10 @@
   ],
   "permissions": [
     "core:default",
+    "allow-codex-ai-status",
+    "allow-codex-ai-login",
+    "allow-codex-ai-ask",
+    "allow-codex-ai-cancel",
     "allow-recovery-load",
     "allow-recovery-save",
     "allow-recovery-finish-close",
@@ -31,6 +35,7 @@
     "allow-project-write-open-file",
     "allow-project-read-open-file",
     "allow-project-save-as",
+    "allow-sync-recent-menu",
     "allow-recents-list",
     "allow-recents-migrate-legacy-projects",
     "allow-recents-open",

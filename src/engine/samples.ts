@@ -1,6 +1,8 @@
 import type { SourceType } from '../types';
+import { extraSamples } from './extraSources.ts';
 
 export const samples: Record<SourceType, { name: string; source: string }> = {
+  ...extraSamples,
   tikz: {
     name: 'Untitled Diagram.tikz',
     source: String.raw`\documentclass[tikz,border=10pt]{standalone}
@@ -239,6 +241,20 @@ def describe_request(request: RenderRequest) -> str:
 
 if __name__ == "__main__":
     print(describe_request(RenderRequest("diagram source")))
+`,
+  },
+  php: {
+    name: 'Untitled Script.php',
+    source: `<?php
+
+declare(strict_types=1);
+
+function greet(string $name): string
+{
+    return "Hello, " . $name . "!";
+}
+
+echo greet("Yedit") . PHP_EOL;
 `,
   },
   fortran: {

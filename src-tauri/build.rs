@@ -1,4 +1,8 @@
 const COMMANDS: &[&str] = &[
+    "codex_ai_status",
+    "codex_ai_login",
+    "codex_ai_ask",
+    "codex_ai_cancel",
     "recovery_load",
     "recovery_save",
     "recovery_finish_close",
@@ -23,6 +27,7 @@ const COMMANDS: &[&str] = &[
     "project_write_open_file",
     "project_read_open_file",
     "project_save_as",
+    "sync_recent_menu",
     "recents_list",
     "recents_migrate_legacy_projects",
     "recents_open",

@@ -5,6 +5,8 @@ import type * as MonacoEditor from 'monaco-editor';
 import mermaid from 'mermaid';
 import packageMetadata from '../package.json';
 import { samples } from './engine/samples';
+import { CODE_SOURCE_TYPES, SOURCE_TYPES, SOURCE_TYPES_VERSION, SOURCE_FILENAME_PATTERN, normalizedEnabledSourceTypes, sourceTypeForName } from './engine/sourceTypes';
+import { EXTRA_SOURCE_META, EXTRA_SOURCE_TYPES, isExtraSourceType } from './engine/extraSources';
 import { formatSource } from './engine/formatters';
 import { markdownPreviewDocument, renderMarkdownSource, type PreviewAppearance } from './engine/markdown';
 import { registerFoundryLanguages } from './engine/monacoLanguages';
@@ -15,6 +17,11 @@ import { compactPath, documentOutline, findInSource, fuzzyScore, sourceFromAssis
 import PreviewViewport, { type PreviewBackground } from './components/PreviewViewport';
 import type { DesktopApi } from './desktop/contract';
 import { createRecoveryQueue, flushStableRecovery } from '../shared/recoveryQueue';
+import { confirmTabClose, isCloseProtected } from '../shared/tabClose';
+import { isCloseConfirmationOpen, showCloseConfirmation } from '../shared/closeConfirmation';
+import { splitFileName } from '../shared/fileName';
+import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../shared/recentMenu';
+import { isAskAiOpen, showAskAi } from '../shared/askAi';
 import type { AppSettings, CharacterEncoding, DecodedSourceFile, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, ProjectTask, ProjectTaskResult, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
@@ -24,6 +31,7 @@ const monacoVsUrl = new URL('./vs/', window.location.href).toString().replace(/\
 loader.config({ paths: { vs: monacoVsUrl } });
 
 const SOURCE_META: Record<SourceType, { label: string; short: string; color: string; language: string; extension: string }> = {
+  ...EXTRA_SOURCE_META,
   tikz: { label: 'TikZ', short: 'TZ', color: 'amber', language: 'foundry-tikz', extension: 'tikz' },
   latex: { label: 'LaTeX', short: 'TEX', color: 'indigo', language: 'foundry-latex', extension: 'tex' },
   metafont: { label: 'MetaFont', short: 'MF', color: 'mint', language: 'foundry-metafont', extension: 'mf' },
@@ -36,12 +44,14 @@ const SOURCE_META: Record<SourceType, { label: string; short: string; color: str
   javascript: { label: 'JavaScript', short: 'JS', color: 'amber', language: 'foundry-javascript', extension: 'js' },
   typescript: { label: 'TypeScript', short: 'TS', color: 'indigo', language: 'foundry-typescript', extension: 'ts' },
   python: { label: 'Python', short: 'PY', color: 'cyan', language: 'foundry-python', extension: 'py' },
+  php: { label: 'PHP', short: 'PHP', color: 'violet', language: 'foundry-php', extension: 'php' },
   fortran: { label: 'Fortran', short: 'F90', color: 'violet', language: 'foundry-fortran', extension: 'f90' },
   sql: { label: 'SQL', short: 'SQL', color: 'mint', language: 'foundry-sql', extension: 'sql' },
   html: { label: 'HTML', short: 'HTML', color: 'rose', language: 'foundry-html', extension: 'html' },
   css: { label: 'CSS', short: 'CSS', color: 'violet', language: 'foundry-css', extension: 'css' },
 };
 const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
+  ...Object.fromEntries(EXTRA_SOURCE_TYPES.map((type) => [type, `${EXTRA_SOURCE_META[type].label} source (editing only)`])) as Record<typeof EXTRA_SOURCE_TYPES[number], string>,
   tikz: 'LaTeX-quality diagrams',
   latex: 'Standalone TeX documents',
   metafont: 'Programmatic font source',
@@ -54,18 +64,18 @@ const SOURCE_DESCRIPTIONS: Record<SourceType, string> = {
   javascript: 'Modern JavaScript source',
   typescript: 'Typed JavaScript source',
   python: 'Python source and scripts',
+  php: 'PHP source and templates (no execution)',
   fortran: 'Scientific source (.f, .for, .f90, .f95+)',
   sql: 'Queries and migrations',
   html: 'Semantic web documents',
   css: 'Stylesheets and design tokens',
 };
-const SOURCE_TYPES = Object.keys(SOURCE_META) as SourceType[];
 const DEFAULT_ENABLED_SOURCE_TYPES = [...SOURCE_TYPES];
 // Templates are complete starting points. Keep this gallery focused on the
 // source formats where a starter carries meaningful structure; all formats
 // remain available as empty files from New Source.
 const TEMPLATE_SOURCE_TYPES: SourceType[] = ['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'yaml', 'json', 'html'];
-const SOURCE_PREVIEW_TYPES = new Set<SourceType>(['text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'css']);
+const SOURCE_PREVIEW_TYPES = new Set<SourceType>(['text', 'yaml', 'json', ...CODE_SOURCE_TYPES.filter((type) => type !== 'html')]);
 const PROJECT_TASKS_FILENAME = 'yedit.tasks.json';
 const PROJECT_TASKS_TEMPLATE = `{
   "version": 1,
@@ -147,6 +157,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   inspectorWidth: 390,
   previewSplit: 54,
   enabledSourceTypes: DEFAULT_ENABLED_SOURCE_TYPES,
+  sourceTypesVersion: SOURCE_TYPES_VERSION,
 };
 const EDITOR_FONTS = ['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono'];
 const EDITOR_BACKGROUND_PATTERNS: Array<{ value: AppSettings['editorBackgroundPattern']; label: string; description: string }> = [
@@ -169,7 +180,6 @@ const CHARACTER_ENCODINGS: Array<{ value: CharacterEncoding; label: string }> = 
 function encodingLabel(value?: CharacterEncoding) {
   return CHARACTER_ENCODINGS.find((entry) => entry.value === value)?.label ?? value ?? 'UTF-8';
 }
-const SOURCE_FILENAME_PATTERN = /\.(?:tikz|tex|latex|ltx|mf|svg|mmd|mermaid|md|markdown|txt|ya?ml|json|(?:c|m)?js|jsx|(?:c|m)?ts|tsx|pyw?|f(?:or|90|95|03|08|18)?|sql|ddl|x?html?|css)$/i;
 type PanelLayout = Pick<AppSettings, 'explorerOpen' | 'previewOpen' | 'referenceOpen' | 'explorerWidth' | 'inspectorWidth' | 'previewSplit'>;
 type PanelLayoutKey = keyof PanelLayout;
 type PanelResizeTarget = 'explorer' | 'inspector' | 'preview';
@@ -205,18 +215,6 @@ function panelLayoutFromSettings(settings: AppSettings): PanelLayout {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-/**
- * Settings are local and user-editable, so keep the UI safe even if an older
- * build, a hand-edited preference file, or a future source type leaves the
- * list malformed.  The fallback keeps one ordinary source mode available
- * rather than trapping the user in a New Source dialog with no choices.
- */
-function normalizedEnabledSourceTypes(value: readonly SourceType[] | undefined): SourceType[] {
-  const requested = Array.isArray(value) ? value : DEFAULT_ENABLED_SOURCE_TYPES;
-  const enabled = SOURCE_TYPES.filter((type) => requested.includes(type));
-  return enabled.length ? enabled : ['text'];
 }
 
 function isKnownSourceType(value: string): value is SourceType {
@@ -315,27 +313,6 @@ function makeStarterDocument(type: SourceType): DocumentModel {
     dirty: false,
     revision: 0,
   };
-}
-
-function sourceTypeForName(name: string): SourceType {
-  const lower = name.toLowerCase();
-  if (lower.endsWith('.tikz')) return 'tikz';
-  if (lower.endsWith('.tex') || lower.endsWith('.latex') || lower.endsWith('.ltx')) return 'latex';
-  if (lower.endsWith('.mf')) return 'metafont';
-  if (lower.endsWith('.svg')) return 'svg';
-  if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'mermaid';
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
-  if (lower.endsWith('.txt')) return 'text';
-  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
-  if (lower.endsWith('.json')) return 'json';
-  if (/\.(?:js|mjs|cjs|jsx)$/i.test(lower)) return 'javascript';
-  if (/\.(?:ts|mts|cts|tsx)$/i.test(lower)) return 'typescript';
-  if (/\.pyw?$/i.test(lower)) return 'python';
-  if (/\.f(?:or|90|95|03|08|18)?$/i.test(lower)) return 'fortran';
-  if (lower.endsWith('.sql') || lower.endsWith('.ddl')) return 'sql';
-  if (/\.(?:html?|xhtml)$/i.test(lower)) return 'html';
-  if (lower.endsWith('.css')) return 'css';
-  return 'text';
 }
 
 function filenameWithoutExtension(name: string) {
@@ -598,9 +575,9 @@ const WORKBENCH_SESSION_KEY = 'yedit:workspace-session-v1';
 const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
 const MAX_RESTORED_PROJECT_TABS = 30;
 // Fixed-size tabs stay easy to scan. When the strip fills, each step is a
-// 25% reduction; after the last step, the strip scrolls instead of shrinking
+// modest reduction; after the last step, the strip scrolls instead of shrinking
 // source names into illegibility.
-const TAB_WIDTHS = [205, 154, 116, 87] as const;
+const TAB_WIDTHS = [220, 190, 168] as const;
 const TAB_GAP = 5;
 const SHORTCUT_ACTIONS = [
   ['quickOpen', 'Quick Open'],
@@ -853,7 +830,8 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
   const initialDocument = useMemo(() => makeBlankDocument(), []);
   const initialScratchSession = useMemo(() => restoredScratchSession(initialDocument, initialRecovery), [initialDocument, initialRecovery]);
   const recoveryQueue = useMemo(() => createRecoveryQueue(desktop.recovery.save), [desktop]);
-  const [recoveryStatus, setRecoveryStatus] = useState(recoveryLoadError ? `Recovery unavailable: ${recoveryLoadError}` : '');
+  const [recoveryStatus, setRecoveryStatus] = useState('');
+  const [recoveryWarning, setRecoveryWarning] = useState(recoveryLoadError ? `Recovery unavailable: ${recoveryLoadError}` : '');
   const [conflictReview, setConflictReview] = useState<{ target: SaveTarget; disk: DecodedSourceFile; value: string; revision: number } | null>(null);
   const initialWorkbenchSession = useMemo(() => readWorkbenchSession(), []);
   const [project, setProject] = useState<Project | null>(null);
@@ -905,6 +883,7 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
   const [promptApplyMode, setPromptApplyMode] = useState<'replace' | 'insert' | 'new'>('replace');
   const [pendingAiReview, setPendingAiReview] = useState<{
     documentId: string;
+    documentValue: string;
     documentName: string;
     sourceType: SourceType;
     mode: 'replace' | 'insert' | 'new';
@@ -940,6 +919,55 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
   const [outputViewerFullscreen, setOutputViewerFullscreen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
   const [recentProjectsOpen, setRecentProjectsOpen] = useState(false);
+  const recentDialogRef = useRef<HTMLElement | null>(null);
+  const syncRecentMenu = useMemo(() => createRecentMenuSync(desktop.recents.syncMenu), [desktop]);
+
+  useEffect(() => {
+    void syncRecentMenu(recentMenuItems(recentProjects)).catch((error) => {
+      console.warn('Could not update Open Recent:', error);
+    });
+  }, [recentProjects, syncRecentMenu]);
+
+  useEffect(() => {
+    if (!recentProjectsOpen) return;
+    const dialog = recentDialogRef.current;
+    if (!dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (dialog.querySelector<HTMLElement>('.recent-open-button') || dialog.querySelector<HTMLElement>('.recent-close-button'))?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setRecentProjectsOpen(false);
+      } else if (event.key === 'Tab') {
+        const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+        const first = buttons[0];
+        const last = buttons.at(-1);
+        if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      if (previousFocus?.isConnected) previousFocus.focus();
+      else editorRef.current?.focus();
+    };
+  }, [recentProjectsOpen]);
+
+  useEffect(() => {
+    const dialog = recentDialogRef.current;
+    // Clearing history or removing its focused row can remove the focused button.
+    if (dialog && !dialog.contains(document.activeElement)) {
+      dialog.querySelector<HTMLElement>('.recent-close-button')?.focus();
+    }
+  }, [recentProjects, recentProjectsOpen]);
+
   const [paletteHistory, setPaletteHistory] = useState<string[]>(() => {
     try { return JSON.parse(window.localStorage.getItem(PALETTE_HISTORY_KEY) || '[]'); } catch { return []; }
   });
@@ -1238,6 +1266,18 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
     setRecentProjects(entries);
     return entries;
   }, []);
+
+  const showRecentEntries = useCallback(() => {
+    if ([...document.querySelectorAll('.modal-backdrop')].some((modal) => !modal.contains(recentDialogRef.current) && !modal.querySelector('.palette-modal'))) {
+      showToast('Close the current dialog to open recent items.', 'info');
+      return;
+    }
+    setPaletteOpen(false);
+    setRecentProjectsOpen(true);
+    void refreshRecentProjects().catch((error) => {
+      showToast(error instanceof Error ? error.message : 'Could not load recent items.', 'error');
+    });
+  }, [refreshRecentProjects, showToast]);
 
   const clearPanelResizeArtifacts = useCallback(() => {
     panelResizeCleanupRef.current?.();
@@ -1543,7 +1583,7 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
         // An explicit Save As must remain available when the recovery disk is
         // full/unreadable, so the user can rescue text to another destination.
         if (requireRecovery) throw error;
-        setRecoveryStatus(`Recovery unavailable: ${errorMessage(error)}. Saving your chosen copy instead.`);
+        setRecoveryWarning(`Recovery unavailable: ${errorMessage(error)}. Saving your chosen copy instead.`);
       }
       const latest = documentsRef.current.find((document) => document.id === target.id);
       if (!latest || !matchesSaveTarget(latest, target)) return null;
@@ -1620,27 +1660,32 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
     try { window.localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(shortcutBindings)); } catch { /* ignored */ }
   }, [shortcutBindings]);
 
+  const checkpointRecovery = useCallback((snapshot: DocumentModel[], selectedId: string) => {
+    if (recoveryLoadError) return;
+    setRecoveryStatus('Saving recovery…');
+    return recoveryQueue.save(recoveryPayload(snapshot, selectedId)).then(({ savedAt, current }) => {
+      if (!current) return;
+      setRecoveryStatus(`Recovery copy saved ${new Date(savedAt).toLocaleTimeString()}`);
+      setRecoveryWarning('');
+      // Migrate only after the native checkpoint has acknowledged the bytes.
+      try { localStorage.removeItem(SCRATCH_SESSION_KEY); } catch { /* native copy is durable */ }
+    }).catch((error) => setRecoveryWarning(`Recovery not saved: ${errorMessage(error)}. Save your work before closing.`));
+  }, [recoveryLoadError, recoveryQueue]);
+
   useEffect(() => {
     if (recoveryLoadError) return;
     recoveryQueue.invalidate();
     setRecoveryStatus('Saving recovery…');
-    const timer = window.setTimeout(() => {
-      void recoveryQueue.save(recoveryPayload(documentsRef.current, activeId)).then(({ savedAt, current }) => {
-        if (!current) return;
-        setRecoveryStatus(`Recovery saved ${new Date(savedAt).toLocaleTimeString()}`);
-        // Migrate only after the native checkpoint has acknowledged the bytes.
-        try { localStorage.removeItem(SCRATCH_SESSION_KEY); } catch { /* native copy is durable */ }
-      }).catch((error) => setRecoveryStatus(`Recovery not saved: ${errorMessage(error)}. Save your work before closing.`));
-    }, 300);
+    const timer = window.setTimeout(() => void checkpointRecovery(documentsRef.current, activeId), 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, documents, recoveryLoadError, recoveryQueue]);
+  }, [activeId, checkpointRecovery, documents, recoveryLoadError, recoveryQueue]);
 
   useEffect(() => {
     if (!desktop.recovery.onCloseRequested) return;
     let disposed = false;
     let closing = false;
     const subscription = desktop.recovery.onCloseRequested(async () => {
-      if (disposed || closing) return;
+      if (disposed || closing || isCloseConfirmationOpen()) return;
       closing = true;
       const shell = document.querySelector<HTMLElement>('.app-shell');
       if (shell) shell.inert = true;
@@ -1649,7 +1694,7 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
         await flushStableRecovery(() => documentsRef.current, (snapshot) => recoveryQueue.save(recoveryPayload(snapshot, activeId)));
         await desktop.recovery.finishClose?.();
       } catch (error) {
-        setRecoveryStatus(`Cannot close safely: ${errorMessage(error)}. Save your work with Save As and retry.`);
+        setRecoveryWarning(`Cannot close safely: ${errorMessage(error)}. Save your work with Save As and retry.`);
         showToast('Recovery could not be saved. Your window has been kept open.', 'error');
         if (window.confirm('Recovery could not be saved. Close anyway? Unsaved work from this session may be lost. Choose Cancel to keep editing or use Save As.')) {
           await desktop.recovery.finishClose?.();
@@ -2494,6 +2539,9 @@ encoding: opened.encoding,
     }
   }, [activateOpenedSource, beginDocumentInteraction, documents, hydrateProject, openingEncoding, project?.root, refreshRecentProjects, revealOpenedFileFolder, showToast]);
 
+  const recentMenuActionRef = useRef({ entries: recentProjects, open: openRecentEntry });
+  recentMenuActionRef.current = { entries: recentProjects, open: openRecentEntry };
+
   const openLatestRecentEntry = useCallback(() => {
     const latest = recentProjects[0];
     if (latest) void openRecentEntry(latest);
@@ -3332,17 +3380,27 @@ encoding: reload.source.encoding,
     return () => window.clearTimeout(timer);
   }, [activeDocument, beginSaveTargetOperation, commitDocuments, enqueueDocumentWrite, flagConflict, matchesSaveTarget, project?.root, recoverMissingSaveTarget, settings.autoSave, showToast]);
 
-  const closeDocument = useCallback((document: DocumentModel, event?: React.MouseEvent) => {
+  const closeDocument = useCallback(async (requested: DocumentModel, event?: React.MouseEvent) => {
     event?.stopPropagation();
-    if (document.pinned) {
+    if (isCloseConfirmationOpen()) return;
+    const document = documentsRef.current.find((candidate) => candidate.id === requested.id);
+    if (!document) return;
+    if (isCloseProtected(document)) {
       showToast(`Unpin “${document.name}” before closing it.`, 'info');
       return;
     }
-    if (document.dirty && !window.confirm(`Discard unsaved changes to “${document.name}”?`)) return;
+    const decision = await confirmTabClose([document], (id) => documentsRef.current.find((candidate) => candidate.id === id), (tab) => tab.dirty, showCloseConfirmation);
+    if (decision === 'cancelled' || decision === 'protected') return;
+    if (decision === 'changed' || documentsRef.current.find((candidate) => candidate.id === document.id) !== document) {
+      showToast('The tab changed while confirmation was open. Review it and try closing again.', 'info');
+      return;
+    }
     beginDocumentInteraction();
     invalidateSaveTarget(document.id);
-    const index = documents.findIndex((candidate) => candidate.id === document.id);
-    const next = documents.filter((candidate) => candidate.id !== document.id);
+    const index = documentsRef.current.findIndex((candidate) => candidate.id === document.id);
+    const next = documentsRef.current.filter((candidate) => candidate.id !== document.id);
+    // Persist the removal immediately, including the empty final checkpoint.
+    void checkpointRecovery(next, activeId === document.id ? next[Math.max(0, index - 1)]?.id ?? '' : activeId);
     if (!next.length) {
       // A window with no editor tabs is a valid workspace state. Do not create
       // a replacement scratchpad tab here: closing the final tab should mean
@@ -3361,8 +3419,8 @@ encoding: reload.source.encoding,
     }
     documentsRef.current = next;
     setDocuments(next);
-    if (activeId === document.id) setActiveId(next[Math.max(0, index - 1)].id);
-  }, [activeId, beginDocumentInteraction, documents, invalidateSaveTarget, showToast]);
+    setActiveId((current) => current === document.id ? next[Math.max(0, index - 1)].id : current);
+  }, [activeId, beginDocumentInteraction, checkpointRecovery, invalidateSaveTarget, showToast]);
 
   const toggleActiveTabPin = useCallback(() => {
     if (!activeDocument) return;
@@ -3632,7 +3690,7 @@ encoding: reload.source.encoding,
           ? 'font engineer'
           : activeDocument.sourceType === 'yaml' || isJson
             ? 'data engineer'
-            : ['javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css'].includes(activeDocument.sourceType)
+            : CODE_SOURCE_TYPES.includes(activeDocument.sourceType)
               ? 'software engineer'
               : 'diagram engineer';
     const activeFileContext = promptSpec.includeActiveFile || isJsonAnalysis || isJsonSchema
@@ -3683,6 +3741,8 @@ encoding: reload.source.encoding,
                         ? 'Return modern, strict TypeScript with useful named types at public boundaries. Do not use any unless the request expressly requires it.'
                         : activeDocument.sourceType === 'python'
                           ? 'Return readable Python 3 source with conventional imports, four-space indentation, and type hints where they clarify public behavior.'
+                          : activeDocument.sourceType === 'php'
+                            ? 'Return readable PHP with an opening <?php tag, explicit parameter and return types where useful, and no closing tag for PHP-only files. Escape dynamic HTML output appropriately. Do not assume a framework or external dependency unless requested.'
                           : activeDocument.sourceType === 'fortran'
                             ? 'Return portable free-form Fortran source (Fortran 2008 or later unless a target is specified), with explicit implicit none and clear module/program structure.'
                             : activeDocument.sourceType === 'sql'
@@ -3691,7 +3751,9 @@ encoding: reload.source.encoding,
                                 ? 'Return a complete, semantic, accessible HTML document. Keep it self-contained; do not load remote scripts or assets unless explicitly requested.'
                                 : activeDocument.sourceType === 'css'
                                   ? 'Return standards-based CSS with readable custom properties and selectors. Avoid browser-specific hacks unless the target requires them.'
-                                  : 'Return clean, readable plain text only. Preserve the requested wording and structure without Markdown syntax unless it is explicitly requested.';
+                                  : isExtraSourceType(activeDocument.sourceType)
+                                    ? `Return readable, idiomatic ${meta.label} source only. Preserve the file's language/dialect, quote shell variables appropriately when relevant, and do not assume frameworks, external dependencies, or execution in Yedit. State essential platform assumptions in source comments.`
+                                    : 'Return clean, readable plain text only. Preserve the requested wording and structure without Markdown syntax unless it is explicitly requested.';
     return [
       `You are an expert ${meta.label} ${sourceRole}.`,
       task,
@@ -3774,6 +3836,7 @@ encoding: reload.source.encoding,
       : model && range ? model.getValueInRange(range) : activeDocument.value;
     setPendingAiReview({
       documentId: activeDocument.id,
+      documentValue: activeDocument.value,
       documentName: activeDocument.name,
       sourceType: activeDocument.sourceType,
       mode: promptApplyMode,
@@ -3805,6 +3868,11 @@ encoding: reload.source.encoding,
       showToast('Reviewed LLM response opened as a new draft.', 'success');
       return;
     }
+    const target = documentsRef.current.find((document) => document.id === pendingAiReview.documentId);
+    if (!target || target.value !== pendingAiReview.documentValue) {
+      showToast('The target source changed or closed after review. Nothing was applied; open the reply as a new draft instead.', 'error');
+      return;
+    }
     if (activeDocument?.id !== pendingAiReview.documentId) {
       setActiveId(pendingAiReview.documentId);
       showToast('Returned to the target tab. Review the change once more before applying it.', 'info');
@@ -3812,6 +3880,10 @@ encoding: reload.source.encoding,
     }
     const editor = editorRef.current;
     const model = editor?.getModel();
+    if (model && model.getValue() !== target.value) {
+      showToast('The editor is still switching tabs. Nothing was applied; review again in a moment.', 'info');
+      return;
+    }
     if (editor && model) {
       const range = pendingAiReview.range ?? model.getFullModelRange();
       editor.executeEdits('apply-reviewed-llm-reply', [{ range, text: pendingAiReview.source, forceMoveMarkers: true }]);
@@ -3824,6 +3896,39 @@ encoding: reload.source.encoding,
     setPendingAiReview(null);
     showToast(pendingAiReview.mode === 'replace' ? 'Reviewed LLM source applied.' : 'Reviewed LLM source inserted.', 'success');
   }, [activeDocument, beginDocumentInteraction, commitDocuments, pendingAiReview, showToast, updateDocument]);
+
+  const openAskAi = useCallback((initialPrompt?: string) => {
+    if (isCloseConfirmationOpen()) return;
+    if (settings.safeMode) {
+      showToast('Ask AI is disabled in Safe Mode. Manual Prompt Studio is still available.', 'info');
+      return;
+    }
+    const target = activeDocument;
+    const editor = editorRef.current;
+    const selection = editor?.getSelection();
+    const selectedText = selection && !selection.isEmpty() ? editor?.getModel()?.getValueInRange(selection) ?? '' : '';
+    void showAskAi({
+      context: { name: target?.name ?? '', selection: selectedText, document: target?.value ?? '' },
+      initialPrompt,
+      openDraft: (reply) => {
+        const draft: DocumentModel = { id: `markdown-${crypto.randomUUID()}`, name: 'AI reply.md', sourceType: 'markdown', value: reply, dirty: true, revision: 0 };
+        beginDocumentInteraction();
+        commitDocuments((current) => [...current, draft]);
+        setActiveId(draft.id);
+        showToast('AI answer opened as a new unsaved draft.', 'success');
+      },
+      reviewReply: target ? (reply) => {
+        const latest = documentsRef.current.find((document) => document.id === target.id);
+        if (!latest || latest.value !== target.value) return false;
+        setActiveId(target.id);
+        setPromptReply(reply);
+        setPromptApplyMode('new');
+        setPromptOpen(true);
+        return true;
+      } : undefined,
+      openPromptStudio: () => setPromptOpen(true),
+    });
+  }, [activeDocument, beginDocumentInteraction, commitDocuments, settings.safeMode, showToast]);
 
   const restoreSnapshot = useCallback((snapshot: LocalSnapshot) => {
     if (!activeDocument || !window.confirm(`Restore the local snapshot from ${displayTime(snapshot.createdAt)}? Your current source stays available through Undo.`)) return;
@@ -4231,7 +4336,8 @@ encoding: reload.source.encoding,
     { id: 'open-file', label: 'Open file…', hint: '⌘O', group: 'File', run: openStandaloneFile },
     { id: 'quick-open', label: 'Quick Open…', hint: '⌘P', group: 'Navigate', run: () => { setQuickOpenQuery(''); setQuickOpenOpen(true); } },
     { id: 'open-project', label: 'Open folder…', hint: '⌘⇧O', group: 'File', run: openProject },
-    { id: 'open-recents', label: 'Open recent…', hint: '', group: 'File', run: () => setRecentProjectsOpen(true) },
+    { id: 'open-recents', label: 'Open Recent…', hint: '', group: 'File', run: showRecentEntries },
+    { id: 'clear-recents', label: 'Clear recent items', hint: '', group: 'File', run: () => void clearRecentEntries() },
     { id: 'new-file', label: 'New source file…', hint: '⌘N', group: 'File', run: () => openNewSource() },
     ...enabledSourceTypes.map((type) => ({
       id: `new-${type}`,
@@ -4367,6 +4473,7 @@ encoding: reload.source.encoding,
     { id: 'references', label: 'Toggle reference deck', hint: '⌘⇧R', group: 'View', run: () => togglePanel('referenceOpen') },
     { id: 'reset-layout', label: 'Reset panel layout', hint: '', group: 'View', run: resetPanelLayout },
     { id: 'prompt-studio', label: 'Open Prompt Studio', hint: '⌘⇧L', group: 'View', run: () => setPromptOpen(true) },
+    { id: 'ask-ai', label: 'Ask AI with Codex', hint: '', group: 'View', run: () => openAskAi() },
     { id: 'settings', label: 'Open settings', hint: '⌘,', group: 'View', run: () => setSettingsOpen(true) },
     { id: 'help-getting-started', label: 'Yedit Help: Getting Started', hint: '', group: 'Help', run: () => openHelp('getting-started') },
     { id: 'help-shortcuts', label: 'Yedit Help: Keyboard Shortcuts', hint: '', group: 'Help', run: () => openHelp('shortcuts') },
@@ -4381,7 +4488,7 @@ encoding: reload.source.encoding,
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openAbout, openGitPanel, openHelp, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, openWhatsNew, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, clearRecentEntries, showRecentEntries, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openAbout, openGitPanel, openHelp, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, openWhatsNew, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -4393,9 +4500,18 @@ encoding: reload.source.encoding,
 
   useEffect(() => {
     const unsubscribe = desktop.onMenuAction((action) => {
-      if (document.querySelector<HTMLElement>('.app-shell')?.inert) return;
+      if (document.querySelector<HTMLElement>('.app-shell')?.inert || isCloseConfirmationOpen() || isAskAiOpen()) return;
+      if (recentDialogRef.current && action !== 'open-recents' && action !== 'clear-recents' && recentMenuEntryId(action) === null) return;
       if (action === 'palette') { setPaletteOpen(true); return; }
       if (action === 'help-about') { openAbout(); return; }
+      const recentId = recentMenuEntryId(action);
+      if (recentId !== null) {
+        const current = recentMenuActionRef.current;
+        const recent = current.entries.find((entry) => entry.id === recentId);
+        if (recent) void current.open(recent).then((opened) => { if (opened) setRecentProjectsOpen(false); });
+        else showToast('That item is no longer in Open Recent.', 'info');
+        return;
+      }
       const requestedType = /^(?:new|select)-(.+)$/.exec(action)?.[1];
       if (requestedType && isKnownSourceType(requestedType) && !isSourceTypeEnabled(requestedType)) {
         showToast(`${SOURCE_META[requestedType].label} is disabled in Settings.`, 'info');
@@ -4410,6 +4526,7 @@ encoding: reload.source.encoding,
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
+      if (recentDialogRef.current) return;
       if (recordingShortcut) {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -4713,7 +4830,7 @@ encoding: reload.source.encoding,
           <div className="about-principles" aria-label="Yedit principles">
             <div><strong>Source stays yours</strong><small>Projects, autosaves, previews, and build profiles stay on this Mac.</small></div>
             <div><strong>Preview is a companion</strong><small>Edit code first; render only when a visual check helps.</small></div>
-            <div><strong>AI-ready, not AI-bound</strong><small>Prompt Studio prepares copyable prompts; it does not send source to an LLM.</small></div>
+            <div><strong>Optional AI, explicit context</strong><small>Ask AI uses Codex with ChatGPT sign-in only when you press Send. Manual Prompt Studio remains available without connecting.</small></div>
           </div>
           <section className="about-section" aria-labelledby="about-sources-title">
             <div className="about-section-head"><h3 id="about-sources-title">Supported source files</h3><small>Recognized in tabs and opened folders</small></div>
@@ -4837,15 +4954,15 @@ encoding: reload.source.encoding,
 
   const recentProjectsDialog = recentProjectsOpen && (
     <div className="modal-backdrop" onMouseDown={() => setRecentProjectsOpen(false)}>
-      <section className="workbench-modal recent-modal" onMouseDown={(event) => event.stopPropagation()} aria-label="Recent folders and files">
+      <section ref={recentDialogRef} className="workbench-modal recent-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="recent-dialog-title">
         <div className="modal-title">
-          <div><p className="eyebrow">Local workspace memory</p><h2>Recents</h2></div>
+          <div><p className="eyebrow">Recent files and folders</p><h2 id="recent-dialog-title">Open Recent</h2></div>
           <div className="recent-modal-actions">
             {recentProjects.length > 0 && <button className="compact-button" onClick={() => void clearRecentEntries()}>Clear all</button>}
-            <button className="icon-button" onClick={() => setRecentProjectsOpen(false)} title="Close Recents" aria-label="Close Recents">×</button>
+            <button className="icon-button recent-close-button" onClick={() => setRecentProjectsOpen(false)} title="Close Open Recent" aria-label="Close Open Recent">×</button>
           </div>
         </div>
-        <p className="modal-copy">Folders reopen as projects. Files reopen as ordinary editable tabs, with a fresh local save permission.</p>
+        <p className="modal-copy">Reopen a file in a tab or a folder as a project. Clearing this list does not delete your files.</p>
         <div className="workbench-list recent-list">
           {(['project', 'file'] as const).map((kind) => {
             const entries = recentProjects.filter((recent) => recent.kind === kind);
@@ -4906,14 +5023,14 @@ encoding: reload.source.encoding,
             <div className="empty-workspace-mark" aria-hidden="true"><span></span><span></span><span></span></div>
             <p className="eyebrow">Workspace ready</p>
             <h1>No source tabs open</h1>
-            <p className="recovery-status" role="status">{recoveryStatus}</p>
+            <p className="recovery-status" role="alert">{recoveryWarning}</p>
             <p>Start with an empty source file, open one file, open a folder, or drop an existing source here. Closing the last tab leaves this workspace ready for the next task.</p>
             <div className="empty-workspace-actions">
               <button className="accent-button" onClick={() => openNewSource()}>＋ New source</button>
               <button className="outline-button" onClick={() => void openStandaloneFile()}>Open file</button>
               <button className="outline-button" onClick={() => void openProject()}>Open folder</button>
               <button className="outline-button" onClick={() => void newProject()}>New project</button>
-              <button className="outline-button" onClick={() => setRecentProjectsOpen(true)}>↺ Recents{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
+              <button className="outline-button" onClick={showRecentEntries}>↺ Open Recent{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
             </div>
             <small>{enabledSourceTypes.length} source type{enabledSourceTypes.length === 1 ? '' : 's'} enabled · Manage availability in Settings</small>
           </section>
@@ -4948,6 +5065,7 @@ encoding: reload.source.encoding,
         <footer className="statusbar">
           <span>No editor tabs open</span>
           <span>Use ⌘N to create an empty source</span>
+          <span className="status-recovery" role="status" title={recoveryWarning || recoveryStatus}>{recoveryWarning ? 'Recovery needs attention' : recoveryStatus}</span>
           <span className="status-spacer"></span>
           <button onClick={() => void openStandaloneFile()}>Open file</button>
           <button onClick={() => void openProject()}>Open folder</button>
@@ -4996,7 +5114,7 @@ encoding: reload.source.encoding,
           <button className={`activity ${panelLayout.explorerOpen ? 'active' : ''}`} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-label={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-pressed={panelLayout.explorerOpen}><span>▦</span></button>
           <button className={`activity ${panelLayout.previewOpen ? 'active' : ''}`} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-label={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-pressed={panelLayout.previewOpen}><span>{activeDocument.sourceType === 'python' ? '›_' : '◉'}</span></button>
           <button className={`activity ${panelLayout.referenceOpen ? 'active' : ''}`} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-label={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-pressed={panelLayout.referenceOpen}><span>⌘</span></button>
-          <button className="activity" onClick={() => setPromptOpen(true)} title="Prompt Studio" aria-label="Open Prompt Studio"><span>✦</span></button>
+          <button className="activity" onClick={() => openAskAi()} title="Ask AI with Codex" aria-label="Ask AI with Codex"><span>✦</span></button>
           <button className="activity activity-palette" onClick={() => setPaletteOpen(true)} title="Command Palette" aria-label="Open Command Palette"><span>⌘P</span></button>
           <div className="activity-spacer" />
           <button className="activity" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Open Settings"><span>⚙</span></button>
@@ -5015,7 +5133,7 @@ encoding: reload.source.encoding,
             </div>
           </div>
           <div className="project-actions">
-            <button className="accent-button" onClick={newProject} title="Create a new project folder">New project</button>
+            <button className={project ? 'outline-button' : 'accent-button'} onClick={newProject} title="Create a new project folder">New project</button>
             <button className="outline-button" onClick={openProject} title="Open an existing project folder">Open folder</button>
           </div>
           <div className="explorer-utilities">
@@ -5024,7 +5142,7 @@ encoding: reload.source.encoding,
             <button onClick={() => setTaskConsoleOpen(true)} title="Local build output">›_ Tasks</button>
             {projectTasks.length > 0 && <button className="project-pipeline-indicator" onClick={() => setTaskConsoleOpen(true)} title={`Project pipeline: ${projectTasks.map((task) => task.script || task.label).join(', ')}`}>⚙ Pipeline · {projectTasks[0].script || `${projectTasks.length} task${projectTasks.length === 1 ? '' : 's'}`}</button>}
             <button onClick={() => setTemplateGalleryOpen(true)} disabled={!availableTemplateSourceTypes.length} title={availableTemplateSourceTypes.length ? 'Starter templates' : 'Enable a template-capable source type in Settings'}>▦ Templates</button>
-            <button onClick={() => setRecentProjectsOpen(true)} title="Recently opened folders and files">↺ Recents{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
+            <button onClick={showRecentEntries} title="Open recent files and folders">↺ Open Recent{recentProjects.length ? ` (${recentProjects.length})` : ''}</button>
           </div>
           {project ? (
             <>
@@ -5089,7 +5207,7 @@ encoding: reload.source.encoding,
                 const dropPlacement = tabDropTarget?.id === document.id ? tabDropTarget.placement : undefined;
                 return <div
                   key={document.id}
-                  className={`editor-tab${isActive ? ' selected' : ''}${document.pinned ? ' pinned' : ''}${draggingTabId === document.id ? ' dragging' : ''}${dropPlacement ? ` drop-${dropPlacement}` : ''}`}
+                  className={`editor-tab${isActive ? ' selected' : ''}${document.pinned ? ' pinned' : ''}${document.recoveryDraft ? ' recovered' : ''}${draggingTabId === document.id ? ' dragging' : ''}${dropPlacement ? ` drop-${dropPlacement}` : ''}`}
                   data-editor-tab-id={document.id}
                   onPointerDown={(event) => beginTabDrag(event, document.id)}
                 >
@@ -5098,13 +5216,15 @@ encoding: reload.source.encoding,
                     className="tab-activate"
                     role="tab"
                     aria-selected={isActive}
+                    aria-label={`${document.name}${document.recoveryDraft ? ', recovered draft' : ''}${document.dirty ? ', unsaved changes' : ''}${document.pinned ? ', pinned' : ''}`}
                     onClick={() => activateTab(document.id)}
-                    title={`${document.name}${document.pinned ? ' · pinned' : ''}${document.relativePath ? `\n${document.relativePath}` : ''}`}
+                    title={`${document.name}${document.recoveryDraft ? ' · recovered draft' : ''}${document.dirty ? ' · unsaved changes' : ''}${document.pinned ? ' · pinned' : ''}${document.relativePath || document.recoveryOrigin ? `\n${document.relativePath || document.recoveryOrigin}` : ''}`}
                   >
                     <span className={`file-badge ${SOURCE_META[document.sourceType].color}`}>{SOURCE_META[document.sourceType].short}</span>
-                    <span className="tab-name">{document.name}</span>
+                    <span className="tab-name"><span className="tab-stem">{splitFileName(document.name).stem}</span><span className="tab-extension">{splitFileName(document.name).extension}</span></span>
+                    {document.recoveryDraft && <span className="tab-recovery" aria-hidden="true" title="Recovered draft">↺</span>}
                     {document.pinned && <span className="tab-pin" aria-label="Pinned tab" title="Pinned tab">⌖</span>}
-                    {document.dirty && <span className="dirty-dot" title="Unsaved changes"></span>}
+                    {document.dirty && <span className="dirty-dot" aria-hidden="true" title="Unsaved changes"></span>}
                   </button>
                   <button type="button" className="tab-close" onClick={() => closeDocument(document)} title={`Close ${document.name}`} aria-label={`Close ${document.name}`}>×</button>
                 </div>;
@@ -5194,10 +5314,11 @@ encoding: reload.source.encoding,
           </div>
 
           <div className="document-safety">
-          <div className="recovery-status" role="status">{recoveryStatus}</div>
+          <div className="recovery-status" role="alert">{recoveryWarning}</div>
           {activeDocument.recoveryDraft && <div className="document-notice" role="status">
             <span>Recovered draft{activeDocument.recoveryOrigin ? ` — ${activeDocument.recoveryOrigin}` : ''}</span>
             <button onClick={() => void saveDocument(true)}>Save As…</button>
+            <button onClick={() => void closeDocument(activeDocument)}>Close…</button>
           </div>}
           {activeDocument.conflict && <div className="document-notice" role="status">
             <span>Changed on disk. Autosave is paused.</span>
@@ -5345,10 +5466,11 @@ encoding: reload.source.encoding,
       <footer className="statusbar">
         <div className="status-readout">
           <span><i className={`language-dot ${SOURCE_META[activeDocument.sourceType].color}`}></i>{SOURCE_META[activeDocument.sourceType].label}</span>
-          <span>{autoSaving ? 'Auto-saving…' : activeDocument.dirty ? 'Unsaved edits' : 'Saved'}</span>
-          {(activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text') && <span title={`${activeTextStatistics.characters.toLocaleString()} characters across ${activeTextStatistics.lines.toLocaleString()} lines`}>{activeTextStatistics.words.toLocaleString()} words</span>}
-          <span>{activeDocument.sourceType === 'latex' && taskManagedLatex ? 'Project pipeline' : activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
-          <span>Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? taskManagedLatex ? 'Project pipeline PDF view' : latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + native WebKit PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + native WebKit exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + native WebKit PDF/PNG/HTML'}</span>
+          <span className="status-file-state">{autoSaving ? 'Saving to file…' : activeDocument.dirty ? 'Unsaved edits' : activeDocument.fileHandle || activeDocument.relativePath ? 'Saved to file' : 'Unsaved draft'}</span>
+          <span className="status-recovery" role="status" title={recoveryWarning || recoveryStatus}>{recoveryWarning ? 'Recovery needs attention' : recoveryStatus}</span>
+          {(activeDocument.sourceType === 'markdown' || activeDocument.sourceType === 'text') && <span className="status-statistics" title={`${activeTextStatistics.characters.toLocaleString()} characters across ${activeTextStatistics.lines.toLocaleString()} lines`}>{activeTextStatistics.words.toLocaleString()} words</span>}
+          <span className="status-detail">{activeDocument.sourceType === 'latex' && taskManagedLatex ? 'Project pipeline' : activeDocument.sourceType === 'metafont' ? 'Manual proof preview' : settings.previewAutoRender ? 'Live preview' : 'Manual preview'}</span>
+          <span className="status-detail">Local render · {activeDocument.sourceType === 'tikz' ? `${texPdfEngineLabel(texPdfEngine)} + Poppler` : activeDocument.sourceType === 'latex' ? taskManagedLatex ? 'Project pipeline PDF view' : latexPreviewMode === 'dvi' ? 'classic latex + dvisvgm DVI view' : `${texPdfEngineLabel(texPdfEngine)} PDF view` : activeDocument.sourceType === 'metafont' ? 'mf-nowin GF proof · mf2pt1 + FontForge TTF' : activeDocument.sourceType === 'svg' ? 'Browser SVG + librsvg' : activeDocument.sourceType === 'mermaid' ? 'Mermaid + librsvg' : activeDocument.sourceType === 'markdown' ? 'GFM preview + native WebKit PDF/PNG/HTML' : activeDocument.sourceType === 'html' ? 'Sandboxed HTML preview + native WebKit exports' : activeDocument.sourceType === 'json' ? 'Local JSON validation + structured preview' : activeDocument.sourceType === 'python' ? 'Local Python run/test + source preview' : SOURCE_PREVIEW_TYPES.has(activeDocument.sourceType) ? `Read-only ${SOURCE_META[activeDocument.sourceType].label} source preview` : 'Plain-text preview + native WebKit PDF/PNG/HTML'}</span>
         </div>
         <span className="status-spacer"></span>
         <span className="cursor-location" title="Current cursor position">Row {cursorLocation.line} · Col {cursorLocation.column}</span>
@@ -5359,7 +5481,7 @@ encoding: reload.source.encoding,
           <button className={panelLayout.explorerOpen ? 'active' : ''} onClick={() => togglePanel('explorerOpen')} title={panelLayout.explorerOpen ? 'Hide Explorer' : 'Show Explorer'} aria-pressed={panelLayout.explorerOpen}>Explorer</button>
           <button className={panelLayout.previewOpen ? 'active' : ''} onClick={() => togglePanel('previewOpen')} title={activeDocument.sourceType === 'python' ? panelLayout.previewOpen ? 'Hide Python output' : 'Show Python output' : panelLayout.previewOpen ? 'Hide Live Preview' : 'Show Live Preview'} aria-pressed={panelLayout.previewOpen}>{activeDocument.sourceType === 'python' ? 'Output' : 'Preview'}</button>
           <button className={panelLayout.referenceOpen ? 'active' : ''} onClick={() => togglePanel('referenceOpen')} title={panelLayout.referenceOpen ? 'Hide Reference Deck' : 'Show Reference Deck'} aria-pressed={panelLayout.referenceOpen}>References</button>
-          <button onClick={() => setPromptOpen(true)} title="Open Prompt Studio">Prompt</button>
+          <button onClick={() => openAskAi()} title="Ask AI with Codex">Ask AI</button>
           <button onClick={() => setPaletteOpen(true)} title="Open Command Palette">⌘⇧P</button>
           <button onClick={() => setSettingsOpen(true)} title="Open Settings">Settings</button>
           <button onClick={() => void refreshProject()} title="Refresh project">Refresh</button>
@@ -5712,7 +5834,7 @@ encoding: reload.source.encoding,
                 </fieldset>
               </form>
               <div className="prompt-preview">
-                <div className="prompt-preview-head"><span>Generated prompt</span><button onClick={() => copyText(promptText, 'Prompt copied — send it to your preferred LLM.')}>Copy prompt</button></div>
+                <div className="prompt-preview-head"><span>Generated prompt</span><button onClick={() => copyText(promptText, 'Prompt copied — send it to your preferred LLM.')}>Copy prompt</button><button disabled={settings.safeMode} onClick={() => { setPromptOpen(false); openAskAi(promptText); }}>Ask Codex…</button></div>
                 <textarea readOnly value={promptText} aria-label="Generated LLM prompt" />
                 <div className="prompt-tips"><span>✦ Context stays on this Mac until you copy it.</span><span>✓ No API key or remote service is used here.</span></div>
                 <div className="prompt-response">
@@ -5737,7 +5859,7 @@ encoding: reload.source.encoding,
             <p className="modal-copy">Nothing is applied automatically. This review compares the selected change for <code>{pendingAiReview.documentName}</code> before it reaches your editor.</p>
             <div className="ai-review-summary"><span className={`source-label ${SOURCE_META[pendingAiReview.sourceType].color}`}>{SOURCE_META[pendingAiReview.sourceType].label}</span><strong>{pendingAiReview.mode === 'new' ? 'New draft' : pendingAiReview.mode === 'insert' ? 'Insert at the captured cursor position' : 'Replace the reviewed source range'}</strong><small>− current source · + proposed source</small></div>
             <pre className="ai-review-diff" aria-label="Proposed source diff">{sourceReviewDiff(pendingAiReview.before, pendingAiReview.source).map((line, index) => <span key={`${line.kind}-${index}`} className={line.kind}>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}{line.text || ' '}</span>)}</pre>
-            <footer className="ai-review-footer"><span>Review remains local; Prompt Studio only handles text you paste into it.</span><div><button className="outline-button" onClick={() => setPendingAiReview(null)}>Cancel</button><button className="accent-button" onClick={applyReviewedAiSource}>Apply reviewed source</button></div></footer>
+            <footer className="ai-review-footer"><span>Review stays local. No source is changed until you apply it.</span><div><button className="outline-button" onClick={() => setPendingAiReview(null)}>Cancel</button>{pendingAiReview.mode !== 'new' && <button className="outline-button" onClick={() => setPendingAiReview((review) => review ? { ...review, mode: 'new' } : null)}>Use a new draft instead</button>}<button className="accent-button" onClick={applyReviewedAiSource}>Apply reviewed source</button></div></footer>
           </section>
         </div>
       )}

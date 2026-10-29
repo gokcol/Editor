@@ -57,7 +57,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "Open Folder…",
         Some("CmdOrCtrl+Shift+O"),
     )?;
-    let open_recents = action_item(app, "open-recents", "Open Recent…", None)?;
+    let open_recents = crate::recent_menu::build(app)?;
     let new_source = action_item(app, "new-file", "New Source File…", Some("CmdOrCtrl+N"))?;
     let save = action_item(app, "save", "Save", Some("CmdOrCtrl+S"))?;
     let save_as = action_item(app, "save-as", "Save As…", Some("CmdOrCtrl+Shift+S"))?;
@@ -82,15 +82,47 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&source_item(app, "javascript", "JavaScript (.js)", None)?)
         .item(&source_item(app, "typescript", "TypeScript (.ts)", None)?)
         .item(&source_item(app, "python", "Python (.py)", None)?)
-        .item(&source_item(app, "fortran", "Fortran (.f, .for, .f90, .f95…)", None)?)
+        .item(&source_item(app, "php", "PHP (.php, .phtml)", None)?)
+        .item(&source_item(app, "c", "C (.c, .h)", None)?)
+        .item(&source_item(app, "cpp", "C++ (.cpp, .hpp)", None)?)
+        .item(&source_item(app, "pascal", "Pascal (.pas)", None)?)
+        .item(&source_item(app, "go", "Go (.go)", None)?)
+        .item(&source_item(app, "ruby", "Ruby (.rb)", None)?)
+        .item(&source_item(app, "swift", "Swift (.swift)", None)?)
+        .item(&source_item(
+            app,
+            "objectivec",
+            "Objective-C / C++ (.m, .mm)",
+            None,
+        )?)
+        .item(&source_item(app, "kotlin", "Kotlin (.kt, .kts)", None)?)
+        .item(&source_item(
+            app,
+            "fortran",
+            "Fortran (.f, .for, .f90, .f95…)",
+            None,
+        )?)
         .item(&source_item(app, "sql", "SQL (.sql)", None)?)
         .item(&source_item(app, "html", "HTML (.html)", None)?)
         .item(&source_item(app, "css", "CSS (.css)", None)?)
+        .build()?;
+    let scripts = SubmenuBuilder::new(app, "Shell & Windows Scripts")
+        .item(&source_item(app, "bash", "Bash / shell (.sh)", None)?)
+        .item(&source_item(app, "csh", "C shell (.csh, .tcsh)", None)?)
+        .item(&source_item(app, "powershell", "PowerShell (.ps1)", None)?)
+        .item(&source_item(
+            app,
+            "batch",
+            "Windows batch (.bat, .cmd)",
+            None,
+        )?)
+        .item(&source_item(app, "vbscript", "VBScript (.vbs)", None)?)
         .build()?;
     let source_as = SubmenuBuilder::new(app, "New Source As")
         .item(&diagrams)
         .item(&data)
         .item(&code)
+        .item(&scripts)
         .build()?;
     let file = SubmenuBuilder::new(app, "File")
         .item(&new_project)
@@ -285,6 +317,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             "Prompt Studio…",
             Some("CmdOrCtrl+Shift+L"),
         )?)
+        .item(&action_item(app, "ask-ai", "Ask AI with Codex…", None)?)
         .item(&action_item(
             app,
             "settings",

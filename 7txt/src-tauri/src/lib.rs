@@ -1,8 +1,12 @@
 mod text_encoding;
+#[path = "../../../shared/codex_ai.rs"]
+mod codex_ai;
 #[path = "../../../shared/file_version.rs"]
 mod file_version;
 #[path = "../../../shared/recovery.rs"]
 mod recovery;
+#[path = "../../../shared/recent_menu.rs"]
+mod recent_menu;
 mod pdf_export;
 
 use std::{
@@ -828,6 +832,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             Some("CmdOrCtrl+Shift+N"),
         )?)
         .item(&item(app, "open", "Open…", Some("CmdOrCtrl+O"))?)
+        .item(&recent_menu::build(app)?)
         .item(&item(
             app,
             "open-folder",
@@ -917,6 +922,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         )?)
         .item(&item(app, "toggle-editor-split", "Split Editor", None)?)
         .item(&item(app, "timeline", "Local Document Timeline…", None)?)
+        .item(&item(app, "ask-ai", "Ask AI with Codex…", None)?)
         .item(&item(app, "writing-goal", "Set Writing Goal…", None)?)
         .item(&item(app, "zen", "Zen Mode", None)?)
         .build()?;
@@ -943,9 +949,13 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(codex_ai::CodexAiState::default())
         .manage(recovery::RecoveryStore::default())
         .manage(PendingExternalFiles::default())
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<codex_ai::CodexAiState>().cancel_all();
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if recovery::request_close(window.app_handle(), false) { api.prevent_close(); }
             }
@@ -955,9 +965,14 @@ pub fn run() {
             let _ = app.emit_to("main", "menu-action", event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            codex_ai::codex_ai_status,
+            codex_ai::codex_ai_login,
+            codex_ai::codex_ai_ask,
+            codex_ai::codex_ai_cancel,
             recovery::recovery_load,
             recovery::recovery_save,
             recovery::recovery_finish_close,
+            recent_menu::sync_recent_menu,
             open_file,
             open_recent,
             open_folder,
@@ -981,6 +996,7 @@ pub fn run() {
         .expect("error while building 7TXT");
     queue_external_open_paths(app.handle(), initial_open_paths());
     app.run(|app, event| {
+        if matches!(&event, RunEvent::Exit) { app.state::<codex_ai::CodexAiState>().cancel_all(); }
         if let RunEvent::ExitRequested { api, .. } = &event {
             if recovery::request_close(app, true) { api.prevent_exit(); }
         }

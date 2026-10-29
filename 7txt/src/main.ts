@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -6,6 +6,11 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import brandIconUrl from '../src-tauri/icons/7txt-icon.svg?url';
 import './styles.css';
 import { createRecoveryQueue, flushStableRecovery } from '../../shared/recoveryQueue';
+import { confirmTabClose } from '../../shared/tabClose';
+import { isCloseConfirmationOpen, showCloseConfirmation } from '../../shared/closeConfirmation';
+import { splitFileName } from '../../shared/fileName';
+import { isAskAiOpen, showAskAi } from '../../shared/askAi';
+import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../../shared/recentMenu';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
@@ -106,7 +111,7 @@ const MAX_SIDEBAR_WIDTH = 430;
 const MIN_PREVIEW_WIDTH = 280;
 const DEFAULT_PREVIEW_WIDTH = 460;
 const MAX_PREVIEW_WIDTH = 760;
-const TAB_WIDTHS = [230, 172, 129, 97] as const;
+const TAB_WIDTHS = [230, 190, 156] as const;
 const TAB_GAP = 5;
 const EDITOR_FONTS = [
   ['ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 'Mono'],
@@ -161,6 +166,7 @@ app.innerHTML = `
           <button class="toolbar-icon-button" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg></button>
           <button class="toolbar-icon-button" data-action="new-markdown" title="New Markdown tab (⇧⌘N)" aria-label="New Markdown tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8.5 16v-5l2 2.7L12.5 11v5M15 11v5"/></svg></button>
           <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
+          <button class="open-recents-button" data-action="open-recents" title="Open a recent file" aria-haspopup="dialog">Open Recent</button>
           <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z"/></svg></button>
         </div>
         <button class="toolbar-icon-button sidebar-toggle" data-action="toggle-sidebar" title="Hide Files sidebar (⇧⌘B)" aria-label="Hide Files sidebar" aria-expanded="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM10 4v16M7 8h.01M7 12h.01M7 16h.01"/></svg></button>
@@ -194,6 +200,7 @@ app.innerHTML = `
         <button class="toolbar-icon-button" data-action="export-html" title="Export Markdown as HTML" aria-label="Export Markdown as HTML"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v7M9 15l3 3 3-3"/></svg></button>
       </div>
       <div class="toolbar-spacer"></div>
+      <button class="toolbar-icon-button" data-action="ask-ai" title="Ask AI with Codex" aria-label="Ask AI with Codex"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2Z"/></svg></button>
       <details class="theme-picker">
         <summary title="Interface theme and size" aria-label="Interface theme and size"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="11" r="8"/><path d="M5.5 15.5 3.8 19a1.4 1.4 0 0 0 1.9 1.9l3.5-1.7M9 9h.01M13 7h.01M17 9h.01M16 14h.01"/></svg></summary>
         <div class="theme-picker-menu" aria-label="Interface appearance"><div class="theme-choice-grid" role="group" aria-label="Interface theme">${UI_THEMES.map(([value, label]) => `<button type="button" data-theme-choice="${value}" aria-pressed="false"><span class="theme-swatch theme-swatch-${value}"></span><span>${label}</span></button>`).join('')}</div><div class="theme-menu-divider"></div><span class="theme-menu-heading">Interface size</span><div class="ui-scale-options" role="group" aria-label="Interface size">${UI_SCALES.map(([value, label]) => `<button type="button" data-ui-scale-choice="${value}" aria-pressed="false">${label}</button>`).join('')}</div></div>
@@ -248,8 +255,8 @@ app.innerHTML = `
       <div class="sidebar-resizer" role="separator" aria-label="Resize Files sidebar" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="430" tabindex="0"></div>
       <section class="editor-pane">
         <div class="external-change" hidden><span></span><button data-action="reload-external">Use disk</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Keep mine…</button><button data-action="save-both-external">Save As…</button></div>
-        <div class="recovery-status" role="status"></div>
-        <div class="recovered-notice" hidden><span></span><button data-action="save-as">Save As…</button></div>
+        <div class="recovery-status" role="alert" hidden></div>
+        <div class="recovered-notice" hidden><span></span><button data-action="save-as">Save As…</button><button data-action="close">Close…</button></div>
         <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
         <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
         <div class="empty-workspace" hidden><strong>No file open</strong><span>Create a note or open a file to begin.</span><div><button data-action="new-text">New text</button><button data-action="new-markdown">New Markdown</button><button data-action="open">Open file</button></div></div>
@@ -271,12 +278,21 @@ app.innerHTML = `
       <span class="status-stats"></span>
       <span class="status-cursor">Ln 1, Col 1</span>
       <button class="writing-progress" data-action="writing-goal" title="Set a writing goal"></button>
+      <span class="status-recovery" role="status"></span>
       <span class="status-spacer"></span>
       <span class="status-help">⌘O Open · ⌘S Save · ⌘F Find</span>
     </footer>
     <div class="toast" role="status" aria-live="polite" hidden></div>
     <section class="command-palette" hidden aria-label="Command Palette"><div class="command-palette-card"><input type="search" placeholder="Type a command…" aria-label="Search commands" spellcheck="false" /><div class="command-list"></div><small>↑↓ navigate · Enter run · Esc close</small></div></section>
     <section class="quick-switcher overlay-panel" hidden aria-label="Quick switcher"><div class="overlay-card"><div class="overlay-heading"><strong>Quick switcher</strong><button data-action="close-quick-switch" aria-label="Close quick switcher">×</button></div><input type="search" placeholder="Open tabs, recents, bookmarks, or this folder…" aria-label="Quick switcher search" spellcheck="false" /><div class="quick-switch-list"></div><small>⌘K opens this switcher · Esc closes</small></div></section>
+    <section class="recent-files-panel overlay-panel" hidden role="dialog" aria-modal="true" aria-labelledby="recent-files-title" aria-describedby="recent-files-description">
+      <div class="overlay-card recent-files-card">
+        <div class="overlay-heading"><strong id="recent-files-title">Open Recent</strong><button data-action="close-recents" aria-label="Close recent files">×</button></div>
+        <p id="recent-files-description" class="recent-files-description">Open a file from your local recent history.</p>
+        <div class="recent-files-list recents-list"></div>
+        <div class="recent-files-footer"><small>Clearing history leaves your files and open tabs intact.</small><button data-action="clear-recents">Clear Recent Items</button></div>
+      </div>
+    </section>
     <section class="timeline-panel overlay-panel" hidden aria-label="Document timeline"><div class="overlay-card timeline-card"><div class="overlay-heading"><strong>Local timeline</strong><button data-action="close-timeline" aria-label="Close timeline">×</button></div><p class="timeline-intro">Saved locally in this browser profile. Restore a snapshot into the current tab.</p><div class="timeline-list"></div></div></section>
     <section class="help-panel overlay-panel" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
       <div class="overlay-card help-card">
@@ -289,6 +305,7 @@ app.innerHTML = `
 
 const shell = required<HTMLElement>('.app-shell');
 const editor = required<HTMLTextAreaElement>('.editor');
+let aiSelectionPane: 'primary' | 'secondary' = 'primary';
 const secondaryEditor = required<HTMLTextAreaElement>('.editor-secondary');
 const lineNumbers = required<HTMLElement>('.line-numbers');
 const secondaryLineNumbers = required<HTMLElement>('.line-numbers-secondary');
@@ -310,7 +327,10 @@ const replaceInput = required<HTMLInputElement>('.replace-input input');
 const findCase = required<HTMLInputElement>('[data-find-case]');
 const findRegex = required<HTMLInputElement>('[data-find-regex]');
 const outlineList = required<HTMLElement>('.outline-list');
-const recentsList = required<HTMLElement>('.recents-list');
+const recentsList = required<HTMLElement>('.recents-section .recents-list');
+const recentFilesPanel = required<HTMLElement>('.recent-files-panel');
+const recentFilesList = required<HTMLElement>('.recent-files-list');
+const clearRecentFilesButton = required<HTMLButtonElement>('.recent-files-panel [data-action="clear-recents"]');
 const projectTree = required<HTMLElement>('.project-tree');
 const folderBookmarks = required<HTMLElement>('.folder-bookmarks');
 const toast = required<HTMLElement>('.toast');
@@ -394,6 +414,10 @@ let timelineTimer: number | undefined;
 let autosaveInFlight = false;
 let commandSelection = 0;
 let helpSection: HelpSection = 'getting-started';
+let recentFilesPreviousFocus: HTMLElement | null = null;
+let recentFilesInertSiblings: { element: HTMLElement; wasInert: boolean }[] = [];
+let recentFilesRenderKey: string | undefined;
+const syncRecentMenu = createRecentMenuSync((entries) => invoke<void>('sync_recent_menu', { entries }));
 let mediaPdf: PDFDocumentProxy | null = null;
 let mediaPdfPath: string | undefined;
 let mediaPage = 1;
@@ -1046,6 +1070,23 @@ function createDocument(isMarkdown = false) {
   showToast(isMarkdown ? 'Created a new Markdown tab.' : 'Created a new text tab.');
 }
 
+function openAskAi() {
+  const input = aiSelectionPane === 'secondary' ? secondaryEditor : editor;
+  const text = !workspaceEmpty && !isMediaDocument(documentState) ? documentState.content : '';
+  void showAskAi({
+    context: { name: workspaceEmpty ? '' : documentState.name, document: text, selection: text.slice(input.selectionStart, input.selectionEnd) },
+    openDraft: (reply) => {
+      const draft = blankDocument(true);
+      draft.name = 'AI reply.md';
+      draft.content = reply;
+      draft.defaultUntitled = false;
+      addDocument(draft);
+      scheduleRecovery();
+      showToast('AI answer opened as a new unsaved draft.', 'success');
+    },
+  });
+}
+
 function showToast(message: string, tone: 'info' | 'error' | 'success' = 'info') {
   if (toastTimer) window.clearTimeout(toastTimer);
   toast.textContent = message;
@@ -1341,6 +1382,15 @@ function readSession(durable?: unknown): RestoredSession | null {
   }
 }
 
+function showRecoveryFeedback(message: string, warning = false) {
+  const status = required<HTMLElement>('.status-recovery');
+  const notice = required<HTMLElement>('.recovery-status');
+  status.textContent = warning ? 'Recovery needs attention' : message;
+  status.title = message;
+  notice.textContent = warning ? message : '';
+  notice.hidden = !warning;
+}
+
 async function persistRecovery(): Promise<boolean> {
   if (!recoveryReady || recoveryLoadFailed) return false;
   const textDocuments = (workspaceEmpty ? [] : documents)
@@ -1355,11 +1405,11 @@ async function persistRecovery(): Promise<boolean> {
   };
   try {
     const { savedAt, current } = await recoveryQueue.save(session);
-    if (current) required<HTMLElement>('.recovery-status').textContent = `Recovery saved ${new Date(savedAt).toLocaleTimeString()}`;
+    if (current) showRecoveryFeedback(`Recovery copy saved ${new Date(savedAt).toLocaleTimeString()}`);
     try { localStorage.removeItem(SESSION_KEY); localStorage.removeItem(RECOVERY_KEY); } catch { /* native checkpoint acknowledged */ }
     return true;
   } catch (error) {
-    required<HTMLElement>('.recovery-status').textContent = `Recovery not saved: ${errorMessage(error)}. Keep this window open.`;
+    showRecoveryFeedback(`Recovery not saved: ${errorMessage(error)}. Keep this window open.`, true);
     return false;
   }
 }
@@ -1434,7 +1484,7 @@ async function autosaveOpenDocuments() {
   if (autosaveError) showToast(`Autosave paused: ${autosaveError}`, 'error');
   if (savedCurrent || recoveredMissingTarget) {
     render();
-    if (savedCurrent) required<HTMLElement>('.editor-status').textContent = 'Autosaved';
+    if (savedCurrent) required<HTMLElement>('.editor-status').textContent = 'Autosaved to file';
   }
   if (recoveredMissingTarget) {
     showToast(`“${recoveredMissingTarget.name}” is no longer on disk. Its text is kept as an unsaved tab; use Save As to choose a new location.`, 'info');
@@ -1443,6 +1493,8 @@ async function autosaveOpenDocuments() {
 
 function scheduleRecovery() {
   recoveryQueue.invalidate();
+  // A pending retry must not hide a failure before a durable acknowledgement.
+  if (required<HTMLElement>('.recovery-status').hidden) showRecoveryFeedback('Saving recovery…');
   if (recoveryTimer) window.clearTimeout(recoveryTimer);
   recoveryTimer = window.setTimeout(() => {
     void persistRecovery();
@@ -2048,7 +2100,7 @@ function render() {
   required<HTMLElement>('.format-chip').hidden = workspaceEmpty;
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
   required<HTMLElement>('.editor-mode-label').textContent = workspaceEmpty ? 'No file open' : documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
-  required<HTMLElement>('.editor-status').textContent = workspaceEmpty ? '' : isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved locally' : 'Ready';
+  required<HTMLElement>('.editor-status').textContent = workspaceEmpty ? '' : isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved to file' : 'Unsaved draft';
   required<HTMLElement>('.status-stats').textContent = workspaceEmpty ? 'No open files' : isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
   encodingSelect.value = documentState.encoding;
@@ -2127,8 +2179,14 @@ function makeEmpty(message: string) {
 function renderRecents() {
   recentsList.replaceChildren();
   const entries = readRecents();
+  renderRecentFilesDialog(entries);
+  if (isTauri()) {
+    void syncRecentMenu(recentMenuItems(entries.map((entry) => ({ ...entry, id: entry.path })))).catch((error) => {
+      console.warn('Could not update the native Open Recent menu.', error);
+    });
+  }
   if (!entries.length) {
-    recentsList.append(makeEmpty('Opened text and Markdown files will appear here.'));
+    recentsList.append(makeEmpty('Opened files will appear here.'));
     return;
   }
   for (const entry of entries) {
@@ -2139,9 +2197,93 @@ function renderRecents() {
     path.textContent = entry.path;
     button.append(name, path);
     button.title = `Open ${entry.path}`;
-    button.addEventListener('click', () => void openRecent(entry));
+    button.addEventListener('click', () => openRecentPath(entry.path));
     recentsList.append(button);
   }
+}
+
+function renderRecentFilesDialog(entries: RecentEntry[]) {
+  const key = JSON.stringify(entries.map(({ name, path }) => [name, path]));
+  if (key === recentFilesRenderKey) return;
+  recentFilesRenderKey = key;
+  const focusedPath = recentFilesList.contains(document.activeElement)
+    ? (document.activeElement as HTMLElement).dataset.recentPath : undefined;
+  const hadListFocus = recentFilesList.contains(document.activeElement);
+  recentFilesList.replaceChildren();
+  clearRecentFilesButton.disabled = entries.length === 0;
+  if (!entries.length) recentFilesList.append(makeEmpty('No recent files yet. Open a file to add it here.'));
+  for (const entry of entries) {
+    const button = document.createElement('button');
+    const name = document.createElement('strong');
+    const path = document.createElement('small');
+    name.textContent = entry.name;
+    path.textContent = entry.path;
+    button.append(name, path);
+    button.title = entry.path;
+    button.dataset.recentPath = entry.path;
+    button.addEventListener('click', () => openRecentPath(entry.path));
+    recentFilesList.append(button);
+  }
+  if (!recentFilesPanel.hidden && hadListFocus) {
+    const matching = Array.from(recentFilesList.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.dataset.recentPath === focusedPath);
+    (matching || recentFilesPanel.querySelector<HTMLButtonElement>('[data-action="close-recents"]'))?.focus();
+  }
+}
+
+function openRecentFiles() {
+  if (recentFilesPanel.hidden) {
+    recentFilesPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeTransientMenus();
+    commandPalette.hidden = true;
+    quickSwitcher.hidden = true;
+    timelinePanel.hidden = true;
+    helpPanel.hidden = true;
+    recentFilesPanel.hidden = false;
+    recentFilesInertSiblings = Array.from(shell.children)
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== recentFilesPanel && element !== toast)
+      .map((element) => ({ element, wasInert: element.inert }));
+    for (const { element } of recentFilesInertSiblings) element.inert = true;
+  }
+  renderRecents();
+  window.requestAnimationFrame(() => {
+    if (!recentFilesPanel.hidden) {
+      (recentFilesList.querySelector<HTMLButtonElement>('button')
+        || recentFilesPanel.querySelector<HTMLButtonElement>('[data-action="close-recents"]'))?.focus();
+    }
+  });
+}
+
+function closeRecentFiles() {
+  if (recentFilesPanel.hidden) return;
+  recentFilesPanel.hidden = true;
+  for (const { element, wasInert } of recentFilesInertSiblings) element.inert = wasInert;
+  recentFilesInertSiblings = [];
+  const target = recentFilesPreviousFocus;
+  recentFilesPreviousFocus = null;
+  if (target?.isConnected && !target.closest('[inert]') && target.getClientRects().length) target.focus();
+  else if (!workspaceEmpty && !isMediaDocument(documentState)) editor.focus();
+  else if (isMediaDocument(documentState)) required<HTMLButtonElement>('[data-action="media-zoom-fit"]').focus();
+}
+
+function openRecentPath(path: string) {
+  const entry = readRecents().find((item) => item.path === path);
+  if (!entry) {
+    renderRecents();
+    showToast('That file is no longer in recent history.');
+    return;
+  }
+  closeRecentFiles();
+  void openRecent(entry);
+}
+
+function clearRecents() {
+  try {
+    localStorage.removeItem(RECENTS_KEY);
+    renderRecents();
+    if (!recentFilesPanel.hidden) recentFilesPanel.querySelector<HTMLButtonElement>('[data-action="close-recents"]')?.focus();
+    showToast('Recent history cleared. Your files and open tabs are unchanged.');
+  } catch (error) { showToast(errorMessage(error), 'error'); }
 }
 
 function renderTabs() {
@@ -2163,14 +2305,33 @@ function renderTabs() {
     const dirty = isMediaDocument(document)
       ? annotationSnapshot(document) !== (document.savedAnnotations || '')
       : isTextDocumentDirty(document);
-    tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}`;
+    tab.className = `document-tab${document.id === activeDocumentId ? ' active' : ''}${dirty ? ' dirty' : ''}${document.recoveryDraft ? ' recovered' : ''}`;
     tab.dataset.tabId = document.id;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(document.id === activeDocumentId));
     activate.className = 'tab-activate';
     activate.type = 'button';
-    activate.textContent = document.name;
-    activate.title = document.path || document.name;
+    const { stem, extension } = splitFileName(document.name);
+    const name = window.document.createElement('span');
+    name.className = 'tab-name';
+    const basename = window.document.createElement('span');
+    basename.className = 'tab-stem';
+    basename.textContent = stem;
+    const suffix = window.document.createElement('span');
+    suffix.className = 'tab-extension';
+    suffix.textContent = extension;
+    name.append(basename, suffix);
+    activate.append(name);
+    if (document.recoveryDraft) {
+      const recovery = window.document.createElement('span');
+      recovery.className = 'tab-recovery';
+      recovery.textContent = '↺';
+      recovery.title = 'Recovered draft';
+      recovery.setAttribute('aria-hidden', 'true');
+      activate.append(recovery);
+    }
+    activate.setAttribute('aria-label', `${document.name}${document.recoveryDraft ? ', recovered draft' : ''}${dirty ? ', unsaved changes' : ''}`);
+    activate.title = `${document.path || document.recoveryOrigin || document.name}${document.recoveryDraft ? '\nRecovered draft' : ''}${dirty ? '\nUnsaved changes' : ''}`;
     activate.addEventListener('click', () => activateDocument(document.id));
     close.className = 'tab-close';
     close.type = 'button';
@@ -2475,9 +2636,7 @@ async function openRecent(entry: RecentEntry) {
     openResultInTab(result);
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error), 'error');
-    const remaining = readRecents().filter((item) => item.path !== entry.path);
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(remaining));
-    renderRecents();
+    // An unavailable volume, permission issue, or decoding error must not erase history.
   }
 }
 
@@ -2679,21 +2838,28 @@ async function save() {
   }
 }
 
-function closeDocument(id = activeDocumentId) {
-  const target = documents.find((document) => document.id === id);
-  if (!target) return;
-  const targetDirty = isMediaDocument(target)
-    ? annotationSnapshot(target) !== (target.savedAnnotations || '')
-    : isTextDocumentDirty(target);
-  // Recovery drafts deliberately have no path. They still contain work the
-  // user may want to Save As, so treat them like any other dirty tab here.
-  if (targetDirty && !window.confirm(`Close “${target.name}” without saving its changes?`)) return;
-  const index = documents.findIndex((document) => document.id === id);
-  histories.delete(id);
-  saveTargetGenerations.delete(id);
-  manualSaveInFlight.delete(id);
-  clearExternalChangeForPath(target.path);
-  if (documents.length === 1) {
+async function closeSelectedTabs(targets: TextDocument[], message: string) {
+  if (isCloseConfirmationOpen() || isAskAiOpen() || shell.inert) return;
+  const decision = await confirmTabClose(targets, (id) => documents.find((document) => document.id === id), (document) => isMediaDocument(document)
+    ? annotationSnapshot(document) !== (document.savedAnnotations || '')
+    : isTextDocumentDirty(document), showCloseConfirmation);
+  if (decision === 'cancelled' || decision === 'protected') return;
+  if (decision === 'changed' || targets.some((target) => documents.find((document) => document.id === target.id) !== target)) {
+    showToast('A tab changed while confirmation was open. Review it and try closing again.', 'info');
+    return;
+  }
+  const index = documents.findIndex((document) => document.id === activeDocumentId);
+  const closedIds = new Set(targets.map((document) => document.id));
+  for (const target of targets) {
+    histories.delete(target.id);
+    saveTargetGenerations.delete(target.id);
+    manualSaveInFlight.delete(target.id);
+    clearExternalChangeForPath(target.path);
+  }
+  // Only remove the confirmed tabs: a native open-file event can add another
+  // document while the confirmation is visible.
+  documents = documents.filter((document) => !closedIds.has(document.id));
+  if (!documents.length) {
     const blank = blankDocument();
     documents = [blank];
     documentState = blank;
@@ -2703,20 +2869,23 @@ function closeDocument(id = activeDocumentId) {
     editor.value = blank.content;
     secondaryEditor.value = blank.content;
     viewMode = 'edit';
-  } else {
-    documents = documents.filter((document) => document.id !== id);
-    if (id === activeDocumentId) {
-      const next = documents[Math.min(index, documents.length - 1)];
-      documentState = next;
-      activeDocumentId = next.id;
-      editor.value = next.content;
-      secondaryEditor.value = next.content;
-      viewMode = preferredViewMode(next);
-    }
+  } else if (closedIds.has(activeDocumentId)) {
+    const next = documents[Math.max(0, Math.min(index, documents.length - 1))];
+    documentState = next;
+    activeDocumentId = next.id;
+    editor.value = next.content;
+    secondaryEditor.value = next.content;
+    viewMode = preferredViewMode(next);
   }
   render();
-  scheduleRecovery();
-  showToast('Tab closed.');
+  // Queue removal immediately after older snapshots, including the last tab.
+  void persistRecovery();
+  showToast(message);
+}
+
+function closeDocument(id = activeDocumentId) {
+  const target = documents.find((document) => document.id === id);
+  if (target) void closeSelectedTabs([target], 'Tab closed.');
 }
 
 function closeAllExceptCurrent() {
@@ -2726,57 +2895,12 @@ function closeAllExceptCurrent() {
     showToast('There are no other tabs to close.');
     return;
   }
-  const changedSavedFiles = targets.filter((document) => {
-    const dirty = isMediaDocument(document)
-      ? annotationSnapshot(document) !== (document.savedAnnotations || '')
-      : isTextDocumentDirty(document);
-    return dirty;
-  });
-  if (changedSavedFiles.length && !window.confirm(`Close ${targets.length} other tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
-  for (const document of targets) {
-    histories.delete(document.id);
-    saveTargetGenerations.delete(document.id);
-    manualSaveInFlight.delete(document.id);
-    clearExternalChangeForPath(document.path);
-  }
-  documents = documents.filter((document) => document.id === currentId);
-  documentState = documents[0];
-  activeDocumentId = documentState.id;
-  editor.value = documentState.content;
-  secondaryEditor.value = documentState.content;
-  viewMode = preferredViewMode(documentState);
-  render();
-  scheduleRecovery();
-  showToast(`Closed ${targets.length} other tab${targets.length === 1 ? '' : 's'}.`);
+  void closeSelectedTabs(targets, `Closed ${targets.length} other tab${targets.length === 1 ? '' : 's'}.`);
 }
 
 function closeAllDocuments() {
   const targets = [...documents];
-  const changedSavedFiles = targets.filter((document) => {
-    const dirty = isMediaDocument(document)
-      ? annotationSnapshot(document) !== (document.savedAnnotations || '')
-      : isTextDocumentDirty(document);
-    return dirty;
-  });
-  if (changedSavedFiles.length && !window.confirm(`Close all ${targets.length} tab${targets.length === 1 ? '' : 's'} without saving ${changedSavedFiles.length === 1 ? 'its changes' : 'their changes'}?`)) return;
-  for (const document of targets) {
-    histories.delete(document.id);
-    saveTargetGenerations.delete(document.id);
-    manualSaveInFlight.delete(document.id);
-  }
-  externalChange = null;
-  const blank = blankDocument();
-  documents = [blank];
-  documentState = blank;
-  activeDocumentId = blank.id;
-  workspaceEmpty = true;
-  histories.set(blank.id, { entries: [''], index: 0 });
-  editor.value = blank.content;
-  secondaryEditor.value = blank.content;
-  viewMode = 'edit';
-  render();
-  scheduleRecovery();
-  showToast(`Closed ${targets.length} tab${targets.length === 1 ? '' : 's'}.`);
+  void closeSelectedTabs(targets, `Closed ${targets.length} tab${targets.length === 1 ? '' : 's'}.`);
 }
 
 function reopenWithEncoding() {
@@ -3279,7 +3403,9 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'About 7TXT', hint: '', run: () => openHelp('about') },
     { label: 'New text file', hint: '⌘N', run: () => createDocument() },
     { label: 'New Markdown file', hint: '⇧⌘N', run: () => createDocument(true) },
+    { label: 'Ask AI with Codex', hint: '', run: openAskAi },
     { label: 'Open file', hint: '⌘O', run: () => void openFile() },
+    { label: 'Open Recent', hint: '', run: openRecentFiles },
     { label: 'Save', hint: '⌘S', run: () => void save() },
     { label: 'Save As', hint: '⇧⌘S', run: () => void saveAs() },
     { label: 'Find and replace', hint: '⌘F', run: openFind },
@@ -3483,12 +3609,18 @@ async function ignoreExternalChange() {
 }
 
 function handleAction(action?: string) {
-  if (!recoveryReady || shell.inert) return;
+  if (!recoveryReady || shell.inert || isCloseConfirmationOpen() || isAskAiOpen()) return;
+  const recentPath = recentMenuEntryId(action || '');
+  if (recentPath !== null) { openRecentPath(recentPath); return; }
+  if (!recentFilesPanel.hidden && action !== 'open-recents' && action !== 'close-recents' && action !== 'clear-recents') closeRecentFiles();
   switch (action) {
+    case 'ask-ai': openAskAi(); break;
     case 'new':
     case 'new-text': createDocument(); break;
     case 'new-markdown': createDocument(true); break;
     case 'open': void openFile(); break;
+    case 'open-recents': openRecentFiles(); break;
+    case 'close-recents': closeRecentFiles(); break;
     case 'open-folder': void selectProjectFolder(); break;
     case 'refresh-folder': void refreshProjectFolder(); break;
     case 'browser-up': browseUp(); break;
@@ -3555,7 +3687,7 @@ function handleAction(action?: string) {
       if (target) { activateDocument(target.id); void saveAs(); }
       break;
     }
-    case 'clear-recents': localStorage.removeItem(RECENTS_KEY); renderRecents(); showToast('Recent files cleared.'); break;
+    case 'clear-recents': clearRecents(); break;
     case 'refresh-outline': renderOutline(); showToast('Outline refreshed.'); break;
     case 'mode-edit': setViewMode('edit'); break;
     case 'mode-split': setViewMode('split'); break;
@@ -3699,6 +3831,7 @@ function handleEditorTab(event: KeyboardEvent, surface: HTMLTextAreaElement) {
 }
 
 for (const surface of [editor, secondaryEditor]) {
+  surface.addEventListener('focus', () => { aiSelectionPane = surface === secondaryEditor ? 'secondary' : 'primary'; });
   surface.addEventListener('input', () => recordContent(surface.value));
   surface.addEventListener('keydown', (event) => handleEditorTab(event, surface));
   surface.addEventListener('scroll', () => syncLineNumbers(surface));
@@ -3747,8 +3880,20 @@ quickSwitchInput.addEventListener('keydown', (event) => {
 quickSwitcher.addEventListener('pointerdown', (event) => { if (event.target === quickSwitcher) closeQuickSwitcher(); });
 timelinePanel.addEventListener('pointerdown', (event) => { if (event.target === timelinePanel) closeTimeline(); });
 helpPanel.addEventListener('pointerdown', (event) => { if (event.target === helpPanel) closeHelp(); });
+recentFilesPanel.addEventListener('pointerdown', (event) => { if (event.target === recentFilesPanel) closeRecentFiles(); });
 
 window.addEventListener('keydown', (event) => {
+  if (!recentFilesPanel.hidden) {
+    if (event.key === 'Escape') { event.preventDefault(); closeRecentFiles(); }
+    else if (event.key === 'Tab') {
+      const controls = Array.from(recentFilesPanel.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !recentFilesPanel.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !recentFilesPanel.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    }
+    return;
+  }
   if (event.key === 'Escape' && !helpPanel.hidden) { event.preventDefault(); closeHelp(); return; }
   if (event.key === 'Escape' && !quickSwitcher.hidden) { event.preventDefault(); closeQuickSwitcher(); return; }
   if (event.key === 'Escape' && !timelinePanel.hidden) { event.preventDefault(); closeTimeline(); return; }
@@ -3843,7 +3988,7 @@ window.addEventListener('beforeunload', (event) => {
 shell.inert = true;
 async function startWorkspace() {
   await listen('recovery-close-requested', async () => {
-    if (!recoveryReady || shell.inert) return;
+    if (!recoveryReady || shell.inert || isCloseConfirmationOpen()) return;
     shell.inert = true;
     try {
       persistWorkbenchState();
@@ -3861,7 +4006,7 @@ async function startWorkspace() {
   try { durable = (await invoke<{ payload: unknown } | null>('recovery_load'))?.payload; }
   catch (error) {
     recoveryLoadFailed = true;
-    required<HTMLElement>('.recovery-status').textContent = `Recovery could not be read: ${errorMessage(error)}. Existing recovery is preserved.`;
+    showRecoveryFeedback(`Recovery could not be read: ${errorMessage(error)}. Existing recovery is preserved.`, true);
   }
   restoreSession(durable);
   recoveryReady = true;

@@ -1,0 +1,22 @@
+.tab-close-confirmation {
+  color-scheme: light;
+  box-sizing: border-box;
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+  color: #263249;
+  box-shadow: 0 20px 70px #0005;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.tab-close-confirmation[data-theme="dark"] { color-scheme: dark; background: #192438; color: #e4eaf5; border-color: #40506a; }
+.tab-close-confirmation::backdrop { background: #060c1899; }
+.tab-close-confirmation h2 { margin: 0 0 12px; font-size: 18px; }
+.tab-close-confirmation p { margin: 0 0 22px; overflow-wrap: anywhere; }
+.tab-close-confirmation > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.tab-close-confirmation button { padding: 8px 12px; border: 1px solid #8493a8; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.tab-close-confirmation button.discard { background: #a82d3c; border-color: #a82d3c; color: #fff; }
+.tab-close-confirmation button:focus-visible { outline: 3px solid #4faacb; outline-offset: 3px; }

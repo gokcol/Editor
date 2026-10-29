@@ -1,3 +1,5 @@
+import type { ExtraSourceType } from './engine/extraSources';
+
 /**
  * Every first-class text format understood by the workbench.  These remain
  * deliberately file-format oriented rather than tying the editor to a build
@@ -5,6 +7,7 @@
  * example, and can be opened in any other editor without conversion.
  */
 export type SourceType =
+  | ExtraSourceType
   | 'tikz'
   | 'latex'
   | 'metafont'
@@ -17,6 +20,7 @@ export type SourceType =
   | 'javascript'
   | 'typescript'
   | 'python'
+  | 'php'
   | 'fortran'
   | 'sql'
   | 'html'
@@ -65,6 +69,7 @@ export type AppSettings = {
   editorBackgroundPattern: EditorBackgroundPattern;
   /** Formats available for new sources, templates, and creation commands. */
   enabledSourceTypes: SourceType[];
+  sourceTypesVersion: number;
   referenceFontSize: number;
   autoSave: boolean;
   /** Keeps opened projects passive: no task, build, or runner execution. */

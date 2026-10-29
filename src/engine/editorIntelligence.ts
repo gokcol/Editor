@@ -9,9 +9,12 @@ import type {
 } from '../types';
 import { formatSource } from './formatters';
 import { references } from './references';
+import { EXTRA_SOURCE_META, EXTRA_SOURCE_TYPES, extraReferences, isExtraSourceType } from './extraSources';
+import { documentOutline } from './workbench';
 
 /** IDs used by the Monaco configuration and by model diagnostics. */
 export const FOUNDRY_LANGUAGE_IDS: Record<SourceType, FoundryLanguageId> = {
+  ...Object.fromEntries(EXTRA_SOURCE_TYPES.map((type) => [type, EXTRA_SOURCE_META[type].language])) as Record<typeof EXTRA_SOURCE_TYPES[number], FoundryLanguageId>,
   tikz: 'foundry-tikz',
   latex: 'foundry-latex',
   metafont: 'foundry-metafont',
@@ -24,6 +27,7 @@ export const FOUNDRY_LANGUAGE_IDS: Record<SourceType, FoundryLanguageId> = {
   javascript: 'foundry-javascript',
   typescript: 'foundry-typescript',
   python: 'foundry-python',
+  php: 'foundry-php',
   fortran: 'foundry-fortran',
   sql: 'foundry-sql',
   html: 'foundry-html',
@@ -33,6 +37,7 @@ export const FOUNDRY_LANGUAGE_IDS: Record<SourceType, FoundryLanguageId> = {
 export const FOUNDRY_MARKER_OWNER = 'yedit';
 
 const LANGUAGE_TO_SOURCE_TYPE: Record<FoundryLanguageId, SourceType> = {
+  ...Object.fromEntries(EXTRA_SOURCE_TYPES.map((type) => [EXTRA_SOURCE_META[type].language, type])) as Record<`foundry-${typeof EXTRA_SOURCE_TYPES[number]}`, SourceType>,
   'foundry-tikz': 'tikz',
   'foundry-latex': 'latex',
   'foundry-metafont': 'metafont',
@@ -45,6 +50,7 @@ const LANGUAGE_TO_SOURCE_TYPE: Record<FoundryLanguageId, SourceType> = {
   'foundry-javascript': 'javascript',
   'foundry-typescript': 'typescript',
   'foundry-python': 'python',
+  'foundry-php': 'php',
   'foundry-fortran': 'fortran',
   'foundry-sql': 'sql',
   'foundry-html': 'html',
@@ -61,7 +67,7 @@ type CatalogItem = {
   example?: string;
 };
 
-type DeveloperSourceType = 'yaml' | 'json' | 'javascript' | 'typescript' | 'python' | 'fortran' | 'sql' | 'html' | 'css';
+type DeveloperSourceType = 'yaml' | 'json' | 'javascript' | 'typescript' | 'python' | 'php' | 'fortran' | 'sql' | 'html' | 'css';
 
 /**
  * Compact completion catalogs for the general-purpose language modes. These
@@ -93,6 +99,11 @@ const developerCoreCatalog: Record<DeveloperSourceType, CatalogItem[]> = {
     { label: 'Typed function', detail: 'Python function', description: 'Defines a function with readable input and output annotations.', insertText: 'def name(value: str) -> str:\n    return value\n', kind: 'snippet', aliases: ['def', 'function', 'type hints'] },
     { label: 'Dataclass', detail: 'Data model', description: 'Creates a lightweight data model with generated initializer and representation.', insertText: '@dataclass(frozen=True)\nclass Name:\n    value: str\n', kind: 'snippet', aliases: ['dataclass', 'class', 'model'] },
     { label: 'Main guard', detail: 'Script entry point', description: 'Runs script-only setup while keeping a module importable.', insertText: 'if __name__ == "__main__":\n    main()\n', kind: 'snippet', aliases: ['main', 'script', 'entrypoint'] },
+  ],
+  php: [
+    { label: 'Typed function', detail: 'PHP function', description: 'Declares parameter and return types. Insert inside a PHP block.', insertText: 'function greet(string $name): string {\n    return "Hello, " . $name;\n}', kind: 'snippet', aliases: ['function', 'return', 'php'] },
+    { label: 'Foreach loop', detail: 'PHP collection iteration', description: 'Iterates over array keys and values.', insertText: 'foreach ($items as $key => $value) {\n    echo $value;\n}', kind: 'snippet', aliases: ['foreach', 'array', 'loop'] },
+    { label: 'PHP block', detail: 'PHP opening tag', description: 'Starts a PHP-only file. Omitting a closing tag avoids accidental trailing output.', insertText: '<?php\n\ndeclare(strict_types=1);\n', kind: 'snippet', aliases: ['php', 'declare', 'strict_types'] },
   ],
   fortran: [
     { label: 'Program', detail: 'Fortran program unit', description: 'Starts a standalone modern Fortran program with implicit variables disabled.', insertText: 'program name\n  implicit none\n\nend program name\n', kind: 'snippet', aliases: ['program', 'implicit none', 'main'] },
@@ -478,6 +489,10 @@ const coreCatalog: Record<SourceType, CatalogItem[]> = {
     },
   ],
   ...developerCoreCatalog,
+  ...Object.fromEntries(EXTRA_SOURCE_TYPES.map((type) => [type, extraReferences[type].map((entry): CatalogItem => ({
+    label: entry.title, detail: EXTRA_SOURCE_META[type].label, description: entry.description,
+    insertText: entry.insertText, kind: 'snippet', aliases: entry.tags, example: entry.example,
+  }))])) as Record<typeof EXTRA_SOURCE_TYPES[number], CatalogItem[]>,
 };
 
 const installations = new WeakMap<object, FoundryEditorIntelligence>();
@@ -699,6 +714,7 @@ function completionTriggerCharacters(sourceType: SourceType): string[] {
   if (sourceType === 'json') return ['"', ':', '{', '['];
   if (sourceType === 'javascript' || sourceType === 'typescript') return ['.', '(', '{'];
   if (sourceType === 'python') return ['.', ':', '@'];
+  if (sourceType === 'php') return ['$', '>', ':'];
   if (sourceType === 'fortran') return ['(', '%'];
   if (sourceType === 'sql') return [' ', '.'];
   if (sourceType === 'html') return ['<', ' ', '='];
@@ -718,7 +734,8 @@ function completionItems(monaco: Monaco, sourceType: SourceType, range: MonacoEd
         ? monaco.languages.CompletionItemKind.Reference
         : monaco.languages.CompletionItemKind.Keyword,
     insertText: item.insertText,
-    insertTextRules: item.kind === 'snippet' ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+    // PHP examples contain literal $variables, not Monaco snippet variables.
+    insertTextRules: item.kind === 'snippet' && sourceType !== 'php' && !isExtraSourceType(sourceType) ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
     range,
     sortText: `${item.kind === 'snippet' ? '0' : item.kind === 'reference' ? '2' : '1'}${String(index).padStart(3, '0')}`,
     filterText: [item.label, ...item.aliases].join(' '),
@@ -1360,6 +1377,7 @@ function dedupeDiagnostics(diagnostics: EditorDiagnostic[]): EditorDiagnostic[] 
 }
 
 function buildFoldingRanges(sourceType: SourceType, lines: string[]): MonacoEditor.languages.FoldingRange[] {
+  if (isExtraSourceType(sourceType)) return ['c', 'cpp', 'go', 'swift', 'objectivec', 'kotlin', 'powershell'].includes(sourceType) ? foldBraces(lines) : foldIndentation(lines);
   const ranges = sourceType === 'tikz'
     ? foldTikz(lines)
     : sourceType === 'latex'
@@ -1378,7 +1396,7 @@ function buildFoldingRanges(sourceType: SourceType, lines: string[]): MonacoEdit
                   ? foldIndentation(lines)
                   : sourceType === 'fortran'
                     ? foldFortran(lines)
-                    : sourceType === 'json' || sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'css'
+                    : sourceType === 'json' || sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'php' || sourceType === 'css'
                       ? foldBraces(lines)
               : [];
   return ranges.filter((range) => range.end > range.start);
@@ -1587,6 +1605,13 @@ function foldFortran(lines: string[]): MonacoEditor.languages.FoldingRange[] {
 }
 
 function buildDocumentSymbols(monaco: Monaco, sourceType: SourceType, lines: string[]): MonacoEditor.languages.DocumentSymbol[] {
+  if (isExtraSourceType(sourceType)) return documentOutline(sourceType, lines.join('\n')).map((entry) => ({
+    name: entry.label, detail: EXTRA_SOURCE_META[sourceType].label,
+    tags: [],
+    kind: entry.kind === 'group' ? monaco.languages.SymbolKind.Class : monaco.languages.SymbolKind.Function,
+    range: { startLineNumber: entry.line, startColumn: 1, endLineNumber: entry.line, endColumn: lines[entry.line - 1].length + 1 },
+    selectionRange: { startLineNumber: entry.line, startColumn: 1, endLineNumber: entry.line, endColumn: lines[entry.line - 1].length + 1 },
+  }));
   if (sourceType === 'markdown') return markdownSymbols(monaco, lines);
   if (sourceType === 'tikz') return tikzSymbols(monaco, lines);
   if (sourceType === 'latex') return latexSymbols(monaco, lines);
@@ -1594,7 +1619,7 @@ function buildDocumentSymbols(monaco: Monaco, sourceType: SourceType, lines: str
   if (sourceType === 'svg') return svgSymbols(monaco, lines);
   if (sourceType === 'mermaid') return mermaidSymbols(monaco, lines);
   if (sourceType === 'yaml' || sourceType === 'json') return dataSymbols(monaco, sourceType, lines);
-  if (sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'python') return codeSymbols(monaco, sourceType, lines);
+  if (sourceType === 'javascript' || sourceType === 'typescript' || sourceType === 'python' || sourceType === 'php') return codeSymbols(monaco, sourceType, lines);
   if (sourceType === 'fortran') return fortranSymbols(monaco, lines);
   if (sourceType === 'sql') return sqlSymbols(monaco, lines);
   if (sourceType === 'html') return htmlSymbols(monaco, lines);
@@ -1704,13 +1729,15 @@ function dataSymbols(monaco: Monaco, sourceType: 'yaml' | 'json', lines: string[
 
 function codeSymbols(
   monaco: Monaco,
-  sourceType: 'javascript' | 'typescript' | 'python',
+  sourceType: 'javascript' | 'typescript' | 'python' | 'php',
   lines: string[],
 ): MonacoEditor.languages.DocumentSymbol[] {
   const symbols: MonacoEditor.languages.DocumentSymbol[] = [];
   lines.forEach((line, index) => {
     const match = sourceType === 'python'
       ? /^\s*(?:async\s+)?(def|class)\s+([A-Za-z_][\w]*)/.exec(line)
+      : sourceType === 'php'
+        ? /^\s*(?:(?:abstract|final|readonly|public|protected|private|static)\s+)*(function|class|interface|trait|enum)\s+&?\s*([A-Za-z_][\w]*)/i.exec(line)
       : /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(line);
     if (!match) return;
     const kind = match[1].toLowerCase();

@@ -1,5 +1,6 @@
 import type { AppSettings } from '../types';
 import type { DesktopApi } from './contract';
+import { SOURCE_TYPES, SOURCE_TYPES_VERSION, normalizedEnabledSourceTypes } from '../engine/sourceTypes';
 
 const browserSettingsKey = 'yedit-settings';
 const legacyBrowserSettingsKey = 'diagram-foundry-settings';
@@ -11,7 +12,8 @@ const browserDefaults: AppSettings = {
   editorFontSize: 14,
   editorBackgroundColor: 'theme',
   editorBackgroundPattern: 'none',
-  enabledSourceTypes: ['tikz', 'latex', 'metafont', 'svg', 'mermaid', 'markdown', 'text', 'yaml', 'json', 'javascript', 'typescript', 'python', 'fortran', 'sql', 'html', 'css'],
+  enabledSourceTypes: [...SOURCE_TYPES],
+  sourceTypesVersion: SOURCE_TYPES_VERSION,
   referenceFontSize: 10,
   autoSave: true,
   safeMode: false,
@@ -77,6 +79,7 @@ export function createBrowserDesktopApi(): DesktopApi {
       saveAs: async () => ({ canceled: true }),
     },
     recents: {
+      syncMenu: async () => {},
       list: async () => [],
       migrateLegacyProjects: async () => [],
       open: async () => { throw new Error('Recent items are available in the desktop app.'); },
@@ -92,7 +95,12 @@ export function createBrowserDesktopApi(): DesktopApi {
     settings: {
       load: async () => {
         try {
-          return { ...browserDefaults, ...JSON.parse(readBrowserSettings()) } as AppSettings;
+          const stored = JSON.parse(readBrowserSettings());
+          return {
+            ...browserDefaults, ...stored,
+            enabledSourceTypes: normalizedEnabledSourceTypes(stored.enabledSourceTypes, stored.sourceTypesVersion ?? 0),
+            sourceTypesVersion: SOURCE_TYPES_VERSION,
+          } as AppSettings;
         } catch {
           return browserDefaults;
         }

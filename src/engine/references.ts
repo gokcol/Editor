@@ -1,6 +1,8 @@
 import type { ReferenceEntry, SourceType } from '../types';
+import { extraReferences } from './extraSources.ts';
 
 export const references: Record<SourceType, ReferenceEntry[]> = {
+  ...extraReferences,
   tikz: [
     {
       id: 'tikz-node', title: 'Node', category: 'Structure', tags: ['node', 'label', 'shape'],
@@ -394,6 +396,29 @@ export const references: Record<SourceType, ReferenceEntry[]> = {
       description: 'Runs script-only setup while keeping the module importable by tests and other code.',
       example: 'if __name__ == "__main__":\n    main()',
       insertText: 'if __name__ == "__main__":\n    main()\n',
+    },
+  ],
+  php: [
+    {
+      id: 'php-function', title: 'Typed function', category: 'Functions', tags: ['function', 'return', 'string'],
+      syntax: 'function name(string $value): string',
+      description: 'Declares parameter and return types. Yedit edits PHP source locally without executing it.',
+      example: 'function greet(string $name): string {\n    return "Hello, " . $name;\n}',
+      insertText: 'function greet(string $name): string {\n    return "Hello, " . $name;\n}',
+    },
+    {
+      id: 'php-foreach', title: 'Foreach', category: 'Control flow', tags: ['foreach', 'array', 'loop'],
+      syntax: 'foreach ($items as $key => $value) { ... }',
+      description: 'Iterates over the keys and values in a collection.',
+      example: 'foreach (["first", "second"] as $index => $label) {\n    echo $index . ": " . $label . PHP_EOL;\n}',
+      insertText: 'foreach ($items as $key => $value) {\n    echo $value;\n}',
+    },
+    {
+      id: 'php-html', title: 'Escaped HTML text', category: 'Templates', tags: ['htmlspecialchars', 'echo', 'html'],
+      syntax: 'htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, "UTF-8")',
+      description: 'Escapes a string for HTML text or a quoted HTML attribute. Other contexts, such as URLs or JavaScript, need their own validation and encoding.',
+      example: '<p><?= htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, "UTF-8") ?></p>',
+      insertText: '<?= htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, "UTF-8") ?>',
     },
   ],
   fortran: [

@@ -76,6 +76,7 @@ type TauriCommandArgs = {
   project_write_open_file: { fileHandle: Parameters<ProjectApi['writeOpenedFile']>[0]; content: Parameters<ProjectApi['writeOpenedFile']>[1]; encoding?: Parameters<ProjectApi['writeOpenedFile']>[2]; expectedVersion?: Parameters<ProjectApi['writeOpenedFile']>[3] };
   project_read_open_file: { fileHandle: Parameters<ProjectApi['readOpenedFile']>[0]; encoding?: Parameters<ProjectApi['readOpenedFile']>[1] };
   project_save_as: { suggestedName: Parameters<ProjectApi['saveAs']>[0]; content: Parameters<ProjectApi['saveAs']>[1]; sourceType: Parameters<ProjectApi['saveAs']>[2]; projectRoot?: Parameters<ProjectApi['saveAs']>[3]; encoding?: Parameters<ProjectApi['saveAs']>[4] };
+  sync_recent_menu: { entries: Parameters<RecentsApi['syncMenu']>[0] };
   recents_list: EmptyArgs;
   recents_migrate_legacy_projects: { projects: Parameters<RecentsApi['migrateLegacyProjects']>[0] };
   recents_open: { id: Parameters<RecentsApi['open']>[0]; projectRoot?: Parameters<RecentsApi['open']>[1]; encoding?: Parameters<RecentsApi['open']>[2] };
@@ -127,6 +128,7 @@ type TauriCommandResult = {
   project_write_open_file: Awaited<ReturnType<ProjectApi['writeOpenedFile']>>;
   project_read_open_file: Awaited<ReturnType<ProjectApi['readOpenedFile']>>;
   project_save_as: Awaited<ReturnType<ProjectApi['saveAs']>>;
+  sync_recent_menu: void;
   recents_list: Awaited<ReturnType<RecentsApi['list']>>;
   recents_migrate_legacy_projects: Awaited<ReturnType<RecentsApi['migrateLegacyProjects']>>;
   recents_open: Awaited<ReturnType<RecentsApi['open']>>;
@@ -306,6 +308,7 @@ export function createTauriDesktopApi(): DesktopApi {
       finishClose: () => invokeCommand('recovery_finish_close'),
     },
     recents: {
+      syncMenu: (entries) => invokeCommand('sync_recent_menu', { entries }),
       list: () => invokeCommand('recents_list'),
       migrateLegacyProjects: (projects) => invokeCommand('recents_migrate_legacy_projects', { projects }),
       open: (id, projectRoot, encoding) => invokeCommand('recents_open', { id, projectRoot, encoding }),

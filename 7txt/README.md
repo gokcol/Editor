@@ -7,8 +7,21 @@ It provides local open/save, recent files, undo/redo, find, cursor and document
 statistics, Markdown outline navigation, safe local Markdown preview, and an
 explicit encoding selector for UTF, ISO-8859, Windows, Mac, Cyrillic, and East
 Asian text files. It
-does not load remote content or include AI, project pipelines, diagram renderers,
+does not load remote content or include project pipelines, diagram renderers,
 or a heavyweight code editor runtime.
+
+Use **File → Open Recent**, the **Open Recent** button beside Open, or the command
+palette to reopen files from the same local history shown in the sidebar. The
+menu also works with the sidebar hidden or in Zen mode. **Clear Recent Items**
+clears only this history; saved files, open tabs, and recovery data remain intact.
+
+An optional **Ask AI** toolbar button sends a prompt through the installed Codex
+companion with ChatGPT sign-in (no API key; subscription limits apply). Only the
+prompt and explicitly chosen captured text are sent to OpenAI. Replies can be
+copied or opened as new unsaved Markdown drafts; existing files are never edited
+automatically. Stop or close cancels a request. All ordinary editor features
+remain local and work without AI. Install a current Codex CLI or the ChatGPT
+desktop companion, then use Sign in with ChatGPT in Ask AI if needed.
 
 ## Run or build
 

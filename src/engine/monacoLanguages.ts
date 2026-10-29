@@ -1,5 +1,7 @@
 import type { Monaco } from '@monaco-editor/react';
+import { conf as phpConfiguration, language as phpLanguage } from 'monaco-editor/esm/vs/basic-languages/php/php.js';
 import { installFoundryEditorIntelligence } from './editorIntelligence';
+import { registerExtraCodeLanguages } from './extraMonacoLanguages';
 
 const configuredMonacoInstances = new WeakSet<object>();
 
@@ -479,6 +481,15 @@ export function registerFoundryLanguages(monaco: Monaco) {
       },
     });
 
+    // Reuse the bundled, offline PHP/HTML grammar; never evaluate PHP templates.
+    registerLanguage(monaco, 'foundry-php');
+    monaco.languages.setMonarchTokensProvider('foundry-php', {
+      ...phpLanguage,
+      phpKeywords: [...phpLanguage.phpKeywords, 'fn', 'match', 'enum', 'readonly', 'never', 'mixed'],
+    });
+    monaco.languages.setLanguageConfiguration('foundry-php', phpConfiguration);
+
+    registerExtraCodeLanguages(monaco);
     configureFoundryLanguageBehavior(monaco);
 
     configuredMonacoInstances.add(monacoKey);

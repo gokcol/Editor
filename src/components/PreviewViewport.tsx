@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import type { PreviewState, SourceType } from '../types';
+import { EXTRA_SOURCE_META } from '../engine/extraSources';
 
 export type PreviewBackground = 'grid' | 'checkerboard' | 'solid';
 
@@ -38,6 +39,7 @@ export type PreviewViewportProps = {
 };
 
 const SOURCE_LABELS: Record<SourceType, { label: string; short: string }> = {
+  ...EXTRA_SOURCE_META,
   tikz: { label: 'TikZ', short: 'TZ' },
   latex: { label: 'LaTeX', short: 'TEX' },
   metafont: { label: 'MetaFont', short: 'MF' },
@@ -50,6 +52,7 @@ const SOURCE_LABELS: Record<SourceType, { label: string; short: string }> = {
   javascript: { label: 'JavaScript', short: 'JS' },
   typescript: { label: 'TypeScript', short: 'TS' },
   python: { label: 'Python', short: 'PY' },
+  php: { label: 'PHP', short: 'PHP' },
   fortran: { label: 'Fortran', short: 'F90' },
   sql: { label: 'SQL', short: 'SQL' },
   html: { label: 'HTML', short: 'HTML' },
