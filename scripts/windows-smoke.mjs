@@ -16,7 +16,7 @@ const directory = await mkdtemp(join(tmpdir(), 'editor-native-smoke-'));
 await mkdir(reportDir, { recursive: true });
 const results = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const installed = await readFile(join(reportDir, 'Windows-installation.json'), 'utf8').then(JSON.parse).catch(() => []);
+const installed = await readFile(join(reportDir, 'Windows-installation.json'), 'utf8').then(text => JSON.parse(text.replace(/^\uFEFF/, ''))).catch(() => []);
 const normalize = value => value.replaceAll('\u00a0', ' ');
 
 async function eventually(action, message, timeout = 45000) {
@@ -41,8 +41,9 @@ async function start(app, args, port) {
   }
   let child;
   if (registration?.activation) {
-    const launched = await promisify(execFile)('powershell.exe', ['-NoProfile', '-File', resolve('scripts/activate-store-app.ps1'),
-      '-ApplicationId', registration.activation, '-Document', args[0] || '']);
+    const launchArgs = ['-NoProfile', '-File', resolve('scripts/activate-store-app.ps1'), '-ApplicationId', registration.activation];
+    if (args[0]) launchArgs.push('-Document', args[0]);
+    const launched = await promisify(execFile)('powershell.exe', launchArgs);
     const pid = Number(launched.stdout.trim());
     assert.ok(Number.isInteger(pid) && pid > 0, 'Packaged app activation must return its PID');
     child = { pid, exitCode: null };
