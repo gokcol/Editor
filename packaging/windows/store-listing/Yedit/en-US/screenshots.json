@@ -1,0 +1,10 @@
+[
+  {
+    "file": "Yedit-01-code.png",
+    "caption": "JSON source editing with syntax coloring, validation and a local preview."
+  },
+  {
+    "file": "Yedit-02-diagram.png",
+    "caption": "Mermaid source and a rendered flowchart in the local preview."
+  }
+]

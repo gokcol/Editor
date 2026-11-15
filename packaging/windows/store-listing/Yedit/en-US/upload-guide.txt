@@ -7,6 +7,8 @@ Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md
 Website: https://github.com/gokcol/Editor
 Support: https://github.com/gokcol/Editor/issues
 Reviewer notes: reviewer-notes.txt.
-Use genuine Windows renderer screenshots from the Store preparation workflow.
+Screenshots and captions: screenshots.json and assets/. Captures are genuine Windows renderer output; provenance includes hashes and the producing workflow.
+Capability explanation (under 500 characters): capability-justification.txt.
+Prepared import folder: release/store-submission/listings/Yedit-listing/. Upload the entire folder through Import listings > Upload folder. Its CSV preserves Microsoft's exported schema.
 Review age ratings and WACK results before final certification submission.
 Do not upload TEST-ONLY packages, temporary certificates or private keys.

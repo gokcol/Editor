@@ -13,6 +13,3 @@ PDF AND IMAGE VIEWING
 View supported PDF and image files and keep local annotations. Text editing remains the main purpose of 7TXT.
 
 No account, advertising or subscription is required for ordinary editing. Core editing and Markdown preview work offline. This Store edition requires Windows 11 on an x64 PC and uses its system WebView2 runtime. The optional Codex companion and native Markdown-to-PDF export are not available in this Windows release.
-
-Support: https://github.com/gokcol/Editor/issues
-Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md

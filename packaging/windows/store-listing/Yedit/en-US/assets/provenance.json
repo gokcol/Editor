@@ -1,0 +1,28 @@
+[
+  {
+    "app": "Yedit",
+    "screenshot": "Yedit-01-code.png",
+    "filename": "Project.json",
+    "width": 1600,
+    "height": 1000,
+    "fictionalDocument": true,
+    "capture": "Native Windows WebView2 renderer in installed MSIX test identity; same released executable as unsigned Store package. No marketing overlays or post-capture resizing.",
+    "sha256": "8fe15c34865fc6dd1bc5b6677aa7cc58965f67530e53f9f9e7216629f03d0e69",
+    "workflow": "https://github.com/gokcol/Editor/actions/runs/43687274422",
+    "sourceRef": "v1.0.1",
+    "packagingCommit": "6d1c37d"
+  },
+  {
+    "app": "Yedit",
+    "screenshot": "Yedit-02-diagram.png",
+    "filename": "Workflow.mmd",
+    "width": 1600,
+    "height": 1000,
+    "fictionalDocument": true,
+    "capture": "Native Windows WebView2 renderer in installed MSIX test identity; same released executable as unsigned Store package. No marketing overlays or post-capture resizing.",
+    "sha256": "0fad0928c0fc8271e8032f2820b52456107cdda6b27fb3d1b4f7d1a902c8352d",
+    "workflow": "https://github.com/gokcol/Editor/actions/runs/43687274422",
+    "sourceRef": "v1.0.1",
+    "packagingCommit": "6d1c37d"
+  }
+]

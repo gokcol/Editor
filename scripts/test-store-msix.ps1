@@ -75,8 +75,9 @@ try {
             [xml]$xmlReport = Get-Content $report -Raw
             $overall = $xmlReport.REPORT.OVERALL_RESULT
             foreach ($test in $xmlReport.SelectNodes('//TEST')) {
-                if ($test.RESULT -ne 'PASS') {
-                    $findings += @{ test=$test.NAME; result=$test.RESULT; optional=$test.OPTIONAL
+                $testResult = $test.SelectSingleNode('RESULT').InnerText
+                if ($testResult -ne 'PASS') {
+                    $findings += @{ test=$test.NAME; result=$testResult; optional=$test.OPTIONAL
                         messages=@($test.SelectNodes('MESSAGES/MESSAGE') | ForEach-Object { $_.TEXT }) }
                 }
             }

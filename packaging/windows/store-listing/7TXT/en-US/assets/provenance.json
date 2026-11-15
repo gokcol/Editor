@@ -1,0 +1,28 @@
+[
+  {
+    "app": "7TXT",
+    "screenshot": "7TXT-01-text.png",
+    "filename": "Project notes.txt",
+    "width": 1600,
+    "height": 1000,
+    "fictionalDocument": true,
+    "capture": "Native Windows WebView2 renderer in installed MSIX test identity; same released executable as unsigned Store package. No marketing overlays or post-capture resizing.",
+    "sha256": "58191c6e48e8697b6cb2efe55f04959f58329032aa6a35955fa280a10b2312bc",
+    "workflow": "https://github.com/gokcol/Editor/actions/runs/43687274422",
+    "sourceRef": "v1.0.1",
+    "packagingCommit": "6d1c37d"
+  },
+  {
+    "app": "7TXT",
+    "screenshot": "7TXT-02-markdown.png",
+    "filename": "Planning.md",
+    "width": 1600,
+    "height": 1000,
+    "fictionalDocument": true,
+    "capture": "Native Windows WebView2 renderer in installed MSIX test identity; same released executable as unsigned Store package. No marketing overlays or post-capture resizing.",
+    "sha256": "e1c78dff616d36cb8bccc55b0e82dee173a40f05b9561bb2a40e17f21e09e3c3",
+    "workflow": "https://github.com/gokcol/Editor/actions/runs/43687274422",
+    "sourceRef": "v1.0.1",
+    "packagingCommit": "6d1c37d"
+  }
+]

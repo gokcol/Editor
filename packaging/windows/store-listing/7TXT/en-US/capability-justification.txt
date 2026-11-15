@@ -1,0 +1,1 @@
+7TXT is a Tauri/Rust desktop text and Markdown editor. runFullTrust enables WebView2, native dialogs, opening/saving user-selected local files, clipboard, local history and durable recovery. Runs at current-user privileges. No elevation, startup task, service, background agent, unvirtualizedResources or virtualization exclusions. Standard MSIX virtualization. Windows 11 x64.
