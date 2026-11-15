@@ -89,7 +89,9 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   const recovered = `Unsaved recovery in ${app} — ıİ\nKeep this draft\n`;
   const source = join(directory, `${app}.txt`);
   await writeFile(source, initial, 'utf8');
-  const checkpoint = installed.find(entry => entry.app === app)?.checkpoint || join(process.env.APPDATA, app === '7TXT' ? 'com.gokcol.7txt' : 'com.yedit.desktop', 'recovery', '6d61696e.json');
+  const registration = installed.find(entry => entry.app === app);
+  const checkpoints = [...new Set([registration?.checkpoint || join(process.env.APPDATA, app === '7TXT' ? 'com.gokcol.7txt' : 'com.yedit.desktop', 'recovery', '6d61696e.json'), registration?.checkpointFallback].filter(Boolean))];
+  let checkpoint;
   let session;
   try {
     session = await start(app, [source], 9222 + index);
@@ -108,7 +110,14 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     await eventually(async () => (await readFile(source, 'utf8')).replaceAll('\r\n', '\n') === saved, `${app} Ctrl+S native file save`);
     await page.keyboard.press('Control+a');
     await page.keyboard.insertText(recovered);
-    await eventually(async () => (await readFile(checkpoint, 'utf8')).includes('Keep this draft'), `${app} durable recovery checkpoint`);
+    await eventually(async () => {
+      for (const candidate of checkpoints) {
+        if ((await readFile(candidate, 'utf8').catch(() => '')).includes('Keep this draft')) {
+          checkpoint = candidate; return true;
+        }
+      }
+      return false;
+    }, `${app} durable recovery checkpoint in ${checkpoints.join(' or ')}`);
     assert.ok(!(await readFile(checkpoint, 'utf8')).includes('Recovery could not be saved'));
     await page.screenshot({ path: join(reportDir, `${app}-Windows-editing.png`) });
     await stop(session); session = undefined;
@@ -117,7 +126,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
       ? (await session.page.locator('textarea.editor:not(.editor-secondary)').inputValue()).includes('Keep this draft')
       : normalize(await session.page.locator('.monaco-editor .view-lines').first().innerText()).includes('Keep this draft'), `${app} recovery after crash`);
     await session.page.screenshot({ path: join(reportDir, `${app}-Windows-recovery.png`) });
-    results.push({ app, nativeFileOpen: true, unicodeSave: true, recoveryCheckpoint: true, crashRecovery: true });
+    results.push({ app, nativeFileOpen: true, unicodeSave: true, recoveryCheckpoint: true, crashRecovery: true, checkpoint });
   } catch (error) {
     await session?.page.screenshot({ path: join(reportDir, `${app}-Windows-failure.png`) }).catch(() => {});
     throw error;

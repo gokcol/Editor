@@ -49,7 +49,11 @@ try {
         $bundle = if ($app -eq '7TXT') { 'com.gokcol.7txt' } else { 'com.yedit.desktop' }
         $checkpoint = Join-Path $env:LOCALAPPDATA "Packages/$($registered.PackageFamilyName)/LocalCache/Roaming/$bundle/recovery/6d61696e.json"
         $mapping += @{ app=$app; executable=(Join-Path $registered.InstallLocation "$app.exe"); version=$info.version
-            activation="$($registered.PackageFamilyName)!$($info.applicationId)"; checkpoint=$checkpoint; installerExitCode=0 }
+            activation="$($registered.PackageFamilyName)!$($info.applicationId)"; checkpoint=$checkpoint
+            # Windows can pass writes through when an unpackaged AppData
+            # directory already exists. Verify the actual durable checkpoint in
+            # either documented location, and preserve the pre-existing sentinel.
+            checkpointFallback=(Join-Path $shared 'recovery/6d61696e.json'); installerExitCode=0 }
     }
     ConvertTo-Json -InputObject $mapping | Set-Content (Join-Path $Reports 'Windows-installation.json') -Encoding utf8
     & node scripts/windows-smoke.mjs "$env:RUNNER_TEMP/editor-smoke/node_modules/playwright/index.mjs" unused $Reports
