@@ -70,9 +70,22 @@ try {
             if ($process.WaitForExit(180000)) { $exitCode=$process.ExitCode; $status=if ($exitCode -eq 0) { 'completed' } else { 'requires-report-review' } }
             else { Stop-Process -Id $process.Id -Force; $status='timeout-requires-Windows-11-review' }
         }
-        $wackResults += @{ app=$app; status=$status; exitCode=$exitCode; testIdentity=$true; sameReleasedPayload=$true }
+        $overall = $null; $findings = @()
+        if (Test-Path $report) {
+            [xml]$xmlReport = Get-Content $report -Raw
+            $overall = $xmlReport.REPORT.OVERALL_RESULT
+            foreach ($test in $xmlReport.SelectNodes('//TEST')) {
+                if ($test.RESULT -ne 'PASS') {
+                    $findings += @{ test=$test.NAME; result=$test.RESULT; optional=$test.OPTIONAL
+                        messages=@($test.SelectNodes('MESSAGES/MESSAGE') | ForEach-Object { $_.TEXT }) }
+                }
+            }
+            if ($overall -ne 'PASS' -or $findings.Count -gt 0) { $status='requires-report-review' }
+        }
+        $wackResults += @{ app=$app; status=$status; exitCode=$exitCode; overallResult=$overall; findings=$findings
+            testIdentity=$true; sameReleasedPayload=$true }
     }
-    ConvertTo-Json -InputObject $wackResults | Set-Content (Join-Path $Reports 'WACK-status.json') -Encoding utf8
+    ConvertTo-Json -InputObject $wackResults -Depth 8 | Set-Content (Join-Path $Reports 'WACK-status.json') -Encoding utf8
     foreach ($entry in $installed) {
         Get-Process -Name 7TXT,Yedit -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($entry.InstallLocation) } | Stop-Process -Force
         Remove-AppxPackage -Package $entry.PackageFullName

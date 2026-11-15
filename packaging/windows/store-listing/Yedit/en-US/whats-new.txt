@@ -1,1 +1,1 @@
-First Microsoft Store preparation of Yedit 1.0.1. Compact Windows 11 x64 package, 30 source modes, local previews, Git integration, conflict protection, and verified draft recovery.
+First Microsoft Store release of Yedit 1.0.1. Compact Windows 11 x64 package, 30 source modes, local previews, Git integration, conflict protection, and verified draft recovery.

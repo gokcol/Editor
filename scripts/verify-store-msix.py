@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 folder = Path(sys.argv[1])
-products = json.loads(Path('packaging/windows/msix/products.json').read_text())
+products = json.loads(Path('packaging/windows/msix/products.json').read_text(encoding='utf-8'))
 ns = {'m': 'http://schemas.microsoft.com/appx/manifest/foundation/windows10'}
 reports = []
 for app, product in products.items():
@@ -50,5 +50,5 @@ for app, product in products.items():
                     'allBlockHashesVerified': blocks, 'zipCRC': 'passed', 'identity': 'matched Partner Center',
                     'capabilities': ['runFullTrust'], 'unsigned': True, 'minimumWindows': '11 x64'})
 out = folder / 'independent-verification.json'
-out.write_text(json.dumps(reports, indent=2) + '\n')
+out.write_text(json.dumps(reports, indent=2) + '\n', encoding='utf-8')
 print(json.dumps(reports, indent=2))

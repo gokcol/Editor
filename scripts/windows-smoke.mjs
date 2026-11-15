@@ -160,8 +160,10 @@ if (process.env.EDITOR_STORE_SCREENSHOTS === '1') {
       if (app === 'Yedit') {
         const render = page.getByRole('button', { name: 'Render preview', exact: true });
         if (await render.count()) await render.click();
+        await page.locator('button[title="Hide references"]').click();
+        await page.locator('button[title="Fit output to the canvas"]').click();
       }
-      await delay(2000);
+      await delay(4500);
       const screenshot = `${app}-${label}.png`;
       await page.screenshot({ path: join(reportDir, screenshot) });
       evidence.push({ app, screenshot, filename, width: 1600, height: 1000, fictionalDocument: true,
