@@ -1,5 +1,5 @@
 // Runs only on the disposable Windows CI runner, against real Tauri/WebView2
-// binaries. CDP is enabled by a child-process environment variable, never by
+// binaries. CDP is enabled by CI runtime settings, never by
 // production configuration. No renderer test API is compiled into either app.
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
@@ -33,7 +33,8 @@ async function eventually(action, message, timeout = 45000) {
 async function start(app, args, port) {
   const executable = installed.find(entry => entry.app === app)?.executable || join(binaryDir, `${app}.exe`);
   const child = spawn(executable, args, {
-    env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
+    env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      WEBVIEW2_USER_DATA_FOLDER: join(directory, `${app}-webview`) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -54,8 +55,9 @@ async function start(app, args, port) {
     assert.ok(await page.evaluate(() => Boolean(window.__TAURI_INTERNALS__)), 'Use the native IPC bridge');
     return { child, browser, page };
   } catch (error) {
+    const diagnostics = await promisify(execFile)('pwsh', ['-NoProfile', '-File', resolve('scripts/windows-diagnostics.ps1'), app, resolve(reportDir)]).catch(e => ({ stdout: e.stdout || '', stderr: e.stderr || e.message }));
     await stop({ child, browser });
-    throw new Error(`${error.message}\n${output}`);
+    throw new Error(`${error.message}\n${output}\n${diagnostics.stdout}\n${diagnostics.stderr}`);
   }
 }
 

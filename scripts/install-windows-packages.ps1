@@ -13,5 +13,10 @@ foreach ($app in @('7TXT', 'Yedit')) {
     $executable = Join-Path $entry.InstallLocation.Trim('"') "$app.exe"
     if (!(Test-Path $executable)) { throw "$app installed executable is missing" }
     $installed += @{ app = $app; executable = $executable; version = $entry.DisplayVersion; installerExitCode = $process.ExitCode }
+    # CI-only debugging policy, scoped to these two installed executables.
+    $policy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    New-Item -Path $policy -Force | Out-Null
+    $port = if ($app -eq '7TXT') { 9222 } else { 9223 }
+    New-ItemProperty -Path $policy -Name "$app.exe" -PropertyType String -Value "--remote-debugging-port=$port" -Force | Out-Null
 }
 ConvertTo-Json -InputObject $installed | Set-Content -Encoding utf8 (Join-Path $Reports 'Windows-installation.json')
