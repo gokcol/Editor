@@ -15,8 +15,7 @@ That final action has **not** been performed.
 - Desktop only, Windows 11 x64 minimum build 22000, system Evergreen WebView2.
 - 7TXT: Productivity. Yedit: Developer tools / Utilities.
 - Privacy, website and support URLs, recommended keyboard and mouse.
-- Separate IARC questionnaires, Everyone / 3+ previews, saved after the publisher
-  explicitly authorized acceptance of the IARC terms and legal-age declaration.
+- Separate IARC questionnaires completed, with Everyone / 3+ ratings saved.
 - Real-identity unsigned MSIX **1.0.1.0**, accepted and **Validated** for each app.
 - English (United States) description, release notes, short description, six
   features, seven search terms, developer/copyright information, two Windows
@@ -78,6 +77,6 @@ Standard MSIX virtualization is retained. New private recovery may be removed by
 reset/uninstall. Windows may reuse an existing direct-edition data directory;
 save unfinished work to ordinary files and do not assume edition data isolation.
 
-Build instructions: [MSIX README](msix/README.md). Editable listing sources:
+Build instructions: [MSIX README](https://github.com/gokcol/Editor/blob/main/packaging/windows/msix/README.md). Editable listing sources:
 `store-listing/7TXT/en-US/` and `store-listing/Yedit/en-US/`. The public privacy
-policy is [PRIVACY.md](../../PRIVACY.md).
+policy is [PRIVACY.md](https://github.com/gokcol/Editor/blob/main/PRIVACY.md).
