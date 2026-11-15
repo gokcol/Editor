@@ -8,10 +8,10 @@ Both applications use version 1.0.1. Downloads are published together at
 | macOS 12 or newer | One universal `.dmg` per app, for Apple silicon and Intel | System WKWebView |
 | Windows 10/11 x64 | One per-user NSIS `-setup.exe` per app | Microsoft Edge WebView2; the installer downloads its bootstrapper if needed |
 
-macOS packages are ad-hoc signed, without Developer ID or Apple notarization.
-Windows packages have no Authenticode signature. OS security checks may block
-these downloads or show an unidentified-publisher warning. These packages do not
-provide the trust guarantees of a notarized or publisher-signed release.
+Published macOS apps and DMGs are Developer ID signed, notarized by Apple, and
+stapled. Gatekeeper acceptance and the app inside each mounted DMG are verified
+before publication. Windows packages have no Authenticode signature and may
+show an unidentified-publisher or SmartScreen warning.
 
 ## Platform support
 
@@ -57,6 +57,21 @@ select NSIS and per-user installation without changing macOS settings.
 On macOS, `npm run package:mac` and `npm --prefix 7txt run package:mac` use the
 configured Developer ID identity. The GitHub **Release builds** workflow overrides
 that identity with `-` and builds a universal binary using both Apple targets.
+
+Before publishing macOS packages, extract the app from each CI disk image into a
+staging folder, then run the following on the maintainer's Mac with the existing
+Developer ID certificate and notarytool Keychain profile:
+
+```sh
+sh scripts/notarize-macos.sh /absolute/staging/7TXT.app release/notarized IDENTITY PROFILE
+sh scripts/notarize-macos.sh /absolute/staging/Yedit.app release/notarized IDENTITY PROFILE
+```
+
+The script signs the app with hardened runtime and a secure timestamp, submits
+it to Apple, staples its ticket, creates/signs/notarizes/staples the DMG, then
+mounts the image to verify the embedded app and Gatekeeper acceptance. Receipts,
+verification reports, and per-image checksums accompany the output. Only these
+final notarized disk images are published; CI disk images are build inputs.
 
 The workflow runs shared and native tests on both systems, verifies both macOS
 architectures and app signatures, and tests the actual Windows Tauri/WebView2
