@@ -1,0 +1,48 @@
+name: Microsoft Store preparation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Download and verify released installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.0.1 --repo gokcol/Editor --pattern '*_x64-setup.exe' --pattern 'RELEASE-VERIFICATION.json' --dir input
+          $manifest = Get-Content input/RELEASE-VERIFICATION.json -Raw | ConvertFrom-Json
+          foreach ($entry in $manifest.artifacts | Where-Object { $_.name -like '*.exe' }) {
+            if ((Get-FileHash "input/$($entry.name)").Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'Release installer checksum mismatch.' }
+          }
+      - name: Install source binaries and prepare unsigned MSIX files
+        run: |
+          ./scripts/install-windows-packages.ps1 -Packages input -Reports release/store/source
+          $apps = Get-Content release/store/source/Windows-installation.json -Raw | ConvertFrom-Json
+          foreach ($app in $apps) {
+            ./scripts/package-store-msix.ps1 -App $app.app -Executable $app.executable
+            ./scripts/package-store-msix.ps1 -App $app.app -Executable $app.executable -TestIdentity -OutputDirectory release/store/test
+          }
+      - name: Verify packaged activation, editing, recovery and uninstall
+        shell: powershell
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
+          if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed.' }
+          ./scripts/test-store-msix.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Editor-Store-preparation-x64
+          path: |
+            release/store/packages/*
+            release/store/reports/*
+          if-no-files-found: error
+          retention-days: 30
+      # Unsigned real identities only; never publish TEST-ONLY packages or keys.
+      # Partner Center final submission is a separate maintainer action.

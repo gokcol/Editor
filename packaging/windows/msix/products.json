@@ -1,0 +1,18 @@
+{
+  "7TXT": {
+    "displayName": "7TXT",
+    "identityName": "OrhanGkl.7TXT",
+    "publisher": "CN=A9F0208B-CC43-472D-AE82-9FE4556DC935",
+    "publisherDisplayName": "Orhan Gökçöl",
+    "storeId": "9PB1F4G8F3WH",
+    "packageVersion": "1.0.1.0"
+  },
+  "Yedit": {
+    "displayName": "Yedit",
+    "identityName": "OrhanGkl.Yedit",
+    "publisher": "CN=A9F0208B-CC43-472D-AE82-9FE4556DC935",
+    "publisherDisplayName": "Orhan Gökçöl",
+    "storeId": "9P3QNM6NK8L4",
+    "packageVersion": "1.0.1.0"
+  }
+}

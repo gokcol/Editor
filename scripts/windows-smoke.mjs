@@ -31,21 +31,29 @@ async function eventually(action, message, timeout = 45000) {
 }
 
 async function start(app, args, port) {
-  const executable = installed.find(entry => entry.app === app)?.executable || join(binaryDir, `${app}.exe`);
+  const registration = installed.find(entry => entry.app === app);
+  const executable = registration?.executable || join(binaryDir, `${app}.exe`);
   const environment = { ...process.env };
   // SDK environment overrides can shadow the machine policies configured by
   // install-windows-packages.ps1. Use one configuration source on the CI host.
   for (const key of Object.keys(environment)) {
     if (key.toUpperCase().startsWith('WEBVIEW2_')) delete environment[key];
   }
-  const child = spawn(executable, args, {
+  let child;
+  if (registration?.activation) {
+    const launched = await promisify(execFile)('powershell.exe', ['-NoProfile', '-File', resolve('scripts/activate-store-app.ps1'),
+      '-ApplicationId', registration.activation, '-Document', args[0] || '']);
+    const pid = Number(launched.stdout.trim());
+    assert.ok(Number.isInteger(pid) && pid > 0, 'Packaged app activation must return its PID');
+    child = { pid, exitCode: null };
+  } else child = spawn(executable, args, {
     env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
-  child.stdout.on('data', chunk => { output += chunk; });
-  child.stderr.on('data', chunk => { output += chunk; });
-  child.on('error', error => { output += error.message; });
+  child.stdout?.on('data', chunk => { output += chunk; });
+  child.stderr?.on('data', chunk => { output += chunk; });
+  child.on?.('error', error => { output += error.message; });
   let browser;
   try {
     await eventually(async () => {
@@ -80,7 +88,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   const recovered = `Unsaved recovery in ${app} — ıİ\nKeep this draft\n`;
   const source = join(directory, `${app}.txt`);
   await writeFile(source, initial, 'utf8');
-  const checkpoint = join(process.env.APPDATA, app === '7TXT' ? 'com.gokcol.7txt' : 'com.yedit.desktop', 'recovery', '6d61696e.json');
+  const checkpoint = installed.find(entry => entry.app === app)?.checkpoint || join(process.env.APPDATA, app === '7TXT' ? 'com.gokcol.7txt' : 'com.yedit.desktop', 'recovery', '6d61696e.json');
   let session;
   try {
     session = await start(app, [source], 9222 + index);
