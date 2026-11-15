@@ -1,13 +1,14 @@
-# 7TXT and Yedit Microsoft Store drafts
+# 7TXT and Yedit Microsoft Store submissions
 
-Prepared **15 November 2026**. Both products remain **in draft**. Every submission
-section is complete and Partner Center enables **Submit for certification**.
-That final action has **not** been performed.
+Submitted **15 November 2026**. Partner Center confirmed **In certification** for
+both products. Status verified at **12:03 Europe/Istanbul**. Each product will
+start publishing automatically if it passes certification; neither is approved
+or published yet.
 
 | Product | Partner Center | Submission | Identity |
 | --- | --- | --- | --- |
-| 7TXT | [Open draft](https://partner.microsoft.com/en-us/dashboard/products/9PB1F4G8F3WH/overview) | 1152921505702407347 | OrhanGkl.7TXT |
-| Yedit | [Open draft](https://partner.microsoft.com/en-us/dashboard/products/9P3QNM6NK8L4/overview) | 1152921505702407895 | OrhanGkl.Yedit |
+| 7TXT | [Open submission](https://partner.microsoft.com/en-us/dashboard/products/9PB1F4G8F3WH/overview) | 1152921505702407347 | OrhanGkl.7TXT |
+| Yedit | [Open submission](https://partner.microsoft.com/en-us/dashboard/products/9P3QNM6NK8L4/overview) | 1152921505702407895 | OrhanGkl.Yedit |
 
 ## Saved in Partner Center
 
@@ -22,7 +23,7 @@ That final action has **not** been performed.
   screenshots and captions per product. The listing import completed successfully.
 - Reviewer instructions in Additional Testing Information, and a complete
   `runFullTrust` justification in Submission Options.
-- Default publication after certification; no certification submission yet.
+- Both submitted for certification, with automatic publication after approval.
 
 The Windows listing accurately excludes the unavailable Codex companion AI,
 fixed Bash tasks and native WebKit PNG/PDF export. External development tools are
@@ -68,10 +69,10 @@ The original CI `WACK-status.json` serialized XML result nodes incorrectly and
 overreported findings. The raw XML is unaffected; the helper's extraction has
 been corrected for future runs. The reviewed JSON is the accurate summary.
 
-Microsoft still needs to approve `runFullTrust`, certify and sign each package.
-Review the final listings and capability explanation before using **Submit for
-certification**. A Windows 11 end-user check remains useful alongside the CI host
-results, particularly for installed external-tool workflows.
+Microsoft's review of `runFullTrust`, certification and package signing are
+pending. Both submissions were accepted into certification. A Windows 11
+end-user check remains useful alongside the CI host results, particularly for
+installed external-tool workflows.
 
 Standard MSIX virtualization is retained. New private recovery may be removed by
 reset/uninstall. Windows may reuse an existing direct-edition data directory;
