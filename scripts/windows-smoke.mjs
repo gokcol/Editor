@@ -160,7 +160,8 @@ if (process.env.EDITOR_STORE_SCREENSHOTS === '1') {
       if (app === 'Yedit') {
         const render = page.getByRole('button', { name: 'Render preview', exact: true });
         if (await render.count()) await render.click();
-        await page.locator('button[title="Hide references"]').click();
+        const references = page.locator('button[title="Hide references"]');
+        if (await references.count()) await references.click();
         await page.locator('button[title="Fit output to the canvas"]').click();
       }
       await delay(4500);
