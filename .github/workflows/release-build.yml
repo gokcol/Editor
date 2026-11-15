@@ -61,7 +61,9 @@ jobs:
         shell: bash
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          mkdir -p release
           npm run tauri -- build --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+          cp "$CARGO_TARGET_DIR"/universal-apple-darwin/release/bundle/dmg/Yedit_*.dmg release/
           npm --prefix 7txt run build -- --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
           mkdir -p release
           cp "$CARGO_TARGET_DIR"/universal-apple-darwin/release/bundle/dmg/*.dmg release/
