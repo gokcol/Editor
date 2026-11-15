@@ -86,11 +86,11 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     session = await start(app, [source], 9222 + index);
     const { page } = session;
     async function text() {
-      return app === '7TXT' ? page.locator('textarea.editor').inputValue()
+      return app === '7TXT' ? page.locator('textarea.editor:not(.editor-secondary)').inputValue()
         : page.locator('.monaco-editor .view-lines').first().innerText().then(normalize);
     }
     await eventually(async () => (await text()).includes('Native Windows fixture'), `${app} external file open`);
-    const editor = app === '7TXT' ? page.locator('textarea.editor') : page.locator('.monaco-editor textarea').first();
+    const editor = app === '7TXT' ? page.locator('textarea.editor:not(.editor-secondary)') : page.locator('.monaco-editor textarea').first();
     await editor.focus();
     await page.keyboard.press('Control+Home');
     await page.keyboard.press('Control+a');
@@ -105,7 +105,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     await stop(session); session = undefined;
     session = await start(app, [], 9222 + index);
     await eventually(async () => app === '7TXT'
-      ? (await session.page.locator('textarea.editor').inputValue()).includes('Keep this draft')
+      ? (await session.page.locator('textarea.editor:not(.editor-secondary)').inputValue()).includes('Keep this draft')
       : normalize(await session.page.locator('.monaco-editor .view-lines').first().innerText()).includes('Keep this draft'), `${app} recovery after crash`);
     await session.page.screenshot({ path: join(reportDir, `${app}-Windows-recovery.png`) });
     results.push({ app, nativeFileOpen: true, unicodeSave: true, recoveryCheckpoint: true, crashRecovery: true });
