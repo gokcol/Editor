@@ -2,12 +2,18 @@ name: Release builds
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_run:
+        description: Optional existing build run ID; verify its Windows installers without rebuilding
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: inputs.verify_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +72,7 @@ jobs:
       - name: Test native Windows editing and recovery
         if: runner.os == 'Windows'
         run: |
+          ./scripts/install-windows-packages.ps1
           npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
           node scripts/windows-smoke.mjs "$env:RUNNER_TEMP/editor-smoke/node_modules/playwright/index.mjs" "$env:CARGO_TARGET_DIR/release" release
       - name: Upload packages and validation reports
@@ -76,3 +83,33 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 14
+
+  verify-windows:
+    if: inputs.verify_run != ''
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: editors-Windows
+          path: input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.verify_run }}
+      - name: Install and verify existing Windows packages
+        run: |
+          ./scripts/install-windows-packages.ps1 -Packages input -Reports release
+          npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
+          node scripts/windows-smoke.mjs "$env:RUNNER_TEMP/editor-smoke/node_modules/playwright/index.mjs" unused release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Windows-installer-verification
+          path: release/
+          if-no-files-found: error

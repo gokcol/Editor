@@ -16,6 +16,8 @@ const directory = await mkdtemp(join(tmpdir(), 'editor-native-smoke-'));
 await mkdir(reportDir, { recursive: true });
 const results = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const installed = await readFile(join(reportDir, 'Windows-installation.json'), 'utf8').then(JSON.parse).catch(() => []);
+const normalize = value => value.replaceAll('\u00a0', ' ');
 
 async function eventually(action, message, timeout = 45000) {
   const deadline = Date.now() + timeout;
@@ -29,7 +31,8 @@ async function eventually(action, message, timeout = 45000) {
 }
 
 async function start(app, args, port) {
-  const child = spawn(join(binaryDir, `${app}.exe`), args, {
+  const executable = installed.find(entry => entry.app === app)?.executable || join(binaryDir, `${app}.exe`);
+  const child = spawn(executable, args, {
     env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -77,7 +80,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     const { page } = session;
     async function text() {
       return app === '7TXT' ? page.locator('textarea.editor').inputValue()
-        : page.locator('.monaco-editor .view-lines').first().innerText();
+        : page.locator('.monaco-editor .view-lines').first().innerText().then(normalize);
     }
     await eventually(async () => (await text()).includes('Native Windows fixture'), `${app} external file open`);
     const editor = app === '7TXT' ? page.locator('textarea.editor') : page.locator('.monaco-editor textarea').first();
@@ -96,9 +99,12 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     session = await start(app, [], 9222 + index);
     await eventually(async () => app === '7TXT'
       ? (await session.page.locator('textarea.editor').inputValue()).includes('Keep this draft')
-      : (await session.page.locator('.monaco-editor .view-lines').first().innerText()).includes('Keep this draft'), `${app} recovery after crash`);
+      : normalize(await session.page.locator('.monaco-editor .view-lines').first().innerText()).includes('Keep this draft'), `${app} recovery after crash`);
     await session.page.screenshot({ path: join(reportDir, `${app}-Windows-recovery.png`) });
     results.push({ app, nativeFileOpen: true, unicodeSave: true, recoveryCheckpoint: true, crashRecovery: true });
+  } catch (error) {
+    await session?.page.screenshot({ path: join(reportDir, `${app}-Windows-failure.png`) }).catch(() => {});
+    throw error;
   } finally {
     if (session) await stop(session);
     await writeFile(join(reportDir, 'Windows-smoke.json'), JSON.stringify(results, null, 2) + '\n');

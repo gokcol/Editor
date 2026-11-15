@@ -75,10 +75,14 @@ final notarized disk images are published; CI disk images are build inputs.
 
 The workflow runs shared and native tests on both systems, verifies both macOS
 architectures and app signatures, and tests the actual Windows Tauri/WebView2
-executables with synthetic files: external file open, Unicode editing and save,
+installed executables with synthetic files: external file open, Unicode editing and save,
 draft checkpointing, and recovery after restart. Browser automation connects
 through an environment variable set only for the CI child processes; no test
 bridge or debugging port is compiled into production configuration.
+
+Windows installers are installed silently in the disposable runner before these
+checks. To recheck existing installers without recompiling, dispatch the workflow
+with `verify_run` set to the run ID that produced the `editors-Windows` artifact.
 
 Build artifacts include Windows smoke reports/screenshots. Publication is a
 separate step after both platform jobs succeed. Release assets include SHA-256
