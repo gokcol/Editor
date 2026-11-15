@@ -118,7 +118,13 @@ fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| format!("Recovery could not be saved: {e}"))?;
+    // Windows cannot replace an open pending file. Flush and release the handle
+    // before atomically replacing the previous checkpoint.
+    drop(file);
     fs::rename(&pending, path).map_err(|e| e.to_string())?;
+    // Opening a directory as a normal file is not supported on Windows. The
+    // checkpoint itself has already been flushed above on every platform.
+    #[cfg(unix)]
     fs::File::open(directory)
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())?;

@@ -1,7 +1,7 @@
 {
   "name": "yedit",
-  "version": "1.0.0",
-  "description": "Yedit is a local, source-first editor for diagrams, documents, data, and code on macOS.",
+  "version": "1.0.1",
+  "description": "Yedit is a local, source-first editor for diagrams, documents, data, and code on macOS and Windows.",
   "author": "Orhan Gökçöl",
   "private": true,
   "scripts": {
@@ -17,7 +17,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:dir": "tauri build --bundles app",
-    "tauri:mac": "tauri build --bundles app,dmg"
+    "tauri:mac": "tauri build --bundles app,dmg",
+    "package:windows": "tauri build --bundles nsis"
   },
   "devDependencies": {
     "@monaco-editor/react": "^4.7.0",

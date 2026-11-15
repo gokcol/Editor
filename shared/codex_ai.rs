@@ -102,6 +102,11 @@ struct AiProgress<'a> {
 }
 
 fn codex_binary() -> Option<PathBuf> {
+    // The companion environment and process-tree cancellation are verified on
+    // macOS only. Keep Windows editing independent of this optional integration.
+    if cfg!(target_os = "windows") {
+        return None;
+    }
     // Finder-launched apps have a minimal PATH. Prefer the installed companion;
     // never accept a renderer-supplied executable or download one automatically.
     let mut candidates = vec![
@@ -395,7 +400,11 @@ pub async fn codex_ai_status() -> Result<AiStatus, String> {
             return Ok(AiStatus {
                 available: false,
                 signed_in: false,
-                message: "Install the Codex CLI or ChatGPT desktop companion, then reopen Ask AI."
+                message: if cfg!(target_os = "windows") {
+                    "Ask AI is available on macOS only in this release. Local editing works without it."
+                } else {
+                    "Install the Codex CLI or ChatGPT desktop companion, then reopen Ask AI."
+                }
                     .into(),
             });
         };

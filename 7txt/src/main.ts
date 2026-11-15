@@ -11,6 +11,9 @@ import { isCloseConfirmationOpen, showCloseConfirmation } from '../../shared/clo
 import { splitFileName } from '../../shared/fileName';
 import { isAskAiOpen, showAskAi } from '../../shared/askAi';
 import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../../shared/recentMenu';
+import { recordHistory, type DocumentHistory } from './history';
+import { TextIndex } from './textIndex';
+import { createDeferredTask } from './deferredTask';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
@@ -55,7 +58,6 @@ type OpenedDocument = {
 };
 type SavedTextFile = { name: string; path: string; encoding: string; diskVersion: string };
 type RecentEntry = { name: string; path: string; isMarkdown: boolean; kind: DocumentKind; openedAt: number };
-type DocumentHistory = { entries: string[]; index: number };
 type TimelineSnapshot = { id: string; savedAt: number; label: string; content: string };
 type QuickSwitchItem = { group: string; label: string; detail: string; run: () => void };
 type FolderEntry = { name: string; path: string; kind: 'file' | 'directory' };
@@ -371,6 +373,10 @@ const tabList = required<HTMLElement>('.tab-list');
 const openTabsToggle = required<HTMLButtonElement>('.open-tabs-toggle');
 const openTabsMenu = required<HTMLElement>('.open-tabs-menu');
 const openTabsList = openTabsMenu;
+const editorStatus = required<HTMLElement>('.editor-status');
+const cursorStatus = required<HTMLElement>('.status-cursor');
+const documentStatistics = required<HTMLElement>('.status-stats');
+const compactPreviewLayout = window.matchMedia('(max-width: 820px)');
 const savedWorkbenchState = readWorkbenchState();
 
 let nextDocumentId = 1;
@@ -411,6 +417,23 @@ const histories = new Map<string, DocumentHistory>([[firstDocument.id, { entries
 let toastTimer: number | undefined;
 let recoveryTimer: number | undefined;
 let timelineTimer: number | undefined;
+const textIndex = new TextIndex();
+let indexedDocumentId = firstDocument.id;
+const numberedLineCounts = new WeakMap<HTMLElement, number>();
+let numberedLines = { count: 0, text: '' };
+let countedText: string | undefined;
+let countedWords = 0;
+let renderedPreview: { id: string; content: string } | undefined;
+let renderedOutline: { id: string; content: string; markdown: boolean } | undefined;
+let tabsRenderKey: string | undefined;
+let recentsRenderKey: string | undefined;
+let persistedWorkbenchState: string | undefined;
+const tabControls = new Map<string, { tab: HTMLElement; activate: HTMLButtonElement }>();
+const inputHints = new WeakMap<HTMLTextAreaElement, { id: string; content: string; offset: number }>();
+const derivedViews = createDeferredTask(renderDerivedViews, 200, {
+  set: (run, delay) => window.setTimeout(run, delay),
+  clear: (handle) => window.clearTimeout(handle),
+});
 let autosaveInFlight = false;
 let commandSelection = 0;
 let helpSection: HelpSection = 'getting-started';
@@ -447,7 +470,11 @@ function readWritingGoal() {
 }
 
 function wordCount(content: string) {
-  return content.trim() ? content.trim().split(/\s+/).length : 0;
+  if (content !== countedText) {
+    countedWords = content.trim() ? content.trim().split(/\s+/).length : 0;
+    countedText = content;
+  }
+  return countedWords;
 }
 
 function renderWritingProgress() {
@@ -558,7 +585,11 @@ function persistWorkbenchState() {
       folderFilterValue,
       projectFolderPath: projectFolderPath || undefined,
     };
-    localStorage.setItem(WORKBENCH_STATE_KEY, JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    if (serialized !== persistedWorkbenchState) {
+      localStorage.setItem(WORKBENCH_STATE_KEY, serialized);
+      persistedWorkbenchState = serialized;
+    }
   } catch {
     // Workspace layout persistence is best-effort.
   }
@@ -667,6 +698,7 @@ function applySidebarLayout() {
   brandSidebarToggle.setAttribute('aria-expanded', String(shown));
   sidebarResizer.setAttribute('aria-valuenow', String(sidebarWidth));
   persistWorkbenchState();
+  renderVisibleOutline();
 }
 
 function applyPreviewLayout() {
@@ -1039,7 +1071,7 @@ function activateDocument(id: string) {
   documentState = next;
   activeDocumentId = next.id;
   editor.value = next.content;
-  secondaryEditor.value = next.content;
+  if (editorSplit) secondaryEditor.value = next.content;
   const cursor = Math.min(next.cursor || 0, next.content.length);
   editor.setSelectionRange(cursor, cursor);
   secondaryEditor.setSelectionRange(cursor, cursor);
@@ -1059,7 +1091,7 @@ function addDocument(next: TextDocument) {
   documentState = next;
   activeDocumentId = next.id;
   editor.value = next.content;
-  secondaryEditor.value = next.content;
+  if (editorSplit) secondaryEditor.value = next.content;
   viewMode = preferredViewMode(next);
   render();
   if (!isMediaDocument(next)) window.requestAnimationFrame(() => editor.focus());
@@ -1071,7 +1103,7 @@ function createDocument(isMarkdown = false) {
 }
 
 function openAskAi() {
-  const input = aiSelectionPane === 'secondary' ? secondaryEditor : editor;
+  const input = editorSplit && aiSelectionPane === 'secondary' ? secondaryEditor : editor;
   const text = !workspaceEmpty && !isMediaDocument(documentState) ? documentState.content : '';
   void showAskAi({
     context: { name: workspaceEmpty ? '' : documentState.name, document: text, selection: text.slice(input.selectionStart, input.selectionEnd) },
@@ -1523,7 +1555,7 @@ function restoreSession(durable?: unknown) {
   documentState = active;
   activeDocumentId = active.id;
   editor.value = active.content;
-  secondaryEditor.value = active.content;
+  if (editorSplit) secondaryEditor.value = active.content;
   const cursor = Math.min(active.cursor || 0, active.content.length);
   editor.setSelectionRange(cursor, cursor);
   secondaryEditor.setSelectionRange(cursor, cursor);
@@ -1705,7 +1737,7 @@ function commitDocument(next: TextDocument, resetHistory = true) {
   workspaceEmpty = false;
   setCurrentDocument(next);
   editor.value = next.content;
-  secondaryEditor.value = next.content;
+  if (editorSplit) secondaryEditor.value = next.content;
   if (resetHistory) {
     histories.set(next.id, { entries: [next.content], index: 0 });
   }
@@ -1713,20 +1745,18 @@ function commitDocument(next: TextDocument, resetHistory = true) {
   render();
 }
 
-function recordContent(content: string) {
+function recordContent(content: string, source = activeEditor(), hint?: number) {
   if (isMediaDocument(documentState)) return;
   if (content === documentState.content) return;
+  currentTextIndex().update(content, hint);
+  const wasEmpty = workspaceEmpty;
   workspaceEmpty = false;
   setCurrentDocument({ ...documentState, content, defaultUntitled: false });
-  if (editor.value !== content) editor.value = content;
-  if (secondaryEditor.value !== content) secondaryEditor.value = content;
+  syncEditorValues(source);
   const history = historyFor(documentState);
-  history.entries = history.entries.slice(0, history.index + 1);
-  history.entries.push(content);
-  if (history.entries.length > 2500) history.entries.shift(); else history.index += 1;
-  if (history.entries.length === 2500) history.index = history.entries.length - 1;
-  render();
-  scheduleRecovery();
+  recordHistory(history, content);
+  if (wasEmpty) render();
+  else { renderTextEdit(); scheduleRecovery(); }
   scheduleTimelineSnapshot();
 }
 
@@ -1734,11 +1764,12 @@ function restoreHistory(nextIndex: number) {
   const history = historyFor(documentState);
   if (nextIndex < 0 || nextIndex >= history.entries.length || nextIndex === history.index) return;
   history.index = nextIndex;
+  currentTextIndex().update(history.entries[history.index]);
   setCurrentDocument({ ...documentState, content: history.entries[history.index] });
-  editor.value = documentState.content;
-  secondaryEditor.value = documentState.content;
-  render();
+  syncEditorValues();
+  renderTextEdit();
   editor.focus();
+  updateCursor();
   scheduleRecovery();
 }
 
@@ -2072,7 +2103,91 @@ function clearMediaAnnotations() {
   setMediaAnnotations([]);
 }
 
+function currentTextIndex() {
+  if (indexedDocumentId !== documentState.id) {
+    textIndex.reset(documentState.content);
+    indexedDocumentId = documentState.id;
+  } else {
+    textIndex.update(documentState.content);
+  }
+  return textIndex;
+}
+
+function syncEditorValues(source?: HTMLTextAreaElement) {
+  for (const surface of editorSplit ? [editor, secondaryEditor] : [editor]) {
+    if (surface.value === documentState.content) continue;
+    const selection = { start: surface.selectionStart, end: surface.selectionEnd, top: surface.scrollTop };
+    surface.value = documentState.content;
+    if (source && surface !== source) {
+      surface.setSelectionRange(selection.start, selection.end);
+      surface.scrollTop = selection.top;
+    }
+  }
+  // A closed split should not retain or lay out a second large document.
+  if (!editorSplit && secondaryEditor.value) secondaryEditor.value = '';
+}
+
+function updateTabDirty(document: TextDocument) {
+  const controls = tabControls.get(document.id);
+  if (!controls) return;
+  const dirty = isMediaDocument(document)
+    ? annotationSnapshot(document) !== (document.savedAnnotations || '')
+    : isTextDocumentDirty(document);
+  if (controls.tab.classList.contains('dirty') === dirty) return;
+  controls.tab.classList.toggle('dirty', dirty);
+  controls.activate.setAttribute('aria-label', `${document.name}${document.recoveryDraft ? ', recovered draft' : ''}${dirty ? ', unsaved changes' : ''}`);
+  controls.activate.title = `${document.path || document.recoveryOrigin || document.name}${document.recoveryDraft ? '\nRecovered draft' : ''}${dirty ? '\nUnsaved changes' : ''}`;
+}
+
+function renderTextEdit() {
+  const title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
+  if (document.title !== title) document.title = title;
+  const status = isDirty() ? 'Unsaved changes' : documentState.path ? 'Saved to file' : 'Unsaved draft';
+  if (editorStatus.textContent !== status) editorStatus.textContent = status;
+  updateTabDirty(documentState);
+  renderLineNumbers();
+  updateCursor();
+  derivedViews.schedule();
+}
+
+function previewIsVisible() {
+  return !workspaceEmpty && documentState.isMarkdown && !isMediaDocument(documentState)
+    && previewEnabled && viewMode !== 'edit' && (viewMode === 'preview' || !compactPreviewLayout.matches);
+}
+
+function renderVisibleOutline() {
+  const shown = sidebarIsShown() && !zenMode && !readingMode && !workspaceEmpty
+    && (documentState.isMarkdown || isMediaDocument(documentState));
+  if (shown) renderOutline();
+  else if (renderedOutline) {
+    outlineList.replaceChildren();
+    renderedOutline = undefined;
+  }
+}
+
+function renderDerivedViews() {
+  if (!workspaceEmpty && !isMediaDocument(documentState)) {
+    const statistics = documentStats();
+    if (documentStatistics.textContent !== statistics) documentStatistics.textContent = statistics;
+    renderWritingProgress();
+  } else {
+    countedText = undefined;
+    renderWritingProgress();
+  }
+  renderVisibleOutline();
+  if (previewIsVisible()) {
+    if (renderedPreview?.id !== documentState.id || renderedPreview.content !== documentState.content) {
+      preview.innerHTML = renderMarkdown(documentState.content);
+      renderedPreview = { id: documentState.id, content: documentState.content };
+    }
+  } else if (renderedPreview) {
+    preview.replaceChildren();
+    renderedPreview = undefined;
+  }
+}
+
 function render() {
+  currentTextIndex();
   const isMedia = isMediaDocument(documentState);
   if (!isMedia && !documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
   if (!isMedia && documentState.isMarkdown && !previewEnabled && viewMode !== 'edit') viewMode = 'edit';
@@ -2093,15 +2208,14 @@ function render() {
   previewPane.hidden = !hasMarkdownPreview;
   previewResizer.hidden = !hasMarkdownPreview;
   viewSwitch.hidden = !hasMarkdownPreview;
-  if (editor.value !== documentState.content) editor.value = documentState.content;
-  if (secondaryEditor.value !== documentState.content) secondaryEditor.value = documentState.content;
+  syncEditorValues();
   document.title = `${isDirty() ? '• ' : ''}${documentState.name} — 7TXT`;
   required<HTMLElement>('.format-chip').textContent = workspaceEmpty ? '—' : documentKindLabel(documentState);
   required<HTMLElement>('.format-chip').hidden = workspaceEmpty;
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
   required<HTMLElement>('.editor-mode-label').textContent = workspaceEmpty ? 'No file open' : documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
   required<HTMLElement>('.editor-status').textContent = workspaceEmpty ? '' : isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved to file' : 'Unsaved draft';
-  required<HTMLElement>('.status-stats').textContent = workspaceEmpty ? 'No open files' : isMedia ? `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}` : documentStats(documentState.content);
+  if (workspaceEmpty || isMedia) documentStatistics.textContent = workspaceEmpty ? 'No open files' : `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}`;
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
   encodingSelect.value = documentState.encoding;
   encodingSelect.closest<HTMLElement>('.encoding-control')?.toggleAttribute('hidden', isMedia);
@@ -2121,31 +2235,28 @@ function render() {
     button.classList.toggle('selected', !isMedia && button.dataset.modeButton === viewMode);
   }
   applyPreviewLayout();
-  if (hasMarkdownPreview) {
-    preview.innerHTML = renderMarkdown(documentState.content);
-  } else if (!isMedia) {
-    preview.replaceChildren();
-  } else {
-    void renderMediaDocument();
-  }
+  if (isMedia) void renderMediaDocument();
   renderTabs();
-  renderOutline();
   renderRecents();
-  renderLineNumbers();
+  renderLineNumbers(true);
   updateCursor();
-  renderWritingProgress();
+  derivedViews.flush();
   persistWorkbenchState();
   scheduleRecovery();
 }
 
-function documentStats(content: string) {
-  const lines = content ? content.split('\n').length : 1;
-  const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+function documentStats() {
+  const content = documentState.content;
+  const lines = currentTextIndex().lineCount;
+  const words = wordCount(content);
   const minutes = Math.max(1, Math.ceil(words / 220));
   return `${words} word${words === 1 ? '' : 's'} · ${content.length} char${content.length === 1 ? '' : 's'} · ${lines} line${lines === 1 ? '' : 's'} · ${minutes} min read`;
 }
 
 function renderOutline() {
+  const content = documentState.isMarkdown ? documentState.content : '';
+  if (renderedOutline?.id === documentState.id && renderedOutline.content === content && renderedOutline.markdown === documentState.isMarkdown) return;
+  renderedOutline = { id: documentState.id, content, markdown: documentState.isMarkdown };
   outlineList.replaceChildren();
   if (!documentState.isMarkdown) {
     outlineList.append(makeEmpty('Outline is available for Markdown documents.'));
@@ -2177,8 +2288,11 @@ function makeEmpty(message: string) {
 }
 
 function renderRecents() {
-  recentsList.replaceChildren();
   const entries = readRecents();
+  const key = JSON.stringify(entries);
+  if (key === recentsRenderKey) return;
+  recentsRenderKey = key;
+  recentsList.replaceChildren();
   renderRecentFilesDialog(entries);
   if (isTauri()) {
     void syncRecentMenu(recentMenuItems(entries.map((entry) => ({ ...entry, id: entry.path })))).catch((error) => {
@@ -2287,6 +2401,13 @@ function clearRecents() {
 }
 
 function renderTabs() {
+  const key = JSON.stringify([workspaceEmpty, activeDocumentId, documents.map(({ id, name, path, recoveryOrigin, recoveryDraft, kind }) => [id, name, path, recoveryOrigin, recoveryDraft, kind])]);
+  if (key === tabsRenderKey) {
+    for (const document of documents) updateTabDirty(document);
+    return;
+  }
+  tabsRenderKey = key;
+  tabControls.clear();
   // Rebuilding the tab controls happens after ordinary editing actions too.
   // Preserve an open switcher through that work so the user can close several
   // tabs in sequence; explicit activation, outside click, and Escape still
@@ -2341,6 +2462,7 @@ function renderTabs() {
     close.addEventListener('click', () => closeDocument(document.id));
     tab.append(activate, close);
     tabList.append(tab);
+    tabControls.set(document.id, { tab, activate });
 
     const menuRow = window.document.createElement('div');
     menuRow.className = `open-tabs-row${document.id === activeDocumentId ? ' active' : ''}`;
@@ -2571,27 +2693,60 @@ function renderMarkdown(source: string) {
 
 function updateCursor() {
   if (isMediaDocument(documentState)) {
-    required<HTMLElement>('.status-cursor').textContent = 'Media view';
+    cursorStatus.textContent = 'Media view';
     return;
   }
   const source = activeEditor();
-  syncLineNumbers(source);
-  const before = source.value.slice(0, source.selectionStart);
-  const line = before.split('\n').length;
-  const column = before.length - before.lastIndexOf('\n');
+  const { line, column } = currentTextIndex().positionAt(source.selectionStart);
   if (documentState.cursor !== source.selectionStart) {
     documentState = { ...documentState, cursor: source.selectionStart };
     documents = documents.map((document) => document.id === activeDocumentId ? documentState : document);
   }
-  required<HTMLElement>('.status-cursor').textContent = `Ln ${line}, Col ${column}`;
+  const label = `Ln ${line}, Col ${column}`;
+  if (cursorStatus.textContent !== label) cursorStatus.textContent = label;
 }
 
-function renderLineNumbers() {
-  for (const [surface, gutter] of [[editor, lineNumbers], [secondaryEditor, secondaryLineNumbers]] as const) {
-    const lineCount = Math.max(1, surface.value.split('\n').length);
-    gutter.textContent = Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n');
-    gutter.parentElement?.style.setProperty('--line-number-digits', String(String(lineCount).length));
-    gutter.scrollTop = surface.scrollTop;
+function renderLineNumbers(synchronizeScroll = false) {
+  const lineCount = currentTextIndex().lineCount;
+  const previous = numberedLines;
+  if (lineCount !== numberedLines.count) {
+    let text: string;
+    if (previous.count > 0 && Math.abs(lineCount - previous.count) <= 128) {
+      if (lineCount > previous.count) {
+        text = previous.text + '\n' + Array.from({ length: lineCount - previous.count }, (_, index) => String(previous.count + index + 1)).join('\n');
+      } else {
+        let end = previous.text.length;
+        for (let removed = previous.count - lineCount; removed > 0; removed--) end = previous.text.lastIndexOf('\n', end - 1);
+        text = previous.text.slice(0, end);
+      }
+    } else {
+      text = Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n');
+    }
+    numberedLines = { count: lineCount, text };
+  }
+  const panes = editorSplit ? [[editor, lineNumbers], [secondaryEditor, secondaryLineNumbers]] as const : [[editor, lineNumbers]] as const;
+  for (const [surface, gutter] of panes) {
+    const displayed = numberedLineCounts.get(gutter);
+    if (displayed !== lineCount) {
+      const node = gutter.firstChild;
+      if (displayed === previous.count && node instanceof Text && Math.abs(lineCount - previous.count) <= 128) {
+        if (lineCount > previous.count) node.appendData(numberedLines.text.slice(previous.text.length));
+        else node.deleteData(numberedLines.text.length, previous.text.length - numberedLines.text.length);
+      } else {
+        gutter.textContent = numberedLines.text;
+      }
+      if (displayed === undefined || String(displayed).length !== String(lineCount).length) {
+        gutter.parentElement?.style.setProperty('--line-number-digits', String(String(lineCount).length));
+      }
+      numberedLineCounts.set(gutter, lineCount);
+    }
+    // Native scroll events synchronize the gutter during typing. Reading
+    // scrollTop here would force layout immediately after changing its text.
+    if (synchronizeScroll) gutter.scrollTop = surface.scrollTop;
+  }
+  if (!editorSplit && numberedLineCounts.has(secondaryLineNumbers)) {
+    secondaryLineNumbers.replaceChildren();
+    numberedLineCounts.delete(secondaryLineNumbers);
   }
 }
 
@@ -2601,9 +2756,7 @@ function syncLineNumbers(surface: HTMLTextAreaElement) {
 
 function goToLine(line: number) {
   if (isMediaDocument(documentState)) return;
-  const lines = editor.value.split('\n');
-  const start = lines.slice(0, Math.max(0, line - 1)).reduce((offset, current) => offset + current.length + 1, 0);
-  const end = start + (lines[line - 1]?.length || 0);
+  const { start, end } = currentTextIndex().rangeForLine(line);
   setViewMode('edit');
   editor.focus();
   editor.setSelectionRange(start, end);
@@ -2867,14 +3020,14 @@ async function closeSelectedTabs(targets: TextDocument[], message: string) {
     workspaceEmpty = true;
     histories.set(blank.id, { entries: [''], index: 0 });
     editor.value = blank.content;
-    secondaryEditor.value = blank.content;
+    if (editorSplit) secondaryEditor.value = blank.content;
     viewMode = 'edit';
   } else if (closedIds.has(activeDocumentId)) {
     const next = documents[Math.max(0, Math.min(index, documents.length - 1))];
     documentState = next;
     activeDocumentId = next.id;
     editor.value = next.content;
-    secondaryEditor.value = next.content;
+    if (editorSplit) secondaryEditor.value = next.content;
     viewMode = preferredViewMode(next);
   }
   render();
@@ -3038,7 +3191,7 @@ function replaceAll() {
 }
 
 function activeEditor() {
-  return document.activeElement === secondaryEditor ? secondaryEditor : editor;
+  return editorSplit && document.activeElement === secondaryEditor ? secondaryEditor : editor;
 }
 
 function insertAtSelection(value: string) {
@@ -3193,6 +3346,7 @@ async function exportPdf() {
 
 async function printDocument() {
   if (documentState.isMarkdown && viewMode !== 'preview') setViewMode('preview');
+  derivedViews.flush();
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
   try {
     await invoke('print_window');
@@ -3204,6 +3358,11 @@ async function printDocument() {
 
 function toggleEditorSplit() {
   editorSplit = !editorSplit;
+  if (editorSplit) {
+    secondaryEditor.value = documentState.content;
+    secondaryEditor.setSelectionRange(editor.selectionStart, editor.selectionEnd);
+    secondaryEditor.scrollTop = editor.scrollTop;
+  }
   render();
   showToast(editorSplit ? 'Editor split into two synchronized panes.' : 'Editor split closed.');
 }
@@ -3832,7 +3991,15 @@ function handleEditorTab(event: KeyboardEvent, surface: HTMLTextAreaElement) {
 
 for (const surface of [editor, secondaryEditor]) {
   surface.addEventListener('focus', () => { aiSelectionPane = surface === secondaryEditor ? 'secondary' : 'primary'; });
-  surface.addEventListener('input', () => recordContent(surface.value));
+  surface.addEventListener('beforeinput', () => {
+    inputHints.set(surface, { id: documentState.id, content: documentState.content, offset: surface.selectionStart });
+  });
+  surface.addEventListener('input', () => {
+    const before = inputHints.get(surface);
+    inputHints.delete(surface);
+    const hint = before?.id === documentState.id && before.content === documentState.content ? Math.min(before.offset, surface.selectionStart) : undefined;
+    recordContent(surface.value, surface, hint);
+  });
   surface.addEventListener('keydown', (event) => handleEditorTab(event, surface));
   surface.addEventListener('scroll', () => syncLineNumbers(surface));
   surface.addEventListener('keyup', updateCursor);
@@ -3925,6 +4092,7 @@ window.addEventListener('keydown', (event) => {
   else if (key === 'p' && event.shiftKey) { event.preventDefault(); openCommandPalette(); }
   else if (key === 'p') { event.preventDefault(); void printDocument(); }
   else if (key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
+  else if (key === 'y' && event.ctrlKey) { event.preventDefault(); redo(); }
   else if (key === '1') { event.preventDefault(); setViewMode('edit'); }
   else if (key === '2') { event.preventDefault(); setViewMode('split'); }
   else if (key === '3') { event.preventDefault(); setViewMode('preview'); }
@@ -4029,6 +4197,7 @@ async function startWorkspace() {
   void startDragAndDrop();
 }
 void startWorkspace();
+compactPreviewLayout.addEventListener('change', () => derivedViews.flush());
 window.addEventListener('resize', () => {
   const constrained = clampSidebarWidth(sidebarWidth);
   if (constrained !== sidebarWidth) setSidebarWidth(constrained);

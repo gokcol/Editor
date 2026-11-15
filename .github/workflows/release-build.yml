@@ -1,0 +1,78 @@
+name: Release builds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            7txt/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          npm ci
+          npm --prefix 7txt ci
+      - name: Frontend tests
+        run: npm test
+      - name: Native tests
+        shell: bash
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path 7txt/src-tauri/Cargo.toml
+      - name: Build macOS universal packages
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          npm run tauri -- build --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+          npm --prefix 7txt run build -- --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app"
+          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app"
+          lipo -verify_arch arm64 x86_64 "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app/Contents/MacOS/Yedit"
+          lipo -verify_arch arm64 x86_64 "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app/Contents/MacOS/7TXT"
+          mkdir -p release
+          cp "$CARGO_TARGET_DIR"/universal-apple-darwin/release/bundle/dmg/*.dmg release/
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
+        run: |
+          npm run tauri -- build --ci --bundles nsis -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix 7txt run build -- --ci --bundles nsis -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force release
+          Copy-Item "$env:CARGO_TARGET_DIR/release/bundle/nsis/*.exe" release/
+      - name: Test native Windows editing and recovery
+        if: runner.os == 'Windows'
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
+          node scripts/windows-smoke.mjs "$env:RUNNER_TEMP/editor-smoke/node_modules/playwright/index.mjs" "$env:CARGO_TARGET_DIR/release" release
+      - name: Upload packages and validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editors-${{ runner.os }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14

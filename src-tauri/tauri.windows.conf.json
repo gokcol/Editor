@@ -1,0 +1,16 @@
+{
+  "app": {
+    "windows": [{
+      "label": "main", "title": "Yedit", "width": 1540, "height": 980,
+      "minWidth": 1100, "minHeight": 700, "resizable": true,
+      "fullscreen": false, "backgroundColor": "#10131b"
+    }]
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "nsis": { "installMode": "currentUser" },
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }
+    }
+  }
+}

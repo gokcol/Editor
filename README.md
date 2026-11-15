@@ -1,10 +1,20 @@
-# Yedit
+# Editor — 7TXT and Yedit
+
+Two desktop editors built with Tauri and Rust for macOS and Windows:
+
+- **7TXT** is a lightweight text and Markdown editor for everyday files.
+- **Yedit** is a source editor for code, diagrams, documents, and structured data.
+
+[Download releases](https://github.com/gokcol/Editor/releases) ·
+[7TXT guide](7txt/README.md) · [Platform support and packaging](RELEASING.md)
+
+## Yedit
 
 For quick `.txt` and Markdown editing, the same workspace also contains the
 separate lightweight native app in [`7txt`](7txt/README.md). It is intentionally
 independent from Yedit, so neither app changes the other.
 
-Yedit is a local, source-first macOS workbench for diagrams, documents, structured data, and everyday programming. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets. The desktop edition is a native Tauri + WKWebView application.
+Yedit is a local, source-first workbench for diagrams, documents, structured data, and everyday programming. It is deliberately a code editor, not a WYSIWYG drawing app: edit sources, render a read-only preview, and export clean assets. The desktop edition uses Tauri with WKWebView on macOS and WebView2 on Windows. See the platform support notes for optional native features.
 
 ## What is included
 

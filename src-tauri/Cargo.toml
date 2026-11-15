@@ -1,6 +1,6 @@
 [package]
 name = "yedit"
-version = "1.0.0"
+version = "1.0.1"
 description = "A local source-first editor for diagrams, documents, data, and code."
 authors = ["Orhan Gökçöl"]
 license = "MIT"
@@ -39,3 +39,6 @@ tauri-plugin-single-instance = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "time", "sync"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }

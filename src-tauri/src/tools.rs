@@ -305,22 +305,21 @@ struct MetafontTtfArtifact {
 fn tool_path() -> String {
     let mut paths = Vec::new();
     if let Some(current) = std::env::var_os("PATH") {
-        let current = current.to_string_lossy();
-        if !current.trim().is_empty() {
-            paths.push(current.into_owned());
-        }
+        paths.extend(std::env::split_paths(&current));
     }
+    #[cfg(target_os = "macos")]
     for path in [
         "/Library/TeX/texbin",
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",
     ] {
-        if !paths.iter().any(|known| known == path) {
-            paths.push(path.to_owned());
+        let path = PathBuf::from(path);
+        if !paths.contains(&path) {
+            paths.push(path);
         }
     }
-    paths.join(":")
+    std::env::join_paths(paths).unwrap_or_default().to_string_lossy().into_owned()
 }
 
 fn yedit_temp_root() -> Result<PathBuf, String> {
@@ -613,6 +612,10 @@ fn run_command(
 /// has no command/path parameters from the renderer: its caller supplies a
 /// canonical file already verified as one of `PROJECT_TASKS`.
 fn run_project_task_script(script: &Path, workspace: &Path) -> Result<ToolOutput, ToolError> {
+    if cfg!(target_os = "windows") {
+        return Err(ToolError::spawn("Shell project tasks", io::Error::new(io::ErrorKind::Unsupported,
+            "Shell project tasks are unavailable on Windows. Use an allowlisted declarative task instead.")));
+    }
     const BASH: &str = "/bin/bash";
 
     let mut process = Command::new(BASH);
@@ -3231,6 +3234,7 @@ mod project_task_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn runs_only_the_fixed_root_task_and_returns_a_preview_artifact() {
         let root = temporary_project("task-run");

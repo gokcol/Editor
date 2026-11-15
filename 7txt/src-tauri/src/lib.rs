@@ -116,14 +116,13 @@ fn folder_name(path: &Path) -> String {
 }
 
 fn home_directory() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
+    dirs::home_dir()
         .filter(|path| path.is_dir())
         .ok_or_else(|| "Your home folder is unavailable.".to_owned())
 }
 
 fn documents_directory(home: &Path) -> PathBuf {
-    let documents = home.join("Documents");
+    let documents = dirs::document_dir().unwrap_or_else(|| home.join("Documents"));
     if documents.is_dir() {
         documents
     } else {
@@ -255,6 +254,8 @@ fn read_document_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedD
     options.read(true);
     #[cfg(unix)]
     { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW); }
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT); }
     let mut file = options.open(&real_path).map_err(read_document_error)?;
     let metadata = file.metadata().map_err(read_document_error)?;
     let mut bytes = Vec::new();
@@ -287,7 +288,7 @@ fn read_document_file(path: PathBuf, encoding: Option<String>) -> Result<OpenedD
     }
     let decoded = text_encoding::decode(&bytes, encoding.as_deref())?;
     Ok(OpenedDocument {
-        disk_version: Some(file_version::version(&bytes, &metadata)),
+        disk_version: Some(file_version::version(&bytes, &file)?),
         name: text_file_name(&real_path),
         path: real_path.to_string_lossy().into_owned(),
         content: decoded.content,
@@ -454,6 +455,11 @@ fn save_text_file_versioned(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options.open(&path).map_err(|error| {
         if matches!(policy, SaveTargetPolicy::MustExist)
             && error.kind() == std::io::ErrorKind::NotFound
@@ -464,7 +470,7 @@ fn save_text_file_versioned(
         }
     })?;
     if let Some(version) = expected_version { file_version::check(&mut file, version)?; }
-    let disk_version = file_version::version(&bytes, &file.metadata().map_err(|e| e.to_string())?);
+    let disk_version = file_version::version(&bytes, &file)?;
     file.set_len(0).map_err(|e| e.to_string())?;
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
@@ -610,6 +616,16 @@ fn valid_browser_name(name: &str) -> Result<&str, String> {
     {
         return Err("Use a simple file or folder name, without a path.".to_owned());
     }
+    #[cfg(target_os = "windows")]
+    {
+        let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+        if reserved || name.ends_with('.') || name.chars().any(|c| c < ' ' || "<>:\"|?*".contains(c)) {
+            return Err("Choose a valid Windows file name without reserved characters or device names.".to_owned());
+        }
+    }
     Ok(name)
 }
 
@@ -670,6 +686,12 @@ fn rename_browser_entry(path: String, name: String) -> Result<String, String> {
 #[tauri::command]
 fn move_browser_entry_to_trash(path: String) -> Result<(), String> {
     let source = regular_browser_path(PathBuf::from(path))?;
+    #[cfg(target_os = "windows")]
+    {
+        return trash::delete(&source).map_err(|error| format!("Could not move this item to the Recycle Bin: {error}"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
     let trash = home_directory()?.join(".Trash");
     fs::create_dir_all(&trash).map_err(|error| format!("Could not open Trash: {error}"))?;
     let name = source
@@ -685,6 +707,7 @@ fn move_browser_entry_to_trash(path: String) -> Result<(), String> {
     fs::rename(&source, &target).map_err(|error| {
         format!("Could not move this item to Trash. If it is on another disk, move it in Finder: {error}")
     })
+    }
 }
 
 #[tauri::command]
@@ -811,12 +834,18 @@ fn item<R: Runtime>(
 }
 
 fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    #[cfg(target_os = "macos")]
     let application = SubmenuBuilder::new(app, "7TXT")
         .item(&PredefinedMenuItem::hide(app, Some("Hide 7TXT"))?)
         .item(&PredefinedMenuItem::hide_others(app, Some("Hide Others"))?)
         .item(&PredefinedMenuItem::show_all(app, Some("Show All"))?)
         .separator()
         .item(&PredefinedMenuItem::about(app, Some("About 7TXT"), None)?)
+        .build()?;
+    #[cfg(not(target_os = "macos"))]
+    let application = SubmenuBuilder::new(app, "7TXT")
+        .item(&item(app, "help-about", "About 7TXT", None)?)
+        .item(&PredefinedMenuItem::quit(app, Some("Quit 7TXT"))?)
         .build()?;
     let file = SubmenuBuilder::new(app, "File")
         .item(&item(

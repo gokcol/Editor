@@ -72,23 +72,8 @@ struct ProjectDestination {
     relative_path: String,
 }
 
-/// A stable identity for an already-bound source file. On macOS and other
-/// Unix hosts, a pathname may be deleted and recreated while keeping the same
-/// spelling; device + inode lets a normal Save distinguish that replacement
-/// from the document the editor originally opened.
-#[cfg(unix)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-/// Non-Unix hosts do not expose a comparable stable identifier through this
-/// module's portable metadata API. MustExist writes fail closed there rather
-/// than mistaking mutable size or mtime for an object identity.
-#[cfg(not(unix))]
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileIdentity;
+/// The native volume/file identifier of an already-bound source.
+type FileIdentity = String;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum BoundSourceKey {
@@ -141,21 +126,21 @@ fn error(message: impl Into<String>) -> String {
     message.into()
 }
 
-fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+fn identity_at(target: &Path) -> Result<FileIdentity, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-
-        FileIdentity {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = metadata;
-        FileIdentity
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
+    let file = options.open(target).map_err(|e| e.to_string())?;
+    crate::file_version::identity(&file)
 }
 
 fn bound_source_identities() -> &'static Mutex<HashMap<BoundSourceKey, FileIdentity>> {
@@ -383,10 +368,11 @@ fn project_file(workspace: &Workspace, relative_path: &str) -> Result<ProjectFil
     if !is_inside(&workspace.real_root, &real_target) {
         return Err(error("That file resolves outside the current project."));
     }
+    let identity = identity_at(&target)?;
     Ok(ProjectFile {
         relative_path: relative_path_for(&workspace.root, &target)?,
         target,
-        identity: file_identity(&metadata),
+        identity,
     })
 }
 
@@ -517,7 +503,7 @@ fn standalone_file_identity(target: &Path) -> Result<FileIdentity, String> {
             "Only regular source files can be opened or saved directly.",
         ));
     }
-    Ok(file_identity(&metadata))
+    identity_at(target)
 }
 
 fn regular_standalone_file(target: &Path) -> Result<(), String> {
@@ -632,6 +618,11 @@ fn write_no_follow_bytes(target: &Path, content: &[u8], create_new: bool) -> Res
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options
         .open(target)
         .map_err(|cause| error(format!("Could not write that source file: {cause}")))?;
@@ -646,18 +637,13 @@ fn write_no_follow(target: &Path, content: &str, create_new: bool) -> Result<(),
     write_no_follow_bytes(target, content.as_bytes(), create_new)
 }
 
-#[cfg(unix)]
 fn target_has_identity(target: &Path, expected: &FileIdentity) -> bool {
     fs::symlink_metadata(target)
         .ok()
         .filter(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
-        .map(|metadata| file_identity(&metadata) == expected.clone())
+        .and_then(|_| identity_at(target).ok())
+        .map(|identity| identity == *expected)
         .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn target_has_identity(_target: &Path, _expected: &FileIdentity) -> bool {
-    false
 }
 
 /// Writes an already-bound source without ever truncating a replacement that
@@ -690,6 +676,11 @@ fn write_bound_versioned_bytes(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options.open(target).map_err(|cause| {
         if cause.kind() == std::io::ErrorKind::NotFound {
             SAVE_TARGET_MISSING.to_owned()
@@ -697,16 +688,13 @@ fn write_bound_versioned_bytes(
             error(format!("Could not write that source file: {cause}"))
         }
     })?;
-    let opened_identity = file
-        .metadata()
-        .map(|metadata| file_identity(&metadata))
-        .map_err(|cause| error(format!("Could not inspect that source file: {cause}")))?;
+    let opened_identity = crate::file_version::identity(&file)?;
     if opened_identity != expected.clone() || !target_has_identity(target, expected) {
         return Err(SAVE_TARGET_MISSING.to_owned());
     }
 
     if let Some(version) = expected_version { crate::file_version::check(&mut file, version)?; }
-    let written_version = crate::file_version::version(content, &file.metadata().map_err(|e| e.to_string())?);
+    let written_version = crate::file_version::version(content, &file)?;
 
     let result = (|| {
         file.set_len(0)
@@ -761,6 +749,11 @@ fn decode_source_with_identity(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let mut file = options.open(target).map_err(|cause| {
         if cause.kind() == std::io::ErrorKind::NotFound {
             SAVE_TARGET_MISSING.to_owned()
@@ -776,7 +769,7 @@ fn decode_source_with_identity(
             "Only regular source files can be opened or saved directly.",
         ));
     }
-    let identity = file_identity(&metadata);
+    let identity = crate::file_version::identity(&file)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|cause| error(format!("Could not read that source file: {cause}")))?;
@@ -788,7 +781,7 @@ fn decode_source_with_identity(
     let decoded = text_encoding::decode(&bytes, encoding)?;
     Ok(DecodedSourceWithIdentity {
         decoded: DecodedSourceFile {
-            disk_version: crate::file_version::version(&bytes, &metadata),
+            disk_version: crate::file_version::version(&bytes, &file)?,
             content: decoded.content,
             encoding: decoded.encoding,
         },
@@ -872,7 +865,7 @@ fn save_standalone_source_encoded_with_identity(
                     "Only regular source files can be opened or saved directly.",
                 ));
             }
-            (false, Some(file_identity(&metadata)))
+            (false, Some(identity_at(target)?))
         }
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             if matches!(policy, SaveTargetPolicy::MustExist) {
@@ -1792,7 +1785,7 @@ pub fn project_create_file(
     )?;
     Ok(RelativePathResult {
         relative_path: source.relative_path,
-        disk_version: Some(crate::file_version::version(content.as_bytes(), &fs::metadata(&source.target).map_err(|e| e.to_string())?)),
+        disk_version: Some(crate::file_version::version(content.as_bytes(), &fs::File::open(&source.target).map_err(|e| e.to_string())?)?),
     })
 }
 
@@ -1847,6 +1840,11 @@ pub fn project_duplicate_file(
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let mut copied = options
         .open(&destination.target)
@@ -2178,7 +2176,7 @@ pub async fn project_save_as(
             source.identity,
         )?;
         return Ok(SaveAsResult {
-            disk_version: Some(crate::file_version::version(&text_encoding::encode(&content, encoding.as_deref())?.0, &fs::metadata(&target).map_err(|e| e.to_string())?)),
+            disk_version: Some(crate::file_version::version(&text_encoding::encode(&content, encoding.as_deref())?.0, &fs::File::open(&target).map_err(|e| e.to_string())?)?),
             name: Some(name),
             relative_path: Some(source.relative_path),
             file_handle: None,
@@ -2193,7 +2191,7 @@ pub async fn project_save_as(
     )?;
     remember_recent_entry_best_effort(state.inner(), "file", &target, &name);
     Ok(SaveAsResult {
-        disk_version: Some(crate::file_version::version(&text_encoding::encode(&content, encoding.as_deref())?.0, &fs::metadata(&target).map_err(|e| e.to_string())?)),
+        disk_version: Some(crate::file_version::version(&text_encoding::encode(&content, encoding.as_deref())?.0, &fs::File::open(&target).map_err(|e| e.to_string())?)?),
         name: Some(name),
         relative_path: None,
         file_handle: Some(file_handle),

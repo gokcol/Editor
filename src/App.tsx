@@ -590,14 +590,15 @@ const SHORTCUT_ACTIONS = [
 ] as const;
 type ShortcutActionId = (typeof SHORTCUT_ACTIONS)[number][0];
 type ShortcutBindings = Record<ShortcutActionId, string>;
+const PRIMARY_MODIFIER = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Meta' : 'Ctrl';
 const DEFAULT_SHORTCUTS: ShortcutBindings = {
-  quickOpen: 'Meta+P',
-  palette: 'Meta+Shift+P',
-  prompt: 'Meta+Shift+L',
-  search: 'Meta+Shift+F',
-  outline: 'Meta+Shift+O',
-  zen: 'Meta+Shift+Z',
-  build: 'Meta+Shift+B',
+  quickOpen: `${PRIMARY_MODIFIER}+P`,
+  palette: `${PRIMARY_MODIFIER}+Shift+P`,
+  prompt: `${PRIMARY_MODIFIER}+Shift+L`,
+  search: `${PRIMARY_MODIFIER}+Shift+F`,
+  outline: `${PRIMARY_MODIFIER}+Shift+O`,
+  zen: `${PRIMARY_MODIFIER}+Shift+Z`,
+  build: `${PRIMARY_MODIFIER}+Shift+B`,
 };
 
 function historyScope(document: DocumentModel) {
