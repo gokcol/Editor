@@ -1,0 +1,12 @@
+DRAFT — 7TXT is reserved as OrhanGkl.7TXT (9PB1F4G8F3WH).
+Package: 7TXT-1.0.1.0-store-x64.msix, unsigned real identity only.
+Windows 11 x64. Free, all supported markets, matching the existing app setup.
+Description: description.txt. Short description: short-description.txt.
+Release notes: whats-new.txt. Feature/keyword files contain one item per line.
+Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md
+Website: https://github.com/gokcol/Editor
+Support: https://github.com/gokcol/Editor/issues
+Reviewer notes: reviewer-notes.txt.
+Use genuine Windows renderer screenshots from the Store preparation workflow.
+Review age ratings and WACK results before final certification submission.
+Do not upload TEST-ONLY packages, temporary certificates or private keys.

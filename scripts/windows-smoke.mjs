@@ -127,3 +127,37 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   }
 }
 console.log(JSON.stringify(results, null, 2));
+
+if (process.env.EDITOR_STORE_SCREENSHOTS === '1') {
+  const fixtures = [
+    ['7TXT', '01-text', 'Project notes.txt', 'Project notes\n=============\n\nRelease checklist\n\n- Review the draft\n- Keep sources in ordinary files\n- Save a local copy\n\nUnicode works here: Türkçe ıİşğü, café, 日本語.\n\nAll examples in these screenshots are fictional.\n'],
+    ['7TXT', '02-markdown', 'Planning.md', '# Project planning\n\nA clear plan, kept in a local Markdown file.\n\n## This week\n\n- [x] Collect ideas\n- [x] Write a first draft\n- [ ] Review and share\n\n## Milestones\n\n| Stage | Status |\n| --- | --- |\n| Draft | Ready |\n| Review | Next |\n\n## Notes\n\nKeep **important details** easy to find.\n'],
+    ['Yedit', '01-code', 'Project.json', '{\n  "project": "Local workspace",\n  "version": "1.0",\n  "tasks": [\n    { "name": "Draft", "done": true },\n    { "name": "Review", "done": false }\n  ],\n  "notes": "Fictional example data"\n}\n'],
+    ['Yedit', '02-diagram', 'Workflow.mmd', 'flowchart TD\n  A[Collect ideas] --> B[Write a draft]\n  B --> C{Review complete?}\n  C -->|Yes| D[Save and share]\n  C -->|Revise| B\n'],
+  ];
+  const evidence = [];
+  for (const [app, label, filename, source] of fixtures) {
+    const path = join(directory, filename); await writeFile(path, source);
+    const session = await start(app, [path], app === '7TXT' ? 9222 : 9223);
+    try {
+      const { page } = session;
+      await page.setViewportSize({ width: 1600, height: 1000 });
+      await eventually(async () => app === '7TXT'
+        ? (await page.locator('textarea.editor:not(.editor-secondary)').inputValue()).includes(source.split('\n')[0])
+        : normalize(await page.locator('.monaco-editor .view-lines').first().innerText()).includes(source.split('\n')[0]), `${app} screenshot document open`);
+      if (app === '7TXT' && filename.endsWith('.md') && !await page.locator('.preview-pane').isVisible()) {
+        await page.locator('button[data-action="toggle-preview"]').first().click();
+      }
+      if (app === 'Yedit') {
+        const render = page.getByRole('button', { name: 'Render preview', exact: true });
+        if (await render.count()) await render.click();
+      }
+      await delay(2000);
+      const screenshot = `${app}-${label}.png`;
+      await page.screenshot({ path: join(reportDir, screenshot) });
+      evidence.push({ app, screenshot, filename, width: 1600, height: 1000, fictionalDocument: true,
+        capture: 'Native Windows WebView2 renderer in installed MSIX test identity; same released executable as unsigned Store package. No marketing overlays or post-capture resizing.' });
+    } finally { await stop(session); }
+  }
+  await writeFile(join(reportDir, 'screenshot-provenance.json'), JSON.stringify(evidence, null, 2) + '\n');
+}

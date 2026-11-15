@@ -1,0 +1,6 @@
+Monaco source editing with offline language assets
+30 modes for code, diagrams, documents and data
+Markdown, Mermaid, SVG, JSON and YAML workflows
+Local files, folders, recent files and encoding controls
+Local Git operations and explicit external-tool workflows
+Conflict protection and recoverable local drafts

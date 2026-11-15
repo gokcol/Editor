@@ -11,7 +11,7 @@ $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Directory |
 $signtool = Join-Path $sdk.FullName 'x64/signtool.exe'
 $work = Join-Path $env:TEMP ('editor-msix-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
-$cert = $null; $installed = @(); $mapping = @(); $original = @{}
+$cert = $null; $installed = @(); $mapping = @(); $original = @{}; $sentinels = @()
 try {
     if (!(Get-AppxPackage -Name Microsoft.VCLibs.140.00.UWPDesktop)) {
         Invoke-WebRequest 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx' -OutFile (Join-Path $work 'VCLibs.appx')
@@ -25,6 +25,12 @@ try {
     Export-Certificate -Cert $cert -FilePath (Join-Path $work 'test.cer') | Out-Null
     Import-Certificate -FilePath (Join-Path $work 'test.cer') -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
     foreach ($app in @('7TXT','Yedit')) {
+        $bundle = if ($app -eq '7TXT') { 'com.gokcol.7txt' } else { 'com.yedit.desktop' }
+        $shared = Join-Path $env:APPDATA $bundle
+        New-Item -ItemType Directory -Force $shared | Out-Null
+        $sentinel = Join-Path $shared ('.msix-preserve-' + [guid]::NewGuid().ToString('N'))
+        $token = [guid]::NewGuid().ToString('N'); Set-Content $sentinel $token -Encoding ascii
+        $sentinels += @{ path=$sentinel; token=$token }
         $package = @(Get-ChildItem $PackageDirectory -Filter "$app-*-TEST-ONLY-x64.msix")
         if ($package.Count -ne 1) { throw 'Expected one test package per app.' }
         $package = $package[0]; $info = Get-Content ($package.FullName + '.json') -Raw -Encoding utf8 | ConvertFrom-Json
@@ -48,13 +54,30 @@ try {
     ConvertTo-Json -InputObject $mapping | Set-Content (Join-Path $Reports 'Windows-installation.json') -Encoding utf8
     & node scripts/windows-smoke.mjs "$env:RUNNER_TEMP/editor-smoke/node_modules/playwright/index.mjs" unused $Reports
     if ($LASTEXITCODE -ne 0) { throw 'Native packaged-app checks failed.' }
+    $wackResults = @()
+    $appcert = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/App Certification Kit/appcert.exe'
+    foreach ($app in @('7TXT','Yedit')) {
+        $report = Join-Path ([IO.Path]::GetFullPath($Reports)) "$app-WACK.xml"
+        $status = 'not-available-on-runner'; $exitCode = $null
+        if (Test-Path $appcert) {
+            & $appcert reset | Out-Null
+            $copy = Join-Path $work "$app.msix"
+            $process = Start-Process -FilePath $appcert -ArgumentList @('test','-apptype','windowsstoreapp','-appxpackagepath',"`"$copy`"",'-reportoutputpath',"`"$report`"") -PassThru
+            if ($process.WaitForExit(180000)) { $exitCode=$process.ExitCode; $status=if ($exitCode -eq 0) { 'completed' } else { 'requires-report-review' } }
+            else { Stop-Process -Id $process.Id -Force; $status='timeout-requires-Windows-11-review' }
+        }
+        $wackResults += @{ app=$app; status=$status; exitCode=$exitCode; testIdentity=$true; sameReleasedPayload=$true }
+    }
+    ConvertTo-Json -InputObject $wackResults | Set-Content (Join-Path $Reports 'WACK-status.json') -Encoding utf8
     foreach ($entry in $installed) {
+        Get-Process -Name 7TXT,Yedit -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($entry.InstallLocation) } | Stop-Process -Force
         Remove-AppxPackage -Package $entry.PackageFullName
         if (Get-AppxPackage -Name $entry.Name) { throw 'Test package uninstall failed.' }
     }
     $installed = @()
     foreach ($path in $original.Keys) { if ((Get-FileHash $path).Hash -ne $original[$path]) { throw 'Unsigned artifact changed.' } }
-    @{ installation=$true; nativeEditingAndRecovery=$true; uninstall=$true; unsignedArtifactsUnchanged=$true } |
+    foreach ($entry in $sentinels) { if ((Get-Content $entry.path -Raw).Trim() -ne $entry.token) { throw 'Existing direct-edition app data changed.' } }
+    @{ installation=$true; nativeEditingAndRecovery=$true; uninstall=$true; unsignedArtifactsUnchanged=$true; existingDataPreserved=$true } |
         ConvertTo-Json | Set-Content (Join-Path $Reports 'MSIX-validation.json') -Encoding utf8
 } finally {
     foreach ($entry in $installed) { Remove-AppxPackage -Package $entry.PackageFullName -ErrorAction SilentlyContinue }
@@ -62,5 +85,6 @@ try {
         Remove-Item "Cert:\LocalMachine\TrustedPeople\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
         Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue
     }
+    foreach ($entry in $sentinels) { Remove-Item $entry.path -Force -ErrorAction SilentlyContinue }
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 }

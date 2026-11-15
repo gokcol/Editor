@@ -1,0 +1,18 @@
+7TXT is a focused text and Markdown editor for Windows 11. Write notes, work with everyday text files, and keep your documents in ordinary folders on your computer.
+
+EVERYDAY TEXT EDITING
+Use tabs, find and replace, line numbers, go-to-line navigation, Unicode and encoding controls, and configurable fonts and editor appearance. Undo history keeps up to 100 versions. Statistics, outlines and preview updates are deferred during typing to keep larger documents responsive.
+
+WRITE IN MARKDOWN
+Edit Markdown with a local preview, heading outline, tables and links. Keep the editor and preview together or focus on your text. Use the file browser and recent-file list to return to your work.
+
+LOCAL FILES AND RECOVERY
+Open and save files directly. Conflict checks help prevent overwriting files that changed on disk. Draft checkpoints and local history help you recover unfinished work. Save important drafts as files before uninstalling or resetting the Store app.
+
+PDF AND IMAGE VIEWING
+View supported PDF and image files and keep local annotations. Text editing remains the main purpose of 7TXT.
+
+No account, advertising or subscription is required for ordinary editing. Core editing and Markdown preview work offline. This Store edition requires Windows 11 on an x64 PC and uses its system WebView2 runtime. The optional Codex companion and native Markdown-to-PDF export are not available in this Windows release.
+
+Support: https://github.com/gokcol/Editor/issues
+Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md

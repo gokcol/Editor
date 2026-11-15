@@ -1,0 +1,6 @@
+Text and Markdown editing in ordinary local files
+Tabs, find/replace, line numbers and go-to-line
+Unicode and explicit character-encoding controls
+Local Markdown preview and heading outline
+100-version undo history and draft recovery
+PDF/image viewing with local annotations

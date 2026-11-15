@@ -1,0 +1,7 @@
+text editor
+Markdown
+notes
+plain text
+Unicode
+local files
+writing

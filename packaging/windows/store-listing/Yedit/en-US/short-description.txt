@@ -1,0 +1,1 @@
+A local source editor for code, diagrams, documents and structured data.

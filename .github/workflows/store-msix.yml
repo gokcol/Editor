@@ -31,10 +31,14 @@ jobs:
           }
       - name: Verify packaged activation, editing, recovery and uninstall
         shell: powershell
+        env:
+          EDITOR_STORE_SCREENSHOTS: '1'
         run: |
           npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
           if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed.' }
           ./scripts/test-store-msix.ps1
+      - name: Independently validate Store upload bytes and every block hash
+        run: python scripts/verify-store-msix.py release/store/packages
       - uses: actions/upload-artifact@v4
         if: always()
         with:

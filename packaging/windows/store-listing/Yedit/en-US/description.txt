@@ -1,0 +1,18 @@
+Yedit is a local source editor for Windows 11. Work with code, technical documents, diagrams and structured data in one workspace while keeping your sources in ordinary files.
+
+A SOURCE EDITOR FOR DAILY WORK
+Use the bundled Monaco editor with syntax coloring, multiple cursors, find and replace, tabs, source outlines, formatting tools and configurable appearance. Open a folder or individual files, manage recent files, and work without a cloud account.
+
+DIAGRAMS, DOCUMENTS AND DATA
+Edit Markdown, Mermaid, SVG, JSON, YAML, LaTeX, TikZ and MetaFont sources alongside everyday code. Inspect read-only previews and review changes before saving. The editor includes 30 source modes with offline language assets; it does not bundle language servers, interpreters or compilers.
+
+LOCAL WORKFLOWS
+Use local Git status, diffs and commits. Run supported tasks with separately installed tools and your chosen project configuration. TeX, MetaFont, Python and other external-tool workflows require their corresponding tools on PATH; Yedit does not install them automatically.
+
+KEEP WORK RECOVERABLE
+File-version checks help detect conflicts before saving. Local checkpoints and recovered drafts keep unfinished work available for review. Save drafts as files before uninstalling or resetting the Store app.
+
+No account, advertising or subscription is required for ordinary editing. This compact Store edition requires Windows 11 on an x64 PC and uses its system WebView2 runtime. Ask AI through Codex, fixed Bash project scripts, and native WebKit HTML-to-PNG/PDF export are not available in this Windows release. HTML export and ordinary local editing remain available.
+
+Support: https://github.com/gokcol/Editor/issues
+Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md

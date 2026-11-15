@@ -1,0 +1,7 @@
+code editor
+source editor
+Markdown
+Mermaid
+JSON
+LaTeX
+developer tools
