@@ -77,7 +77,7 @@ The workflow runs shared and native tests on both systems, verifies both macOS
 architectures and app signatures, and tests the actual Windows Tauri/WebView2
 installed executables with synthetic files: external file open, Unicode editing and save,
 draft checkpointing, and recovery after restart. Browser automation connects
-through WebView2 environment and policy settings scoped to the CI apps; no test
+through WebView2 machine policy settings scoped to the CI apps; no test
 bridge or debugging port is compiled into production configuration.
 
 Windows installers are installed silently in the disposable runner before these

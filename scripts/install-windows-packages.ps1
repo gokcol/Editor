@@ -17,9 +17,17 @@ foreach ($app in @('7TXT', 'Yedit')) {
     # CI-only debugging policy, scoped to these two installed executables.
     # Elevated hosted runners require machine policy (WebView2 150+).
     # https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645
-    $policy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-    New-Item -Path $policy -Force | Out-Null
     $port = if ($app -eq '7TXT') { 9222 } else { 9223 }
-    New-ItemProperty -Path $policy -Name "$app.exe" -PropertyType String -Value "--remote-debugging-port=$port" -Force | Out-Null
+    $identifier = if ($app -eq '7TXT') { 'com.gokcol.7txt' } else { 'com.yedit.desktop' }
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
+        $root = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
+        $arguments = $root.CreateSubKey('Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments')
+        $profile = $root.CreateSubKey('Software\Policies\Microsoft\Edge\WebView2\UserDataFolder')
+        foreach ($id in @("$app.exe",$app,$identifier,$executable)) {
+            $arguments.SetValue($id,"--remote-debugging-port=$port",[Microsoft.Win32.RegistryValueKind]::String)
+            $profile.SetValue($id,(Join-Path $env:RUNNER_TEMP "editor-webview-$app"),[Microsoft.Win32.RegistryValueKind]::String)
+        }
+        $arguments.Close(); $profile.Close(); $root.Close()
+    }
 }
 ConvertTo-Json -InputObject $installed | Set-Content -Encoding utf8 (Join-Path $Reports 'Windows-installation.json')

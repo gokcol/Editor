@@ -32,9 +32,14 @@ async function eventually(action, message, timeout = 45000) {
 
 async function start(app, args, port) {
   const executable = installed.find(entry => entry.app === app)?.executable || join(binaryDir, `${app}.exe`);
+  const environment = { ...process.env };
+  // SDK environment overrides can shadow the machine policies configured by
+  // install-windows-packages.ps1. Use one configuration source on the CI host.
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase().startsWith('WEBVIEW2_')) delete environment[key];
+  }
   const child = spawn(executable, args, {
-    env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
-      WEBVIEW2_USER_DATA_FOLDER: join(directory, `${app}-webview`) },
+    env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
