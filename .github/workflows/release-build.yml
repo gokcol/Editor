@@ -3,6 +3,11 @@ name: Release builds
 on:
   workflow_dispatch:
     inputs:
+      platform:
+        description: Platforms to compile
+        type: choice
+        default: both
+        options: [both, macos, windows]
       verify_run:
         description: Optional existing build run ID; verify its Windows installers without rebuilding
         type: string
@@ -17,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.platform == 'macos' && '["macos-latest"]' || inputs.platform == 'windows' && '["windows-latest"]' || '["macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -35,6 +40,10 @@ jobs:
             package-lock.json
             7txt/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> ../target
+          cache-on-failure: true
       - name: Install frontend dependencies
         shell: bash
         run: |
@@ -54,12 +63,12 @@ jobs:
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           npm run tauri -- build --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
           npm --prefix 7txt run build -- --ci --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
-          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app"
-          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app"
-          lipo -verify_arch arm64 x86_64 "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app/Contents/MacOS/Yedit"
-          lipo -verify_arch arm64 x86_64 "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app/Contents/MacOS/7TXT"
           mkdir -p release
           cp "$CARGO_TARGET_DIR"/universal-apple-darwin/release/bundle/dmg/*.dmg release/
+          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app"
+          codesign --verify --deep --strict "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app"
+          lipo "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/Yedit.app/Contents/MacOS/Yedit" -verify_arch arm64 x86_64
+          lipo "$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/macos/7TXT.app/Contents/MacOS/7TXT" -verify_arch arm64 x86_64
       - name: Build Windows installers
         if: runner.os == 'Windows'
         run: |

@@ -33,7 +33,7 @@ if receipt.get('status') != 'Accepted':
     raise SystemExit('Notarization was not accepted; publication stopped')
 PY
 }
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/$binary"
+lipo "$app/Contents/MacOS/$binary" -verify_arch arm64 x86_64
 echo "Signing $name $version with Developer ID"
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
@@ -67,7 +67,7 @@ PY
     codesign --verify --deep --strict "$dmg"
     codesign --verify --deep --strict "$mountpoint/$name.app"
     codesign -dv --verbose=4 "$mountpoint/$name.app"
-    lipo -verify_arch arm64 x86_64 "$mountpoint/$name.app/Contents/MacOS/$binary"
+    lipo "$mountpoint/$name.app/Contents/MacOS/$binary" -verify_arch arm64 x86_64
     xcrun stapler validate "$mountpoint/$name.app"
     xcrun stapler validate "$dmg"
     spctl --assess --type execute --verbose=2 "$mountpoint/$name.app"
