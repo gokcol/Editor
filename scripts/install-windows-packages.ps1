@@ -1,5 +1,6 @@
 param([string]$Packages = 'release', [string]$Reports = 'release')
 $ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This installer verification helper is for disposable GitHub Actions runners only.' }
 New-Item -ItemType Directory -Force $Reports | Out-Null
 $installed = @()
 foreach ($app in @('7TXT', 'Yedit')) {
@@ -14,7 +15,9 @@ foreach ($app in @('7TXT', 'Yedit')) {
     if (!(Test-Path $executable)) { throw "$app installed executable is missing" }
     $installed += @{ app = $app; executable = $executable; version = $entry.DisplayVersion; installerExitCode = $process.ExitCode }
     # CI-only debugging policy, scoped to these two installed executables.
-    $policy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    # Elevated hosted runners require machine policy (WebView2 150+).
+    # https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645
+    $policy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
     New-Item -Path $policy -Force | Out-Null
     $port = if ($app -eq '7TXT') { 9222 } else { 9223 }
     New-ItemProperty -Path $policy -Name "$app.exe" -PropertyType String -Value "--remote-debugging-port=$port" -Force | Out-Null
