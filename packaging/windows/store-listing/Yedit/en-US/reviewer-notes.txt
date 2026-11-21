@@ -8,7 +8,7 @@ The MSIX uses Windows' default app-data and registry virtualization. New app-pri
 
 Suggested checks: launch from Start; open a UTF-8 text file; edit Unicode text and use Ctrl+S; restart with an unfinished draft and verify recovery. Open a Markdown file to inspect local preview. In Yedit, open Mermaid/JSON sources and render the local preview. External tools are optional and not bundled. Ask AI and native WebKit PNG/PDF export are macOS-only in this version; the Windows UI reports their unavailability.
 
-The unsigned upload uses this product's exact Partner Center identity. Temporary test certificates and TEST-ONLY identities are excluded from upload artifacts. Automated packaged-app tests cover activation, Unicode saving, recovery after forced restart, and uninstall. WACK reports overall PASS on disposable test copies on Windows Server 2025 (SDK 10.0.26100.9457, 24 tests per app). The optional Blocked executables check flags process-launch references in the desktop runtime; this is recorded for review under runFullTrust. Microsoft certification and signing remain pending.
+The unsigned upload uses this product's exact Partner Center identity. Temporary test certificates and TEST-ONLY identities are excluded from upload artifacts. Automated packaged-app tests cover activation, Unicode saving, recovery after forced restart, and uninstall. WACK reports overall PASS on disposable test copies on Windows Server 2025. The optional Blocked executables check flags process-launch references in the desktop runtime; this is recorded for review under runFullTrust. Microsoft certification and signing remain pending.
 
 Support: orhan.gokcol@hotmail.com
 Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md
