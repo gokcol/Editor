@@ -1,0 +1,38 @@
+.editor-updates {
+  --update-paper: #fff; --update-ink: #243244; --update-muted: #536578; --update-line: #d8e0e8; --update-card: #f3f7fa; --update-accent: #087c83;
+  box-sizing: border-box; width: min(580px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  padding: 0; overflow: hidden; border: 1px solid var(--update-line); border-radius: 16px;
+  background: var(--update-paper); color: var(--update-ink); color-scheme: light;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; box-shadow: 0 20px 70px #0005;
+}
+.editor-updates[data-theme="dark"] { --update-paper: #192438; --update-ink: #edf3fa; --update-muted: #b1bfd0; --update-line: #40506a; --update-card: #111d2e; --update-accent: #68d4d0; color-scheme: dark; }
+.editor-updates::backdrop { background: #060c1888; }
+.editor-updates header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 22px 24px 16px; }
+.editor-updates h2 { margin: 3px 0 6px; font-size: 24px; line-height: 1.2; letter-spacing: -.025em; }
+.editor-updates small { color: var(--update-accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+.editor-updates .editor-update-version { margin: 0; color: var(--update-muted); }
+.editor-updates .editor-update-body { overflow: auto; max-height: calc(100dvh - 245px); padding: 0 24px 20px; }
+.editor-updates .editor-update-card { border: 1px solid var(--update-line); background: var(--update-card); padding: 16px; border-radius: 12px; }
+.editor-updates .editor-update-channel { margin: 0 0 8px; color: var(--update-muted); font-size: 12px; }
+.editor-updates h3 { margin: 0; font-size: 16px; }
+.editor-updates [data-state="available"] { color: var(--update-accent); }
+.editor-updates .editor-update-error, .editor-updates .editor-update-preference-error { color: #bd3348; overflow-wrap: anywhere; }
+.editor-updates[data-theme="dark"] .editor-update-error, .editor-updates[data-theme="dark"] .editor-update-preference-error { color: #ff9eac; }
+.editor-updates .editor-update-error:empty, .editor-updates .editor-update-preference-error:empty { display: none; }
+.editor-updates .editor-update-notes { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 210px; overflow: auto; margin: 14px 0; }
+.editor-updates .editor-update-last-check { font-size: 11px; color: var(--update-muted); margin: 8px 0 0; }
+.editor-updates .editor-update-option { display: flex; align-items: center; gap: 9px; margin: 18px 0 6px; cursor: pointer; font-weight: 600; }
+.editor-updates .editor-update-option input { accent-color: var(--update-accent); width: 16px; height: 16px; }
+.editor-updates .editor-update-privacy { font-size: 12px; color: var(--update-muted); margin: 8px 0 12px; }
+.editor-updates .editor-update-local-notes { margin-top: 18px; font-size: 12px; }
+.editor-updates .editor-update-local-notes p { white-space: pre-line; color: var(--update-muted); }
+.editor-updates summary { cursor: pointer; font-weight: 600; }
+.editor-updates button, .editor-update-notice button { border: 1px solid var(--update-line, #cbd5e1); border-radius: 7px; padding: 8px 12px; font: inherit; color: inherit; background: transparent; cursor: pointer; }
+.editor-updates button:focus-visible, .editor-update-notice button:focus-visible { outline: 3px solid #4faacb; outline-offset: 2px; }
+.editor-updates button:disabled { opacity: .55; cursor: default; }
+.editor-updates .editor-update-close { font-size: 22px; line-height: 1; padding: 3px 8px; border-color: transparent; }
+.editor-updates footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 14px 24px; border-top: 1px solid var(--update-line); }
+.editor-updates .editor-update-check, .editor-updates .editor-update-download { border-color: #087c83; background: #087c83; color: #fff; font-weight: 600; }
+.editor-updates [hidden] { display: none !important; }
+.editor-update-notice { position: fixed; z-index: 900; bottom: 36px; right: 20px; max-width: calc(100vw - 40px); display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 14px; border: 1px solid #bad7d9; border-radius: 10px; background: #fff; color: #243244; box-shadow: 0 6px 25px #0002; font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+@media (prefers-reduced-motion: no-preference) { .editor-updates { animation: editor-update-enter .12s ease-out; } @keyframes editor-update-enter { from { opacity: 0; transform: translateY(6px); } } }

@@ -1,4 +1,5 @@
 import type { RecentMenuItem } from '../../shared/recentMenu';
+import type { UpdatesApi } from '../../shared/updateState';
 import type {
   AppSettings,
   BuildProfile,
@@ -38,6 +39,7 @@ export type ProjectReadBindingMode = 'none' | 'adopt';
  * workbench aware of its IPC or runtime details.
  */
 export interface DesktopApi {
+  updates: UpdatesApi;
   recovery: {
     load: () => Promise<{ savedAt: number; payload: unknown } | null>;
     save: (payload: unknown) => Promise<number>;

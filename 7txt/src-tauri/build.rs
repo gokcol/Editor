@@ -1,4 +1,7 @@
 const COMMANDS: &[&str] = &[
+    "updates_info",
+    "updates_check",
+    "updates_open",
     "codex_ai_status",
     "codex_ai_login",
     "codex_ai_ask",

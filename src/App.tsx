@@ -22,6 +22,7 @@ import { isCloseConfirmationOpen, showCloseConfirmation } from '../shared/closeC
 import { splitFileName } from '../shared/fileName';
 import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../shared/recentMenu';
 import { isAskAiOpen, showAskAi } from '../shared/askAi';
+import { createUpdateController, isUpdatesOpen } from '../shared/updates';
 import type { AppSettings, CharacterEncoding, DecodedSourceFile, DocumentModel, ExportFormat, FileNode, OpenedSourceFile, PreviewState, Project, ProjectTask, ProjectTaskResult, PythonRunResult, RecentEntry, ReferenceEntry, SourceType, TexPdfEngine } from './types';
 
 // Resolve Monaco against the real renderer document. A relative `./vs` turns
@@ -906,6 +907,20 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
   const [aboutOpen, setAboutOpen] = useState(false);
   const [helpTopic, setHelpTopic] = useState<HelpTopic | null>(null);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const updateChecker = useRef<ReturnType<typeof createUpdateController> | null>(null);
+  useEffect(() => {
+    const checker = createUpdateController(desktop.updates, {
+      appName: 'Yedit', installedVersion: APP_VERSION,
+      releaseNotes: 'Local source editing with 30 language modes and offline assets. Windows native file identity checks, Unicode saving, and durable draft recovery. Updated preview dependencies.',
+      canNotify: () => !document.querySelector<HTMLElement>('.app-shell')?.inert && !isCloseConfirmationOpen() && !isAskAiOpen(),
+    });
+    updateChecker.current = checker; checker.start();
+    return () => { checker.dispose(); updateChecker.current = null; };
+  }, [desktop]);
+  const openUpdates = useCallback(() => {
+    setAboutOpen(false); setHelpTopic(null); setWhatsNewOpen(false); setPaletteOpen(false);
+    updateChecker.current?.show();
+  }, []);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
   const [isGitLoading, setIsGitLoading] = useState(false);
@@ -4479,6 +4494,7 @@ encoding: reload.source.encoding,
     { id: 'help-getting-started', label: 'Yedit Help: Getting Started', hint: '', group: 'Help', run: () => openHelp('getting-started') },
     { id: 'help-shortcuts', label: 'Yedit Help: Keyboard Shortcuts', hint: '', group: 'Help', run: () => openHelp('shortcuts') },
     { id: 'whats-new', label: `What's New in Yedit ${APP_VERSION}`, hint: '', group: 'Help', run: openWhatsNew },
+    { id: 'check-updates', label: 'Check for Updates…', hint: '', group: 'Help', run: openUpdates },
     { id: 'about', label: 'About Yedit', hint: '', group: 'Help', run: openAbout },
     ...enabledSourceTypes.map((type, index) => ({
       id: `select-${type}`,
@@ -4489,7 +4505,7 @@ encoding: reload.source.encoding,
       // never unexpectedly bring a starter or an existing document forward.
       run: () => createBlankScratchpad(type),
     })),
-  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, clearRecentEntries, showRecentEntries, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openAbout, openGitPanel, openHelp, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, openWhatsNew, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
+  ], [activeDocument, availableProjectTasks, availableTemplateSourceTypes.length, clearRecentEntries, showRecentEntries, createBlankScratchpad, createProjectTaskConfig, documents, enabledSourceTypes, formatActive, inferActiveJsonSchema, latexPreviewMode, minifyActiveJson, newProject, openAbout, openGitPanel, openHelp, openJsonPrompt, openNewSource, openOutputViewer, openProject, openStandaloneFile, openUpdates, openWhatsNew, prettyPrintActiveJson, project, projectBuildTask, projectPreviewTask, refreshProject, renderActivePreview, resetPanelLayout, runActivePython, runPrimaryTask, runProjectTask, saveDocument, settings.editorMinimap, settings.previewAutoRender, showActiveDiff, taskManagedLatex, texPdfEngine, togglePanel, updatePanel, validateActiveJson, zenMode]);
 
   const actionRef = useRef(actions);
   actionRef.current = actions;
@@ -4501,7 +4517,7 @@ encoding: reload.source.encoding,
 
   useEffect(() => {
     const unsubscribe = desktop.onMenuAction((action) => {
-      if (document.querySelector<HTMLElement>('.app-shell')?.inert || isCloseConfirmationOpen() || isAskAiOpen()) return;
+      if (document.querySelector<HTMLElement>('.app-shell')?.inert || isCloseConfirmationOpen() || isAskAiOpen() || isUpdatesOpen()) return;
       if (recentDialogRef.current && action !== 'open-recents' && action !== 'clear-recents' && recentMenuEntryId(action) === null) return;
       if (action === 'palette') { setPaletteOpen(true); return; }
       if (action === 'help-about') { openAbout(); return; }
@@ -4847,7 +4863,7 @@ encoding: reload.source.encoding,
             </dl>
           </details>
         </div>
-        <footer className="about-footer"><span>© {COPYRIGHT_YEAR} Orhan Gökçöl</span><div className="about-footer-actions"><button type="button" className="outline-button" onClick={openWhatsNew}>What’s New</button><button type="button" className="accent-button" onClick={() => setAboutOpen(false)}>Done</button></div></footer>
+        <footer className="about-footer"><span>© {COPYRIGHT_YEAR} Orhan Gökçöl</span><div className="about-footer-actions"><button type="button" className="outline-button" onClick={openWhatsNew}>What’s New</button><button type="button" className="outline-button" onClick={openUpdates}>Check for Updates…</button><button type="button" className="accent-button" onClick={() => setAboutOpen(false)}>Done</button></div></footer>
       </section>
     </div>
   );

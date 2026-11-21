@@ -1,6 +1,7 @@
 import { invoke, isTauri, type InvokeArgs } from '@tauri-apps/api/core';
 import { listen, type EventName, type UnlistenFn } from '@tauri-apps/api/event';
 import type { DesktopApi } from './contract';
+import { createNativeUpdatesApi } from '../../shared/updatesNative';
 
 type ProjectApi = DesktopApi['project'];
 type RecentsApi = DesktopApi['recents'];
@@ -259,6 +260,7 @@ export function createTauriDesktopApi(): DesktopApi {
   let menuActionRegistration = Promise.resolve();
 
   return {
+    updates: createNativeUpdatesApi(),
     project: {
       open: () => invokeCommand('project_open'),
       openFile: (projectRoot, encoding) => invokeCommand('project_open_file', { projectRoot, encoding }),

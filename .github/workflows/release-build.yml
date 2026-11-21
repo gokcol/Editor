@@ -82,6 +82,8 @@ jobs:
           Copy-Item "$env:CARGO_TARGET_DIR/release/bundle/nsis/*.exe" release/
       - name: Test native Windows editing and recovery
         if: runner.os == 'Windows'
+        env:
+          EDITOR_VERIFY_UPDATES: '1'
         run: |
           ./scripts/install-windows-packages.ps1
           npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1

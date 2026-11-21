@@ -1,9 +1,9 @@
 # 7TXT and Yedit privacy policy
 
-Effective date: 15 November 2026
+Effective date: 21 November 2026
 
-7TXT and Yedit are desktop editors by Orhan Gökçöl. This policy covers version
-1.0.1 distributed through GitHub and the Microsoft Store editions of that source.
+7TXT and Yedit are desktop editors by Orhan Gökçöl. This policy covers their
+GitHub downloads and Microsoft Store editions.
 
 ## Editing on your computer
 
@@ -49,6 +49,14 @@ manage unwanted local data. 7TXT's Trash/Recycle Bin operation delegates recover
 to the operating system.
 
 ## Optional AI and network services
+
+**App updates:** Check for Updates requests public release metadata from GitHub
+for direct-download macOS and Windows installations. It sends a normal network
+request and the app name/version, with no documents, selections or file paths.
+Microsoft Store installations query Microsoft's Store services instead. Optional
+daily checks are off by default. The preference, last attempt time and dismissed
+release are stored locally. Release downloads open in your browser only when
+you choose Download; the editors do not silently download or install updates.
 
 The Windows editions do not enable the optional Codex companion integration in
 version 1.0.1. On macOS, Ask AI can use an installed Codex companion and your

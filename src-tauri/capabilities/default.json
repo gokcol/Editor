@@ -7,6 +7,9 @@
   ],
   "permissions": [
     "core:default",
+    "allow-updates-info",
+    "allow-updates-check",
+    "allow-updates-open",
     "allow-codex-ai-status",
     "allow-codex-ai-login",
     "allow-codex-ai-ask",

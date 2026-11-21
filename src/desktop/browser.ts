@@ -1,5 +1,6 @@
 import type { AppSettings } from '../types';
 import type { DesktopApi } from './contract';
+import { unavailableUpdatesApi } from '../../shared/updateState';
 import { SOURCE_TYPES, SOURCE_TYPES_VERSION, normalizedEnabledSourceTypes } from '../engine/sourceTypes';
 
 const browserSettingsKey = 'yedit-settings';
@@ -42,6 +43,7 @@ const readBrowserSettings = () => window.localStorage.getItem(browserSettingsKey
  */
 export function createBrowserDesktopApi(): DesktopApi {
   return {
+    updates: unavailableUpdatesApi(),
     recovery: {
       load: async () => JSON.parse(localStorage.getItem('yedit:durable-recovery') || 'null'),
       save: async (payload) => {

@@ -40,6 +40,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let quit = PredefinedMenuItem::quit(app, Some("Quit Yedit"))?;
     let app_menu = SubmenuBuilder::new(app, "Yedit")
         .item(&about)
+        .item(&action_item(app, "check-updates", "Check for Updates…", None)?)
         .separator()
         .item(&quit)
         .build()?;
@@ -351,6 +352,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )?)
         .separator()
         .item(&action_item(app, "help-about", "About Yedit", None)?)
+        .item(&action_item(app, "check-updates", "Check for Updates…", None)?)
         .build()?;
 
     MenuBuilder::new(app)

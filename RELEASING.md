@@ -39,7 +39,7 @@ Yedit's configurable command shortcuts default to Ctrl there.
 
 ## Reproducing packages
 
-Use Node 24 or newer, stable Rust, and the platform prerequisites documented by
+Use Node 24 or newer, Rust 1.85 or newer, and the platform prerequisites documented by
 [Tauri](https://v2.tauri.app/start/prerequisites/). Install both lockfiles:
 
 ```sh
@@ -53,6 +53,15 @@ cargo test --locked --manifest-path 7txt/src-tauri/Cargo.toml
 On Windows, run `npm run package:windows` and
 `npm --prefix 7txt run package:windows`. Platform-specific Tauri configurations
 select NSIS and per-user installation without changing macOS settings.
+
+The update checker reads the public `gokcol/Editor` release list. Keep each
+published app's own artifact names (`7TXT_<version>_universal.dmg`,
+`Yedit_<version>_universal.dmg`, and `<app>_<version>_x64-setup.exe`) and uploaded
+asset URLs consistent with the release tag. A release without a compatible asset
+for an app is not offered to that app. Store-signed MSIX installations use
+Microsoft's update service and are never offered GitHub installers. Development
+or sideloaded packages link to their Store product without claiming a successful
+Store check. The checker only discovers updates; it does not install them.
 
 On macOS, `npm run package:mac` and `npm --prefix 7txt run package:mac` use the
 configured Developer ID identity. The GitHub **Release builds** workflow overrides

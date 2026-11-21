@@ -9,6 +9,8 @@ mod codex_ai;
 mod file_version;
 #[path = "../../shared/recovery.rs"]
 mod recovery;
+#[path = "../../shared/updates.rs"]
+mod updates;
 mod html_export;
 mod menu;
 #[path = "../../shared/recent_menu.rs"]
@@ -81,6 +83,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(codex_ai::CodexAiState::default())
         .manage(recovery::RecoveryStore::default())
+        .manage(updates::UpdateService::default())
         .manage(PendingExternalFiles::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -110,6 +113,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updates::updates_info,
+            updates::updates_check,
+            updates::updates_open,
             codex_ai::codex_ai_status,
             codex_ai::codex_ai_login,
             codex_ai::codex_ai_ask,

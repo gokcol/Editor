@@ -96,6 +96,12 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   try {
     session = await start(app, [source], 9222 + index);
     const { page } = session;
+    if (process.env.EDITOR_VERIFY_UPDATES === '1') {
+      const updateInfo = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('updates_info'));
+      assert.equal(updateInfo.appName, app, 'Native update commands are available to the main window');
+      assert.equal(updateInfo.channel, 'github', 'Direct Windows installations use their GitHub update channel');
+      assert.match(updateInfo.installedVersion, /^\d+\.\d+\.\d+$/);
+    }
     async function text() {
       return app === '7TXT' ? page.locator('textarea.editor:not(.editor-secondary)').inputValue()
         : page.locator('.monaco-editor .view-lines').first().innerText().then(normalize);

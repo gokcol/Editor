@@ -5,6 +5,8 @@ mod codex_ai;
 mod file_version;
 #[path = "../../../shared/recovery.rs"]
 mod recovery;
+#[path = "../../../shared/updates.rs"]
+mod updates;
 #[path = "../../../shared/recent_menu.rs"]
 mod recent_menu;
 mod pdf_export;
@@ -841,10 +843,12 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .item(&PredefinedMenuItem::show_all(app, Some("Show All"))?)
         .separator()
         .item(&PredefinedMenuItem::about(app, Some("About 7TXT"), None)?)
+        .item(&item(app, "check-updates", "Check for Updates…", None)?)
         .build()?;
     #[cfg(not(target_os = "macos"))]
     let application = SubmenuBuilder::new(app, "7TXT")
         .item(&item(app, "help-about", "About 7TXT", None)?)
+        .item(&item(app, "check-updates", "Check for Updates…", None)?)
         .item(&PredefinedMenuItem::quit(app, Some("Quit 7TXT"))?)
         .build()?;
     let file = SubmenuBuilder::new(app, "File")
@@ -966,6 +970,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .item(&item(app, "help-whats-new", "What’s New in 1.0", None)?)
         .separator()
         .item(&item(app, "help-about", "About 7TXT", None)?)
+        .item(&item(app, "check-updates", "Check for Updates…", None)?)
         .build()?;
     MenuBuilder::new(app)
         .item(&application)
@@ -980,6 +985,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(codex_ai::CodexAiState::default())
         .manage(recovery::RecoveryStore::default())
+        .manage(updates::UpdateService::default())
         .manage(PendingExternalFiles::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
@@ -994,6 +1000,9 @@ pub fn run() {
             let _ = app.emit_to("main", "menu-action", event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            updates::updates_info,
+            updates::updates_check,
+            updates::updates_open,
             codex_ai::codex_ai_status,
             codex_ai::codex_ai_login,
             codex_ai::codex_ai_ask,

@@ -35,6 +35,14 @@ automatically. Stop or close cancels a request. All ordinary editor features
 remain local and work without AI. Install a current Codex CLI or the ChatGPT
 desktop companion, then use Sign in with ChatGPT in Ask AI if needed.
 
+## App updates (next release)
+
+In the development version, use **7TXT → Check for Updates…**, **Help → Check for Updates…**, About, or the
+command palette to check for a newer compatible release. Direct Mac and Windows
+downloads use GitHub; Microsoft Store installations use the Store. Optional daily
+checks are off by default. Downloads open in your browser when requested and are
+never installed automatically.
+
 ## Run or build
 
 From this folder:

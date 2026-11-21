@@ -10,6 +10,8 @@ import { confirmTabClose } from '../../shared/tabClose';
 import { isCloseConfirmationOpen, showCloseConfirmation } from '../../shared/closeConfirmation';
 import { splitFileName } from '../../shared/fileName';
 import { isAskAiOpen, showAskAi } from '../../shared/askAi';
+import { createUpdateController, isUpdatesOpen } from '../../shared/updates';
+import { createNativeUpdatesApi } from '../../shared/updatesNative';
 import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../../shared/recentMenu';
 import { recordHistory, type DocumentHistory } from './history';
 import { TextIndex } from './textIndex';
@@ -437,6 +439,11 @@ const derivedViews = createDeferredTask(renderDerivedViews, 200, {
 let autosaveInFlight = false;
 let commandSelection = 0;
 let helpSection: HelpSection = 'getting-started';
+const updateChecker = createUpdateController(createNativeUpdatesApi(), {
+  appName: '7TXT', installedVersion: APP_VERSION,
+  releaseNotes: 'Text and Markdown editing, file browsing, PDF and image viewing. Undo retains 100 versions. Deferred large-file updates, Unicode saving and durable draft recovery.',
+  canNotify: () => recoveryReady && !shell.inert && !isCloseConfirmationOpen() && !isAskAiOpen() && helpPanel.hidden,
+});
 let recentFilesPreviousFocus: HTMLElement | null = null;
 let recentFilesInertSiblings: { element: HTMLElement; wasInert: boolean }[] = [];
 let recentFilesRenderKey: string | undefined;
@@ -1018,6 +1025,7 @@ function helpMarkup(section: HelpSection) {
           <p class="help-lede">A compact, local-first editor for everyday text and Markdown work, with enough workspace tools to stay out of your way.</p>
           <dl class="about-details"><div><dt>Developer</dt><dd>Orhan Gökçöl</dd></div><div><dt>Copyright</dt><dd>© 2026 Orhan Gökçöl</dd></div><div><dt>License</dt><dd>MIT</dd></div><div><dt>Built with</dt><dd>Tauri, TypeScript, and PDF.js</dd></div></dl>
           <p class="help-note">7TXT keeps documents, recents, recovery data, and annotations on this Mac. It does not require an online account.</p>
+          <button type="button" data-action="check-updates">Check for Updates…</button>
         </section>`;
     case 'getting-started':
     default:
@@ -3560,6 +3568,7 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Help: Keyboard shortcuts', hint: '', run: () => openHelp('shortcuts') },
     { label: `What's new in 7TXT ${APP_VERSION}`, hint: '', run: () => openHelp('whats-new') },
     { label: 'About 7TXT', hint: '', run: () => openHelp('about') },
+    { label: 'Check for Updates…', hint: '', run: openUpdates },
     { label: 'New text file', hint: '⌘N', run: () => createDocument() },
     { label: 'New Markdown file', hint: '⇧⌘N', run: () => createDocument(true) },
     { label: 'Ask AI with Codex', hint: '', run: openAskAi },
@@ -3767,13 +3776,19 @@ async function ignoreExternalChange() {
   } finally { manualSaveInFlight.delete(source.id); }
 }
 
+function openUpdates() {
+  closeTransientMenus(); closeCommandPalette(); helpPanel.hidden = true; quickSwitcher.hidden = true; timelinePanel.hidden = true;
+  updateChecker.show();
+}
+
 function handleAction(action?: string) {
-  if (!recoveryReady || shell.inert || isCloseConfirmationOpen() || isAskAiOpen()) return;
+  if (!recoveryReady || shell.inert || isCloseConfirmationOpen() || isAskAiOpen() || isUpdatesOpen()) return;
   const recentPath = recentMenuEntryId(action || '');
   if (recentPath !== null) { openRecentPath(recentPath); return; }
   if (!recentFilesPanel.hidden && action !== 'open-recents' && action !== 'close-recents' && action !== 'clear-recents') closeRecentFiles();
   switch (action) {
     case 'ask-ai': openAskAi(); break;
+    case 'check-updates': openUpdates(); break;
     case 'new':
     case 'new-text': createDocument(); break;
     case 'new-markdown': createDocument(true); break;
@@ -4195,6 +4210,7 @@ async function startWorkspace() {
   void refreshProjectFolder(true);
   void startExternalFileHandling();
   void startDragAndDrop();
+  updateChecker.start();
 }
 void startWorkspace();
 compactPreviewLayout.addEventListener('change', () => derivedViews.flush());
