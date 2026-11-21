@@ -1,1 +1,1 @@
-First Microsoft Store release of 7TXT 1.0.1. Compact Windows 11 x64 package, Store-managed installation, Unicode editing, 100-version undo, deferred large-file updates, and verified draft recovery.
+7TXT 1.0.2 adds Check for Updates in the app menu, Help, About, and the command palette. The Store edition checks Microsoft Store. Optional daily checks are off by default and show a small notice when an update is available. Checks do not send documents or file paths, and updates are never installed silently.

@@ -1,4 +1,4 @@
-7TXT 1.0.1 / MSIX 1.0.1.0 — Windows 11 x64 desktop application.
+7TXT 1.0.2 / MSIX 1.0.2.0 — Windows 11 x64 desktop application.
 
 No account or subscription is needed. No ads or in-app purchases. Core text editing works offline. The package uses Windows 11's system Evergreen WebView2 runtime; it does not download a prerequisite installer on first launch.
 
@@ -12,3 +12,5 @@ The unsigned upload uses this product's exact Partner Center identity. Temporary
 
 Support: orhan.gokcol@hotmail.com
 Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md
+
+Update checker in 1.0.2: use Help > Check for Updates or the command palette. Microsoft Store-signed packages query Microsoft Store services; daily checks require opt-in and are off by default. Sideloaded/test-signed packages show Store guidance and do not offer GitHub installers. No documents or file paths are sent, and no update is installed automatically. The only declared capability remains runFullTrust.
