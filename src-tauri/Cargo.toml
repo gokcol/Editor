@@ -1,6 +1,6 @@
 [package]
 name = "yedit"
-version = "1.0.1"
+version = "1.0.2"
 description = "A local source-first editor for diagrams, documents, data, and code."
 authors = ["Orhan Gökçöl"]
 license = "MIT"

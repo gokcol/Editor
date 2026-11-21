@@ -1,6 +1,6 @@
 {
   "name": "7txt",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "7TXT is a lightweight native text and Markdown editor for macOS and Windows.",
   "scripts": {

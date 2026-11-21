@@ -347,7 +347,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&action_item(
             app,
             "whats-new",
-            "What's New in Yedit 1.0",
+            concat!("What's New in Yedit ", env!("CARGO_PKG_VERSION")),
             None,
         )?)
         .separator()

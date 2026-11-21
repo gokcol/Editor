@@ -1,6 +1,6 @@
 # Desktop releases
 
-Both applications use version 1.0.1. Downloads are published together at
+Both applications use version 1.0.2. Downloads are published together at
 <https://github.com/gokcol/Editor/releases>.
 
 | Platform | Package | Runtime |

@@ -104,7 +104,7 @@ const SESSION_KEY = '7txt:workspace-session:v1';
 const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_TIMELINE_SNAPSHOTS = 16;
@@ -441,7 +441,7 @@ let commandSelection = 0;
 let helpSection: HelpSection = 'getting-started';
 const updateChecker = createUpdateController(createNativeUpdatesApi(), {
   appName: '7TXT', installedVersion: APP_VERSION,
-  releaseNotes: 'Text and Markdown editing, file browsing, PDF and image viewing. Undo retains 100 versions. Deferred large-file updates, Unicode saving and durable draft recovery.',
+  releaseNotes: 'Check for Updates from the app menu, Help, About or the command palette. Optional daily checks are off by default. Direct installations use GitHub; Store installations use Microsoft Store. Downloads open only when requested.',
   canNotify: () => recoveryReady && !shell.inert && !isCloseConfirmationOpen() && !isAskAiOpen() && helpPanel.hidden,
 });
 let recentFilesPreviousFocus: HTMLElement | null = null;
@@ -1010,10 +1010,11 @@ function helpMarkup(section: HelpSection) {
       return `
         <section class="help-topic" aria-labelledby="help-topic-title">
           <p class="help-eyebrow">RELEASE NOTES</p>
-          <h2 id="help-topic-title">What’s new in 1.0.0</h2>
-          <p class="help-lede">This is the practical difference between the early <strong>0.1.10</strong> build and the finished <strong>1.0.0</strong> editor.</p>
+          <h2 id="help-topic-title">What’s new in ${APP_VERSION}</h2>
+          <p class="help-lede">Version 1.0.2 adds an optional update checker for macOS and Windows.</p>
           <div class="release-history">
-            <article class="release-entry current"><div class="release-version">1.0.0</div><div><h3>A complete everyday workspace</h3><ul><li>Reliable, reorderable tabs, an all-tabs list, bulk close commands, and restored workspace state.</li><li>A navigable folder browser with recents, bookmarks, home/Documents shortcuts, and broad text-file opening based on content rather than filename extension.</li><li>Markdown tables, a resizable preview, Markdown-only Focused Reading, clean PDF/HTML export, plus local timeline and recovery.</li><li>PDF and image viewing with local highlight and note annotations.</li><li>Editor fonts, sizes, surfaces, themes, interface scaling, line numbers, and explicit text encoding for opening and saving.</li></ul></div></article>
+            <article class="release-entry current"><div class="release-version">1.0.2</div><div><h3>Check for app updates</h3><ul><li>Check for Updates from the app menu, Help, About, or the command palette.</li><li>Choose optional daily checks, off by default, with a small notice when an update is available.</li><li>Direct macOS and Windows installations check GitHub; Microsoft Store installations check the Store.</li><li>Downloads open only when requested. Your documents and file paths stay on your device.</li></ul></div></article>
+            <article class="release-entry"><div class="release-version">1.0.0</div><div><h3>A complete everyday workspace</h3><ul><li>Reliable, reorderable tabs, an all-tabs list, bulk close commands, and restored workspace state.</li><li>A navigable folder browser with recents, bookmarks, home/Documents shortcuts, and broad text-file opening based on content rather than filename extension.</li><li>Markdown tables, a resizable preview, Markdown-only Focused Reading, clean PDF/HTML export, plus local timeline and recovery.</li><li>PDF and image viewing with local highlight and note annotations.</li><li>Editor fonts, sizes, surfaces, themes, interface scaling, line numbers, and explicit text encoding for opening and saving.</li></ul></div></article>
             <article class="release-entry"><div class="release-version muted">0.1.10</div><div><h3>The foundation</h3><p>Native text and Markdown editing, local save/open, basic preview, files sidebar, and a deliberately lightweight workflow.</p></div></article>
           </div>
         </section>`;

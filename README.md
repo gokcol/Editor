@@ -47,9 +47,9 @@ Yedit is a local, source-first workbench for diagrams, documents, structured dat
 - Optional Ask AI in both Yedit and 7TXT: send a prompt to the installed Codex companion using ChatGPT sign-in, without an API key. Subscription eligibility and limits apply. Context defaults to none; a captured selection or document is included only when explicitly chosen. Responses are plain, inert text and can be copied or opened as unsaved Markdown drafts. Yedit can also review a response through Prompt Studio. Stop/close cancels the request; there is no automatic document modification or retry. Sessions are ephemeral, run outside projects, and disable command/edit tools, plugins, connectors, hooks, browsing, and host skill discovery. Prompts and chosen context go to OpenAI only on Send. Regular editing, preview, recovery, and manual Prompt Studio remain local and work without AI.
 - Safe Mode blocks native compilers, Python, project tasks, and Git changes until the project is explicitly trusted in Settings.
 
-## App updates (next release)
+## App updates
 
-The development versions of both editors include **Check for Updates…** in their app and Help menus, About
+Starting with version 1.0.2, both editors include **Check for Updates…** in their app and Help menus, About
 panel, and command palette. Direct macOS and Windows installations check GitHub
 for their own compatible stable release. Microsoft Store installations check the
 Store. **Check automatically once a day** is opt-in and off by default; an available

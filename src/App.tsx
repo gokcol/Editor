@@ -111,8 +111,19 @@ const ABOUT_DEPENDENCIES = [
 type HelpTopic = 'getting-started' | 'shortcuts';
 const RELEASE_HISTORY = [
   {
-    version: '1.0.0',
+    version: '1.0.2',
     label: 'Current release',
+    title: 'Check for app updates',
+    description: 'An optional update checker for macOS and Windows, available from the app menu, Help, About, and the command palette.',
+    highlights: [
+      'Direct installations check GitHub for a compatible stable release; Microsoft Store installations check the Store.',
+      'Optional daily checks are off by default and show a small notice when an update is available.',
+      'Downloads open only when requested. Documents and file paths stay on your device.',
+    ],
+  },
+  {
+    version: '1.0.0',
+    label: 'Major release',
     title: 'A complete local workbench',
     description: 'Yedit 1.0 turns the early source editor into a dependable daily workspace for technical writing, diagrams, data, and code.',
     highlights: [
@@ -911,7 +922,7 @@ function App({ desktop, initialRecovery, recoveryLoadError }: { desktop: Desktop
   useEffect(() => {
     const checker = createUpdateController(desktop.updates, {
       appName: 'Yedit', installedVersion: APP_VERSION,
-      releaseNotes: 'Local source editing with 30 language modes and offline assets. Windows native file identity checks, Unicode saving, and durable draft recovery. Updated preview dependencies.',
+      releaseNotes: 'Check for Updates from the app menu, Help, About or the command palette. Optional daily checks are off by default. Direct installations use GitHub; Store installations use Microsoft Store. Downloads open only when requested.',
       canNotify: () => !document.querySelector<HTMLElement>('.app-shell')?.inert && !isCloseConfirmationOpen() && !isAskAiOpen(),
     });
     updateChecker.current = checker; checker.start();
@@ -4918,7 +4929,7 @@ encoding: reload.source.encoding,
           <button type="button" className="icon-button" autoFocus onClick={() => setWhatsNewOpen(false)} title="Close What’s New" aria-label="Close What’s New">×</button>
         </div>
         <div className="release-content">
-          <div className="release-hero"><span>Yedit <strong>1.0</strong></span><p id="release-description">Yedit 1.0 is the major release following the v0.3.3 preview. It brings the local-first editor into a complete, daily-use workbench.</p></div>
+          <div className="release-hero"><span>Yedit <strong>{APP_VERSION}</strong></span><p id="release-description">Version 1.0.2 adds an optional update checker for macOS and Windows.</p></div>
           <ol className="release-history" aria-label="Yedit version history">
             {RELEASE_HISTORY.map((release, index) => <li key={release.version} className={index === 0 ? 'current' : ''}>
               <div className="release-heading"><div><strong>v{release.version}</strong><span>{release.label}</span></div><h3>{release.title}</h3></div>

@@ -967,7 +967,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             "Keyboard Shortcuts",
             None,
         )?)
-        .item(&item(app, "help-whats-new", "What’s New in 1.0", None)?)
+        .item(&item(app, "help-whats-new", concat!("What’s New in ", env!("CARGO_PKG_VERSION")), None)?)
         .separator()
         .item(&item(app, "help-about", "About 7TXT", None)?)
         .item(&item(app, "check-updates", "Check for Updates…", None)?)
