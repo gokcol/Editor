@@ -1,6 +1,6 @@
 # Desktop releases
 
-Both applications use version 1.0.2. Downloads are published together at
+7TXT and Yedit are versioned independently. Downloads for both are available at
 <https://github.com/gokcol/Editor/releases>.
 
 | Platform | Package | Runtime |

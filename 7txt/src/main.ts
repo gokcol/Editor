@@ -16,6 +16,7 @@ import { createRecentMenuSync, recentMenuEntryId, recentMenuItems } from '../../
 import { recordHistory, type DocumentHistory } from './history';
 import { TextIndex } from './textIndex';
 import { createDeferredTask } from './deferredTask';
+import { setupFileActionMenus } from './fileActionMenus';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type DocumentKind = 'text' | 'pdf' | 'image';
@@ -104,7 +105,7 @@ const SESSION_KEY = '7txt:workspace-session:v1';
 const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_TIMELINE_SNAPSHOTS = 16;
@@ -161,17 +162,32 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 if (!app) throw new Error('7TXT could not create its editor window.');
 
+const primaryModifier = navigator.platform.startsWith('Mac') ? 'Meta' : 'Control';
+const fileMenuShortcuts = primaryModifier === 'Meta'
+  ? { text: '⌘N', markdown: '⇧⌘N', open: '⌘O', save: '⌘S' }
+  : { text: 'Ctrl+N', markdown: 'Ctrl+Shift+N', open: 'Ctrl+O', save: 'Ctrl+S' };
+
 app.innerHTML = `
   <main class="app-shell" data-mode="split">
     <header class="titlebar">
       <div class="brand"><button class="brand-mark-button" data-action="toggle-sidebar" title="Hide Files sidebar" aria-label="Hide Files sidebar"><img class="brand-mark" src="${brandIconUrl}" alt="" /></button><strong>7TXT</strong></div>
       <div class="header-actions" aria-label="Workspace actions">
         <div class="header-file-actions">
-          <button class="toolbar-icon-button" data-action="new-text" title="New text tab (⌘N)" aria-label="New text tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg></button>
-          <button class="toolbar-icon-button" data-action="new-markdown" title="New Markdown tab (⇧⌘N)" aria-label="New Markdown tab"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8.5 16v-5l2 2.7L12.5 11v5M15 11v5"/></svg></button>
-          <button class="toolbar-icon-button" data-action="open" title="Open file (⌘O)" aria-label="Open file"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg></button>
-          <button class="open-recents-button" data-action="open-recents" title="Open a recent file" aria-haspopup="dialog">Open Recent</button>
-          <button class="toolbar-icon-button" data-action="save-as" title="Save As (⇧⌘S)" aria-label="Save As"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M10 18l6.4-6.4 2 2L12 20l-3 1z"/></svg></button>
+          <div class="file-action-group">
+            <button type="button" class="file-action-trigger" id="new-tab-menu-button" title="New tab" aria-label="New tab" aria-haspopup="menu" aria-expanded="false" aria-controls="new-tab-menu"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M12 11v6M9 14h6"/></svg><svg class="file-action-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
+            <div class="file-action-menu" id="new-tab-menu" role="menu" aria-labelledby="new-tab-menu-button" hidden>
+              <button type="button" role="menuitem" tabindex="-1" data-action="new-text" aria-keyshortcuts="${primaryModifier}+N"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/></svg><span>Text</span><kbd aria-hidden="true">${fileMenuShortcuts.text}</kbd></button>
+              <button type="button" role="menuitem" tabindex="-1" data-action="new-markdown" aria-keyshortcuts="${primaryModifier}+Shift+N"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h5M8 16v-5l2 2.7 2-2.7v5M15 11v5m-1.5-1.5L15 16l1.5-1.5"/></svg><span>Markdown</span><kbd aria-hidden="true">${fileMenuShortcuts.markdown}</kbd></button>
+            </div>
+          </div>
+          <div class="file-action-group">
+            <button type="button" class="file-action-trigger" id="open-menu-button" title="Open" aria-label="Open" aria-haspopup="menu" aria-expanded="false" aria-controls="open-menu"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg><svg class="file-action-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
+            <div class="file-action-menu" id="open-menu" role="menu" aria-labelledby="open-menu-button" hidden>
+              <button type="button" role="menuitem" tabindex="-1" data-action="open" aria-keyshortcuts="${primaryModifier}+O"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5h7l2 2h9v3M3 10h19l-3 9H3z"/></svg><span>Open File…</span><kbd aria-hidden="true">${fileMenuShortcuts.open}</kbd></button>
+              <button type="button" role="menuitem" tabindex="-1" data-action="open-recents" aria-haspopup="dialog"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.6 7.4M3 4v7h7M12 7v5l3.5 2"/></svg><span>Open Recent</span></button>
+            </div>
+          </div>
+          <button class="toolbar-icon-button save-button" data-action="save" title="Save (${fileMenuShortcuts.save})" aria-label="Save" aria-keyshortcuts="${primaryModifier}+S"><svg class="toolbar-icon toolbar-save-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="save-body" d="M5 3h12l3 3v15H5z"/><path d="M8 3v6h8V3M8 20v-6h8v6"/></svg></button>
         </div>
         <button class="toolbar-icon-button sidebar-toggle" data-action="toggle-sidebar" title="Hide Files sidebar (⇧⌘B)" aria-label="Hide Files sidebar" aria-expanded="true"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM10 4v16M7 8h.01M7 12h.01M7 16h.01"/></svg></button>
         <button class="toolbar-icon-button" data-action="quick-switch" title="Quick switcher (⌘K)" aria-label="Quick switcher"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4M8.5 11h5"/></svg></button>
@@ -185,7 +201,6 @@ app.innerHTML = `
     </nav>
     <section class="toolbar" aria-label="Document controls">
       <div class="quick-actions" aria-label="Quick actions">
-        <button class="toolbar-icon-button save-button" data-action="save" title="Save (⌘S)" aria-label="Save"><svg class="toolbar-icon toolbar-save-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="save-body" d="M5 3h12l3 3v15H5z"/><path d="M8 3v6h8V3M8 20v-6h8v6"/></svg></button>
         <button class="toolbar-icon-button" data-action="find" title="Find (⌘F)" aria-label="Find"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="5.5"/><path d="m16 16 4 4"/></svg></button>
         <button class="toolbar-icon-button folder-bookmark-toggle" data-action="toggle-folder-bookmark" title="Bookmark this folder" aria-label="Bookmark this folder"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></svg></button>
       </div>
@@ -648,6 +663,7 @@ function setEditorSurface(next: string) {
 }
 
 function closeTransientMenus() {
+  fileActionMenus.close();
   for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) menu.open = false;
   openTabsMenu.hidden = true;
 }
@@ -656,6 +672,7 @@ function setupTransientMenus() {
   for (const menu of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
     menu.addEventListener('toggle', () => {
       if (!menu.open) return;
+      fileActionMenus.close();
       for (const other of app!.querySelectorAll<HTMLDetailsElement>('.theme-picker, .editor-appearance')) {
         if (other !== menu) other.open = false;
       }
@@ -1011,9 +1028,10 @@ function helpMarkup(section: HelpSection) {
         <section class="help-topic" aria-labelledby="help-topic-title">
           <p class="help-eyebrow">RELEASE NOTES</p>
           <h2 id="help-topic-title">What’s new in ${APP_VERSION}</h2>
-          <p class="help-lede">Version 1.0.2 adds an optional update checker for macOS and Windows.</p>
+          <p class="help-lede">Version 1.0.3 makes the file toolbar more compact.</p>
           <div class="release-history">
-            <article class="release-entry current"><div class="release-version">1.0.2</div><div><h3>Check for app updates</h3><ul><li>Check for Updates from the app menu, Help, About, or the command palette.</li><li>Choose optional daily checks, off by default, with a small notice when an update is available.</li><li>Direct macOS and Windows installations check GitHub; Microsoft Store installations check the Store.</li><li>Downloads open only when requested. Your documents and file paths stay on your device.</li></ul></div></article>
+            <article class="release-entry current"><div class="release-version">${APP_VERSION}</div><div><h3>A simpler file toolbar</h3><ul><li>Use the New tab icon for Text and Markdown.</li><li>Use the Open folder icon for Open File and Open Recent.</li><li>Save sits beside the two menus. Save As is in the File menu and command palette.</li></ul></div></article>
+            <article class="release-entry"><div class="release-version">1.0.2</div><div><h3>Check for app updates</h3><ul><li>Check for Updates from the app menu, Help, About, or the command palette.</li><li>Choose optional daily checks, off by default, with a small notice when an update is available.</li><li>Direct macOS and Windows installations check GitHub; Microsoft Store installations check the Store.</li><li>Downloads open only when requested. Your documents and file paths stay on your device.</li></ul></div></article>
             <article class="release-entry"><div class="release-version">1.0.0</div><div><h3>A complete everyday workspace</h3><ul><li>Reliable, reorderable tabs, an all-tabs list, bulk close commands, and restored workspace state.</li><li>A navigable folder browser with recents, bookmarks, home/Documents shortcuts, and broad text-file opening based on content rather than filename extension.</li><li>Markdown tables, a resizable preview, Markdown-only Focused Reading, clean PDF/HTML export, plus local timeline and recovery.</li><li>PDF and image viewing with local highlight and note annotations.</li><li>Editor fonts, sizes, surfaces, themes, interface scaling, line numbers, and explicit text encoding for opening and saving.</li></ul></div></article>
             <article class="release-entry"><div class="release-version muted">0.1.10</div><div><h3>The foundation</h3><p>Native text and Markdown editing, local save/open, basic preview, files sidebar, and a deliberately lightweight workflow.</p></div></article>
           </div>
@@ -3870,9 +3888,14 @@ function handleAction(action?: string) {
   }
 }
 
+const fileActionMenus = setupFileActionMenus(required<HTMLElement>('.header-file-actions'), {
+  canOpen: () => recoveryReady && !shell.inert && !isCloseConfirmationOpen() && !isAskAiOpen() && !isUpdatesOpen(),
+  beforeOpen: closeTransientMenus,
+});
+
 app.addEventListener('pointerdown', (event) => {
   if (!(event.target instanceof Element)) return;
-  if (event.target.closest('.theme-picker, .editor-appearance, .open-tabs-popover')) return;
+  if (event.target.closest('.theme-picker, .editor-appearance, .open-tabs-popover, .file-action-group')) return;
   closeTransientMenus();
 });
 

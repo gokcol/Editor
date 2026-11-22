@@ -22,9 +22,12 @@ Markdown outline, and the visible Markdown preview refresh after a 200 ms typing
 pause. Opening a panel, switching documents, or printing refreshes the relevant
 view immediately. Closed split panes do not keep a second copy of the text.
 
-Use **File → Open Recent**, the **Open Recent** button beside Open, or the command
-palette to reopen files from the same local history shown in the sidebar. The
-menu also works with the sidebar hidden or in Zen mode. **Clear Recent Items**
+Use **Open → Open Recent**, **File → Open Recent**, or the command palette to
+reopen files from the same local history shown in the sidebar. Hover or click
+**Open** for Open File / Open Recent, and **New tab** for Text / Markdown.
+The toolbar has one Save button beside these menus; Save As remains in File
+and the command palette, with its existing keyboard shortcut. File → Open Recent
+and the command palette also work with the sidebar hidden or in Zen mode. **Clear Recent Items**
 clears only this history; saved files, open tabs, and recovery data remain intact.
 
 An optional **Ask AI** toolbar button sends a prompt through the installed Codex
