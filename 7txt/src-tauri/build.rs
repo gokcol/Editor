@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "recovery_finish_close",
     "open_file",
     "open_recent",
+    "open_markdown_link",
     "sync_recent_menu",
     "open_folder",
     "browse_folder",

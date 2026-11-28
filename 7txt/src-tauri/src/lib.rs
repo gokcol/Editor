@@ -931,7 +931,7 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         )?)
         .build()?;
     let view = SubmenuBuilder::new(app, "View")
-        .item(&item(app, "mode-edit", "Edit", Some("CmdOrCtrl+1"))?)
+        .item(&item(app, "mode-edit", "Source", Some("CmdOrCtrl+1"))?)
         .item(&item(
             app,
             "mode-split",
@@ -943,6 +943,12 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
             "mode-preview",
             "Markdown Preview",
             Some("CmdOrCtrl+3"),
+        )?)
+        .item(&item(
+            app,
+            "mode-visual",
+            "Edit Formatted Markdown",
+            Some("CmdOrCtrl+4"),
         )?)
         .item(&item(app, "toggle-preview", "Show / Hide Markdown Preview", None)?)
         .item(&item(app, "reading-mode", "Focused Reading Mode", None)?)
@@ -981,6 +987,23 @@ fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
         .build()
 }
 
+fn markdown_link_url(url: &str) -> Result<tauri::Url, String> {
+    let parsed = tauri::Url::parse(url).map_err(|_| "Invalid link address.")?;
+    if !matches!(parsed.scheme(), "https" | "http" | "mailto")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Only web and email links can be opened here.".into());
+    }
+    Ok(parsed)
+}
+
+#[tauri::command]
+fn open_markdown_link(url: String) -> Result<(), String> {
+    let parsed = markdown_link_url(&url)?;
+    tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>).map_err(|error| error.to_string())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(codex_ai::CodexAiState::default())
@@ -1013,6 +1036,7 @@ pub fn run() {
             recent_menu::sync_recent_menu,
             open_file,
             open_recent,
+            open_markdown_link,
             open_folder,
             browse_folder,
             refresh_folder,
@@ -1051,6 +1075,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_link_opener_only_accepts_web_and_email_addresses() {
+        for address in ["https://example.com/notes", "http://example.com", "mailto:hello@example.com"] {
+            assert!(markdown_link_url(address).is_ok(), "{address}");
+        }
+        for address in [
+            "file:///tmp/notes.md",
+            "javascript:void(0)",
+            "data:text/plain,notes",
+            "https://user:password@example.com",
+            "./notes.md",
+        ] {
+            assert!(markdown_link_url(address).is_err(), "{address}");
+        }
+    }
 
     #[test]
     fn conflict_checks_bytes_and_rejects_disk_changes_since_review() {

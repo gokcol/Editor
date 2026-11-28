@@ -17,6 +17,7 @@
     "allow-recovery-finish-close",
     "allow-open-file",
     "allow-open-recent",
+    "allow-open-markdown-link",
     "allow-sync-recent-menu",
     "allow-open-folder",
     "allow-browse-folder",

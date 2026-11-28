@@ -17,8 +17,11 @@ import { recordHistory, type DocumentHistory } from './history';
 import { TextIndex } from './textIndex';
 import { createDeferredTask } from './deferredTask';
 import { setupFileActionMenus } from './fileActionMenus';
+import { visualMarkdownMarkup } from './visualMarkdownMarkup';
+import { visualMarkdownAllowed } from './visualMarkdownSource';
 
-type ViewMode = 'edit' | 'split' | 'preview';
+type ViewMode = 'edit' | 'split' | 'preview' | 'visual';
+type VisualEditor = Awaited<ReturnType<typeof import('./visualMarkdown').mountVisualMarkdown>>;
 type DocumentKind = 'text' | 'pdf' | 'image';
 type AnnotationKind = 'highlight' | 'note';
 type HelpSection = 'getting-started' | 'shortcuts' | 'whats-new' | 'about';
@@ -105,7 +108,7 @@ const SESSION_KEY = '7txt:workspace-session:v1';
 const WORKBENCH_STATE_KEY = '7txt:workbench-state:v1';
 const RECOVERY_KEY = '7txt:recovery-drafts:v1';
 const SAVE_TARGET_MISSING_PREFIX = 'SAVE_TARGET_MISSING:';
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 const MAX_RECENTS = 14;
 const MAX_FOLDER_BOOKMARKS = 12;
 const MAX_TIMELINE_SNAPSHOTS = 16;
@@ -207,7 +210,7 @@ app.innerHTML = `
       <label class="encoding-control" title="Text encoding — click to choose how this document is opened or saved."><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12"/></svg><select data-encoding aria-label="Text encoding">${CHARACTER_ENCODINGS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
       <button data-action="reopen-encoding" class="toolbar-icon-button reopen-encoding" title="Reload this saved document using the selected encoding" aria-label="Reload using selected encoding"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5M20 5v6h-6"/></svg></button>
       <div class="view-switch" role="group" aria-label="View mode">
-        <button data-mode-button="edit" title="Edit view (⌘1)">Edit</button>
+        <button data-mode-button="edit" title="Markdown source (⌘1)">Source</button>
         <button data-mode-button="split" title="Split view (⌘2)">Split</button>
         <button data-mode-button="preview" title="Preview (⌘3)">Preview</button>
       </div>
@@ -276,13 +279,14 @@ app.innerHTML = `
         <div class="external-change" hidden><span></span><button data-action="reload-external">Use disk</button><button data-action="compare-external">Compare</button><button data-action="ignore-external">Keep mine…</button><button data-action="save-both-external">Save As…</button></div>
         <div class="recovery-status" role="alert" hidden></div>
         <div class="recovered-notice" hidden><span></span><button data-action="save-as">Save As…</button><button data-action="close">Close…</button></div>
-        <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span></div>
+        <div class="editor-heading"><span class="format-chip"></span><span class="editor-mode-label">Plain text</span><span class="editor-status"></span><button class="preview-mode-action preview-done" type="button" data-action="mode-preview" aria-label="Finish visual editing" hidden><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>Done</button></div>
         <div class="editor-surface"><div class="editor-view"><pre class="line-numbers" aria-hidden="true">1</pre><textarea class="editor" aria-label="Text editor" spellcheck="true" placeholder="Start writing…"></textarea></div><div class="editor-view editor-secondary-view"><pre class="line-numbers line-numbers-secondary" aria-hidden="true">1</pre><textarea class="editor editor-secondary" aria-label="Second text editor pane" spellcheck="true" placeholder="Start writing…"></textarea></div></div>
+        ${visualMarkdownMarkup}
         <div class="empty-workspace" hidden><strong>No file open</strong><span>Create a note or open a file to begin.</span><div><button data-action="new-text">New text</button><button data-action="new-markdown">New Markdown</button><button data-action="open">Open file</button></div></div>
       </section>
       <div class="preview-resizer" role="separator" aria-label="Resize Markdown preview" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="760" tabindex="0"></div>
       <section class="preview-pane">
-        <div class="preview-heading"><span>PREVIEW</span><span class="preview-kind"></span></div>
+        <div class="preview-heading"><span>PREVIEW</span><span class="preview-kind"></span><button class="preview-mode-action preview-edit" type="button" data-action="mode-visual" aria-label="Edit formatted Markdown" title="Edit formatted Markdown (${primaryModifier === 'Meta' ? '⌘' : 'Ctrl+'}4)" hidden><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 15 10-10 4 4L9 19l-5 1zM13.5 6.5l4 4"/></svg>Edit</button></div>
         <article class="markdown-preview" aria-label="Document preview"></article>
       </section>
       <section class="media-pane" hidden aria-label="Media viewer">
@@ -328,7 +332,9 @@ let aiSelectionPane: 'primary' | 'secondary' = 'primary';
 const secondaryEditor = required<HTMLTextAreaElement>('.editor-secondary');
 const lineNumbers = required<HTMLElement>('.line-numbers');
 const secondaryLineNumbers = required<HTMLElement>('.line-numbers-secondary');
-const preview = required<HTMLElement>('.markdown-preview');
+const preview = required<HTMLElement>('.preview-pane .markdown-preview');
+const previewEditButton = required<HTMLButtonElement>('.preview-edit');
+const previewDoneButton = required<HTMLButtonElement>('.preview-done');
 const previewPane = required<HTMLElement>('.preview-pane');
 const viewSwitch = required<HTMLElement>('.view-switch');
 const emptyWorkspaceMessage = required<HTMLElement>('.empty-workspace');
@@ -404,6 +410,12 @@ let documentState: TextDocument = firstDocument;
 let workspaceEmpty = false;
 let tabDrag: { id: string; pointerId: number; startX: number; dragging: boolean } | null = null;
 let viewMode: ViewMode = savedWorkbenchState.viewMode || 'split';
+let visualEditor: VisualEditor | undefined;
+let visualRequest: { id: string } | undefined;
+const visualPane = required<HTMLElement>('.visual-markdown');
+const visualToolbar = required<HTMLElement>('.visual-format');
+const visualDocument = required<HTMLElement>('.visual-document');
+const visualLoading = required<HTMLElement>('.visual-loading');
 let projectFolder: ProjectFolder | null = null;
 let showHiddenFiles = savedWorkbenchState.showHiddenFiles || false;
 let folderFilterValue = savedWorkbenchState.folderFilterValue || '';
@@ -594,7 +606,7 @@ function persistWorkbenchState() {
   try {
     const projectFolderPath = projectFolder?.path || localStorage.getItem(PROJECT_FOLDER_KEY) || savedWorkbenchState.projectFolderPath;
     const state: WorkbenchState = {
-      viewMode,
+      viewMode: viewMode === 'visual' ? 'preview' : viewMode,
       editorSplit,
       zenMode,
       readingMode,
@@ -996,7 +1008,7 @@ function openTimeline() {
 
 function closeTimeline() {
   timelinePanel.hidden = true;
-  if (!isMediaDocument(documentState)) editor.focus();
+  focusActiveEditor();
 }
 
 function isHelpSection(value: string | undefined): value is HelpSection {
@@ -1018,8 +1030,9 @@ function helpMarkup(section: HelpSection) {
             <div><kbd>⌘W</kbd><span>Close current tab</span></div><div><kbd>⌘F</kbd><span>Find</span></div>
             <div><kbd>⌘L</kbd><span>Go to line</span></div><div><kbd>⌘K</kbd><span>Quick switcher</span></div>
             <div><kbd>⇧⌘P</kbd><span>Command Palette</span></div><div><kbd>⇧⌘B</kbd><span>Show or hide Files sidebar</span></div>
-            <div><kbd>⌘1</kbd><span>Edit view</span></div><div><kbd>⌘2</kbd><span>Split Markdown preview</span></div>
-            <div><kbd>⌘3</kbd><span>Markdown preview</span></div><div><kbd>⌘Z</kbd><span>Undo</span></div>
+            <div><kbd>⌘1</kbd><span>Source view</span></div><div><kbd>⌘2</kbd><span>Split Markdown preview</span></div>
+            <div><kbd>⌘3</kbd><span>Markdown preview</span></div><div><kbd>⌘4</kbd><span>Edit formatted Markdown</span></div>
+            <div><kbd>⌘Z</kbd><span>Undo</span></div>
           </div>
           <p class="help-note">Use the Command Palette for less-frequent actions such as export, typography, reflow, themes, and document tools.</p>
         </section>`;
@@ -1028,9 +1041,10 @@ function helpMarkup(section: HelpSection) {
         <section class="help-topic" aria-labelledby="help-topic-title">
           <p class="help-eyebrow">RELEASE NOTES</p>
           <h2 id="help-topic-title">What’s new in ${APP_VERSION}</h2>
-          <p class="help-lede">Version 1.0.3 makes the file toolbar more compact.</p>
+          <p class="help-lede">Edit formatted Markdown from the Preview pane.</p>
           <div class="release-history">
-            <article class="release-entry current"><div class="release-version">${APP_VERSION}</div><div><h3>A simpler file toolbar</h3><ul><li>Use the New tab icon for Text and Markdown.</li><li>Use the Open folder icon for Open File and Open Recent.</li><li>Save sits beside the two menus. Save As is in the File menu and command palette.</li></ul></div></article>
+            <article class="release-entry current"><div class="release-version">${APP_VERSION}</div><div><h3>Visual Markdown editing</h3><ul><li>Open Preview and choose Edit to use the compact formatting toolbar. Choose Done to return to reading.</li><li>Right-click tables and lists for editing commands. Click a link to edit, open, or remove it.</li><li>Use the magnifying glass to find and replace in the formatted document.</li><li>Source and Split remain available. Switching views preserves the Markdown file.</li></ul></div></article>
+            <article class="release-entry"><div class="release-version">1.0.3</div><div><h3>A simpler file toolbar</h3><ul><li>Use the New tab icon for Text and Markdown.</li><li>Use the Open folder icon for Open File and Open Recent.</li><li>Save sits beside the two menus. Save As is in the File menu and command palette.</li></ul></div></article>
             <article class="release-entry"><div class="release-version">1.0.2</div><div><h3>Check for app updates</h3><ul><li>Check for Updates from the app menu, Help, About, or the command palette.</li><li>Choose optional daily checks, off by default, with a small notice when an update is available.</li><li>Direct macOS and Windows installations check GitHub; Microsoft Store installations check the Store.</li><li>Downloads open only when requested. Your documents and file paths stay on your device.</li></ul></div></article>
             <article class="release-entry"><div class="release-version">1.0.0</div><div><h3>A complete everyday workspace</h3><ul><li>Reliable, reorderable tabs, an all-tabs list, bulk close commands, and restored workspace state.</li><li>A navigable folder browser with recents, bookmarks, home/Documents shortcuts, and broad text-file opening based on content rather than filename extension.</li><li>Markdown tables, a resizable preview, Markdown-only Focused Reading, clean PDF/HTML export, plus local timeline and recovery.</li><li>PDF and image viewing with local highlight and note annotations.</li><li>Editor fonts, sizes, surfaces, themes, interface scaling, line numbers, and explicit text encoding for opening and saving.</li></ul></div></article>
             <article class="release-entry"><div class="release-version muted">0.1.10</div><div><h3>The foundation</h3><p>Native text and Markdown editing, local save/open, basic preview, files sidebar, and a deliberately lightweight workflow.</p></div></article>
@@ -1053,7 +1067,7 @@ function helpMarkup(section: HelpSection) {
           <p class="help-eyebrow">WELCOME TO 7TXT</p>
           <h2 id="help-topic-title">Start simply</h2>
           <p class="help-lede">Open a document, make the space yours, and stay with the writing. 7TXT saves locally and preserves your workspace between launches.</p>
-          <ol class="help-steps"><li><span>1</span><div><strong>Open a file or folder</strong><p>Use File → Open, drag files in, or choose a folder for a navigable Files sidebar. Use the star to bookmark folders you revisit.</p></div></li><li><span>2</span><div><strong>Work in tabs</strong><p>Create text or Markdown tabs, drag tabs to reorder them, and use the list button beside the tabs to jump or close several at once.</p></div></li><li><span>3</span><div><strong>Choose the right view</strong><p>Markdown supports Edit, Split, and Preview. Focused Reading is deliberately available only for Markdown; PDFs and images open in the viewer.</p></div></li><li><span>4</span><div><strong>Save with confidence</strong><p>Choose an encoding before reopening or saving, and use the local timeline and recovery copies as a safety net while you write.</p></div></li></ol>
+          <ol class="help-steps"><li><span>1</span><div><strong>Open a file or folder</strong><p>Use File → Open, drag files in, or choose a folder for a navigable Files sidebar. Use the star to bookmark folders you revisit.</p></div></li><li><span>2</span><div><strong>Work in tabs</strong><p>Create text or Markdown tabs, drag tabs to reorder them, and use the list button beside the tabs to jump or close several at once.</p></div></li><li><span>3</span><div><strong>Choose the right view</strong><p>Markdown supports Source, Split, and Preview. Choose Edit in Preview to work on the formatted document. PDFs and images open in the viewer.</p></div></li><li><span>4</span><div><strong>Save with confidence</strong><p>Choose an encoding before reopening or saving, and use the local timeline and recovery copies as a safety net while you write.</p></div></li></ol>
         </section>`;
   }
 }
@@ -1080,7 +1094,7 @@ function openHelp(section: HelpSection = 'getting-started') {
 
 function closeHelp() {
   helpPanel.hidden = true;
-  if (!isMediaDocument(documentState)) editor.focus();
+  focusActiveEditor();
 }
 
 function restoreTimelineSnapshot(snapshot: TimelineSnapshot) {
@@ -1132,8 +1146,9 @@ function createDocument(isMarkdown = false) {
 function openAskAi() {
   const input = editorSplit && aiSelectionPane === 'secondary' ? secondaryEditor : editor;
   const text = !workspaceEmpty && !isMediaDocument(documentState) ? documentState.content : '';
+  const selection = viewMode === 'visual' ? visualEditor?.selectedText() ?? '' : text.slice(input.selectionStart, input.selectionEnd);
   void showAskAi({
-    context: { name: workspaceEmpty ? '' : documentState.name, document: text, selection: text.slice(input.selectionStart, input.selectionEnd) },
+    context: { name: workspaceEmpty ? '' : documentState.name, document: text, selection },
     openDraft: (reply) => {
       const draft = blankDocument(true);
       draft.name = 'AI reply.md';
@@ -1795,7 +1810,7 @@ function restoreHistory(nextIndex: number) {
   setCurrentDocument({ ...documentState, content: history.entries[history.index] });
   syncEditorValues();
   renderTextEdit();
-  editor.focus();
+  focusActiveEditor();
   updateCursor();
   scheduleRecovery();
 }
@@ -2174,12 +2189,82 @@ function renderTextEdit() {
   updateTabDirty(documentState);
   renderLineNumbers();
   updateCursor();
+  renderVisualMarkdown();
   derivedViews.schedule();
+}
+
+function focusActiveEditor() {
+  if (viewMode === 'visual') visualEditor?.focus();
+  else if (!isMediaDocument(documentState)) editor.focus();
+}
+
+function closeVisualMarkdown() {
+  visualRequest = undefined;
+  if (visualEditor) void visualEditor.destroy();
+  visualEditor = undefined;
+  visualDocument.replaceChildren();
+}
+
+function fallBackToSource(message: string) {
+  setViewMode('edit');
+  showToast(message, 'info');
+}
+
+function renderVisualMarkdown() {
+  const showing = viewMode === 'visual' && !workspaceEmpty && documentState.isMarkdown && !isMediaDocument(documentState);
+  visualPane.hidden = !showing;
+  if (!showing) {
+    if (visualRequest) closeVisualMarkdown();
+    return;
+  }
+  if (visualRequest?.id === documentState.id) {
+    try {
+      if (!visualEditor || visualEditor.sync(documentState.content)) return;
+    } catch { /* Leave the document in Source if it can no longer round-trip. */ }
+    fallBackToSource('Visual can’t safely edit this Markdown. It’s open in Source.');
+    return;
+  }
+
+  closeVisualMarkdown();
+  if (!visualMarkdownAllowed(documentState.content)) {
+    fallBackToSource('This file is too large for Visual. It’s open in Source.');
+    return;
+  }
+  const request = { id: documentState.id };
+  visualRequest = request;
+  visualToolbar.hidden = true;
+  visualLoading.hidden = false;
+  const host = document.createElement('div');
+  visualDocument.append(host);
+  const source = documentState.content;
+  void import('./visualMarkdown').then(module => {
+    if (visualRequest !== request) return;
+    return module.mountVisualMarkdown(host, visualToolbar, source, {
+      onChange: next => {
+        if (visualRequest === request && activeDocumentId === request.id) recordContent(next);
+      },
+      onUnsafeEdit: () => showToast('This edit can’t be represented safely in Markdown. Use Source for this change.', 'info'),
+      onOpenLink: url => void invoke('open_markdown_link', { url }).catch(error => showToast(errorMessage(error), 'error')),
+    });
+  }).then(instance => {
+    if (!instance) return;
+    if (visualRequest !== request) {
+      void instance.destroy();
+      return;
+    }
+    visualEditor = instance;
+    visualLoading.hidden = true;
+    visualToolbar.hidden = false;
+    renderVisualMarkdown();
+    visualEditor?.focus();
+  }).catch(() => {
+    if (visualRequest === request) fallBackToSource('Visual couldn’t open this Markdown safely. It’s open in Source.');
+  });
 }
 
 function previewIsVisible() {
   return !workspaceEmpty && documentState.isMarkdown && !isMediaDocument(documentState)
-    && previewEnabled && viewMode !== 'edit' && (viewMode === 'preview' || !compactPreviewLayout.matches);
+    && previewEnabled && (viewMode === 'preview' || (viewMode === 'split' && !compactPreviewLayout.matches));
 }
 
 function renderVisibleOutline() {
@@ -2217,7 +2302,7 @@ function render() {
   currentTextIndex();
   const isMedia = isMediaDocument(documentState);
   if (!isMedia && !documentState.isMarkdown && viewMode !== 'edit') viewMode = 'edit';
-  if (!isMedia && documentState.isMarkdown && !previewEnabled && viewMode !== 'edit') viewMode = 'edit';
+  if (!previewEnabled && (viewMode === 'split' || viewMode === 'preview')) viewMode = 'edit';
   if (isMedia || !documentState.isMarkdown) readingMode = false;
   const hasMarkdownPreview = !isMedia && documentState.isMarkdown;
   shell.dataset.mode = viewMode;
@@ -2240,15 +2325,17 @@ function render() {
   required<HTMLElement>('.format-chip').textContent = workspaceEmpty ? '—' : documentKindLabel(documentState);
   required<HTMLElement>('.format-chip').hidden = workspaceEmpty;
   required<HTMLElement>('.format-chip').classList.toggle('markdown', documentState.isMarkdown);
-  required<HTMLElement>('.editor-mode-label').textContent = workspaceEmpty ? 'No file open' : documentState.isMarkdown ? 'Markdown' : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
+  required<HTMLElement>('.editor-mode-label').textContent = workspaceEmpty ? 'No file open' : documentState.isMarkdown ? (viewMode === 'visual' ? 'Editing Markdown' : 'Markdown') : documentState.kind === 'text' ? 'Plain text' : documentState.kind === 'pdf' ? 'PDF document' : 'Image';
   required<HTMLElement>('.editor-status').textContent = workspaceEmpty ? '' : isDirty() ? (isMedia ? 'Unsaved annotations' : 'Unsaved changes') : documentState.path ? 'Saved to file' : 'Unsaved draft';
   if (workspaceEmpty || isMedia) documentStatistics.textContent = workspaceEmpty ? 'No open files' : `${documentState.kind === 'pdf' ? 'PDF' : 'Image'} · ${documentState.annotations?.length || 0} annotation${documentState.annotations?.length === 1 ? '' : 's'}`;
   required<HTMLElement>('.preview-kind').textContent = documentState.isMarkdown ? 'MARKDOWN' : 'TEXT';
+  previewEditButton.hidden = viewMode !== 'preview' || !hasMarkdownPreview || workspaceEmpty;
+  previewDoneButton.hidden = viewMode !== 'visual';
   encodingSelect.value = documentState.encoding;
   encodingSelect.closest<HTMLElement>('.encoding-control')?.toggleAttribute('hidden', isMedia);
   reopenEncodingButton.hidden = isMedia;
   reopenEncodingButton.disabled = isMedia || !documentState.path;
-  for (const action of app!.querySelectorAll<HTMLElement>('.markdown-actions')) action.hidden = !documentState.isMarkdown;
+  for (const action of app!.querySelectorAll<HTMLElement>('.markdown-actions')) action.hidden = !documentState.isMarkdown || viewMode === 'visual';
   const conflicted = documents.find((document) => document.id === activeDocumentId && document.conflict && document.path)
     ?? documents.find((document) => document.conflict && document.path);
   externalChange = conflicted ? { path: conflicted.path!, name: conflicted.name } : null;
@@ -2256,10 +2343,14 @@ function render() {
   required<HTMLElement>('.external-change span').textContent = externalChange ? `${externalChange.name} changed on disk. Autosave paused.` : '';
   required<HTMLElement>('.recovered-notice').hidden = !documentState.recoveryDraft;
   required<HTMLElement>('.recovered-notice span').textContent = `Recovered draft${documentState.recoveryOrigin ? ` — ${documentState.recoveryOrigin}` : ''}`;
-  required<HTMLElement>('.status-help').textContent = isMedia ? 'Click Highlight or Note, then click the canvas · ⌘S Save notes' : documentState.isMarkdown ? '⌘1 Edit · ⌘2 Split · ⌘3 Preview' : '⌘O Open · ⌘S Save · ⌘F Find';
+  const modifier = primaryModifier === 'Meta' ? '⌘' : 'Ctrl+';
+  required<HTMLElement>('.status-help').textContent = isMedia ? 'Click Highlight or Note, then click the canvas · ⌘S Save notes' : documentState.isMarkdown ? `${modifier}1 Source · ${modifier}2 Split · ${modifier}3 Preview · ${modifier}4 Edit preview` : '⌘O Open · ⌘S Save · ⌘F Find';
+  const selectedView = viewMode === 'visual' ? 'preview' : viewMode;
   for (const button of app!.querySelectorAll<HTMLButtonElement>('[data-mode-button]')) {
+    const selected = !isMedia && button.dataset.modeButton === selectedView;
     button.hidden = isMedia;
-    button.classList.toggle('selected', !isMedia && button.dataset.modeButton === viewMode);
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
   }
   applyPreviewLayout();
   if (isMedia) void renderMediaDocument();
@@ -2267,6 +2358,7 @@ function render() {
   renderRecents();
   renderLineNumbers(true);
   updateCursor();
+  renderVisualMarkdown();
   derivedViews.flush();
   persistWorkbenchState();
   scheduleRecovery();
@@ -2612,13 +2704,47 @@ function renderInline(value: string) {
   output = output.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   output = output.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   output = output.replace(/_([^_]+)_/g, '<em>$1</em>');
+  output = output.replace(/~~([^~]+)~~/g, '<del>$1</del>');
   return output;
 }
 
 function renderListItem(value: string) {
-  const task = /^\[([ xX])\]\s+(.+)$/.exec(value);
+  const task = /^\[([ xX])\](?:[ \t]+(.*))?$/.exec(value);
   if (!task) return renderInline(value);
-  return `<label class="markdown-task"><input type="checkbox" disabled${task[1].toLowerCase() === 'x' ? ' checked' : ''} />${renderInline(task[2])}</label>`;
+  return `<label class="markdown-task"><input type="checkbox" disabled${task[1].toLowerCase() === 'x' ? ' checked' : ''} />${renderInline(task[2] ?? '')}</label>`;
+}
+
+function markdownListMarker(line: string) {
+  const match = /^([ \t]*)(?:[-+*]|(\d{1,9})\.)(?:[ \t]+(.*))?$/.exec(line);
+  if (!match) return null;
+  const indent = Array.from(match[1]).reduce((width, char) => width + (char === '\t' ? 4 - width % 4 : 1), 0);
+  return { indent, tag: match[2] === undefined ? 'ul' : 'ol', start: Number(match[2] ?? 1), text: match[3] ?? '' };
+}
+
+function renderMarkdownList(lines: string[], start: number, minimumIndent: number) {
+  const output: string[] = [];
+  const stack: { indent: number; tag: string }[] = [];
+  const closeList = () => output.push(`</li></${stack.pop()!.tag}>`);
+  let index = start;
+  while (index < lines.length) {
+    let next = index;
+    while (next < lines.length && !lines[next].trim()) next++;
+    const item = next < lines.length ? markdownListMarker(lines[next]) : null;
+    if (!item || item.indent < minimumIndent) break;
+    index = next + 1;
+    while (stack.length && stack.at(-1)!.indent > item.indent) closeList();
+    if (stack.at(-1)?.indent === item.indent && stack.at(-1)?.tag !== item.tag) closeList();
+    if (stack.at(-1)?.indent === item.indent) {
+      output.push('</li>');
+    } else {
+      const orderedStart = item.tag === 'ol' && item.start !== 1 ? ` start="${item.start}"` : '';
+      output.push(`<${item.tag}${orderedStart}>`);
+      stack.push(item);
+    }
+    output.push(`<li>${renderListItem(item.text)}`);
+  }
+  while (stack.length) closeList();
+  return { html: output.join(''), index };
 }
 
 function renderParagraph(lines: string[]) {
@@ -2638,7 +2764,7 @@ function markdownTableCells(line: string) {
 
 function markdownTableRule(line: string) {
   const cells = markdownTableCells(line);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 
 function tableAlignment(rule: string) {
@@ -2694,17 +2820,11 @@ function renderMarkdown(source: string) {
       output.push(`<blockquote>${renderInline(quote.join(' '))}</blockquote>`);
       continue;
     }
-    if (/^(?:[-*+]\s+|\d+\.\s+)/.test(line)) {
-      const ordered = /^\d+\.\s+/.test(line);
-      const items: string[] = [];
-      const expression = ordered ? /^\d+\.\s+(.+)$/ : /^(?:[-*+]\s+)(.+)$/;
-      while (index < lines.length) {
-        const match = expression.exec(lines[index]);
-        if (!match) break;
-        items.push(`<li>${renderListItem(match[1])}</li>`);
-        index += 1;
-      }
-      output.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`);
+    const list = markdownListMarker(line);
+    if (list && list.indent < 4) {
+      const result = renderMarkdownList(lines, index, list.indent);
+      output.push(result.html);
+      index = result.index;
       continue;
     }
     const paragraph: string[] = [line];
@@ -2721,6 +2841,10 @@ function renderMarkdown(source: string) {
 function updateCursor() {
   if (isMediaDocument(documentState)) {
     cursorStatus.textContent = 'Media view';
+    return;
+  }
+  if (viewMode === 'visual') {
+    cursorStatus.textContent = 'Visual';
     return;
   }
   const source = activeEditor();
@@ -2794,12 +2918,20 @@ function goToLine(line: number) {
 
 function setViewMode(next: ViewMode) {
   if (isMediaDocument(documentState)) return;
+  if (next === 'visual' && (!documentState.isMarkdown || workspaceEmpty)) return;
   if (documentState.isMarkdown && next !== 'edit' && !previewEnabled) {
     previewEnabled = true;
     localStorage.setItem(PREVIEW_VISIBLE_KEY, 'true');
   }
+  const previous = viewMode;
+  if (!findbar.hidden && ((next === 'visual' && previous !== 'visual') || (previous === 'visual' && next === 'preview'))) {
+    closeFind();
+  }
+  if (next !== 'preview') readingMode = false;
   viewMode = documentState.isMarkdown ? next : 'edit';
   render();
+  if (previous === 'visual' && next === 'preview') previewEditButton.focus({ preventScroll: true });
+  else if (previous === 'visual' && (next === 'edit' || next === 'split')) focusActiveEditor();
 }
 
 async function openFile() {
@@ -3140,9 +3272,10 @@ function openFind() {
 }
 
 function closeFind() {
+  visualEditor?.search.clear();
   findbar.hidden = true;
   shell.classList.remove('find-open');
-  if (!isMediaDocument(documentState)) editor.focus();
+  focusActiveEditor();
 }
 
 function searchExpression(global = true): RegExp | null {
@@ -3179,6 +3312,11 @@ function selectMatch(match: { index: number; text: string }) {
 }
 
 function findNext() {
+  if (viewMode === 'visual') {
+    const expression = searchExpression();
+    if (expression && visualEditor && !visualEditor.search.next(expression)) showToast(`“${findInput.value}” was not found.`);
+    return;
+  }
   const match = nextMatch();
   if (!match) { showToast(`“${findInput.value}” was not found.`); return; }
   selectMatch(match);
@@ -3193,6 +3331,7 @@ function selectionMatchesQuery() {
 
 function replaceOne() {
   if (!findInput.value) return;
+  if (viewMode === 'visual') { replaceVisual(false); return; }
   if (!selectionMatchesQuery()) {
     const match = nextMatch();
     if (!match) { showToast(`“${findInput.value}” was not found.`); return; }
@@ -3208,6 +3347,7 @@ function replaceOne() {
 }
 
 function replaceAll() {
+  if (viewMode === 'visual') { replaceVisual(true); return; }
   const expression = searchExpression();
   if (!expression) return;
   let count = 0;
@@ -3215,6 +3355,15 @@ function replaceAll() {
   if (!count) { showToast(`“${findInput.value}” was not found.`); return; }
   recordContent(next);
   showToast(`Replaced ${count} occurrence${count === 1 ? '' : 's'}.`, 'success');
+}
+
+function replaceVisual(all: boolean) {
+  const expression = searchExpression();
+  if (!expression || !visualEditor) return;
+  const count = visualEditor.search.replace(expression, replaceInput.value, all);
+  if (count === null) return;
+  if (count === 0) showToast(`“${findInput.value}” was not found.`);
+  else showToast(`Replaced ${count} occurrence${count === 1 ? '' : 's'}.`, 'success');
 }
 
 function activeEditor() {
@@ -3233,6 +3382,7 @@ function insertAtSelection(value: string) {
 }
 
 function selectedTextRange() {
+  if (viewMode === 'visual') setViewMode('edit');
   const target = activeEditor();
   if (target.selectionStart !== target.selectionEnd) {
     return { start: target.selectionStart, end: target.selectionEnd, text: documentState.content.slice(target.selectionStart, target.selectionEnd) };
@@ -3312,12 +3462,14 @@ function trimTrailingWhitespace() {
 
 function insertMarkdownTable() {
   if (!documentState.isMarkdown) { showToast('Markdown tools are available for Markdown documents.', 'error'); return; }
+  if (viewMode === 'visual') { visualToolbar.querySelector<HTMLButtonElement>('[data-format="table"]')?.click(); return; }
   insertAtSelection('| Column | Column |\n| --- | --- |\n| Value | Value |');
   showToast('Inserted a Markdown table.', 'success');
 }
 
 async function insertMarkdownLink() {
   if (!documentState.isMarkdown) { showToast('Markdown link tools are available for Markdown documents.', 'error'); return; }
+  if (viewMode === 'visual') { visualToolbar.querySelector<HTMLButtonElement>('[data-format="link"]')?.click(); return; }
   let url = '';
   try { url = (await navigator.clipboard.readText()).trim(); } catch { /* The prompt below remains available. */ }
   if (!/^(https?:\/\/|mailto:)/i.test(url)) url = window.prompt('Paste a web address for this link:', url) || '';
@@ -3331,6 +3483,7 @@ async function insertMarkdownLink() {
 
 function toggleMarkdownTask() {
   if (!documentState.isMarkdown) { showToast('Markdown tools are available for Markdown documents.', 'error'); return; }
+  if (viewMode === 'visual') { visualToolbar.querySelector<HTMLButtonElement>('[data-format="task"]')?.click(); return; }
   const target = activeEditor();
   const before = documentState.content.slice(0, target.selectionStart);
   const selected = documentState.content.slice(target.selectionStart, target.selectionEnd) || documentState.content.slice(before.lastIndexOf('\n') + 1, documentState.content.indexOf('\n', target.selectionStart) === -1 ? documentState.content.length : documentState.content.indexOf('\n', target.selectionStart));
@@ -3384,6 +3537,7 @@ async function printDocument() {
 }
 
 function toggleEditorSplit() {
+  if (viewMode === 'visual') setViewMode('edit');
   editorSplit = !editorSplit;
   if (editorSplit) {
     secondaryEditor.value = documentState.content;
@@ -3576,7 +3730,7 @@ function openQuickSwitcher() {
 
 function closeQuickSwitcher() {
   quickSwitcher.hidden = true;
-  if (!isMediaDocument(documentState)) editor.focus();
+  focusActiveEditor();
 }
 
 type PaletteCommand = { label: string; hint: string; run: () => void };
@@ -3602,6 +3756,10 @@ function paletteCommands(): PaletteCommand[] {
     { label: 'Open local timeline', hint: '', run: openTimeline },
     { label: 'Toggle Files sidebar', hint: '⇧⌘B', run: toggleSidebar },
     { label: 'Toggle Markdown preview', hint: '', run: togglePreview },
+    ...(documentState.isMarkdown && !isMediaDocument(documentState) ? [
+      { label: 'Markdown Source', hint: '', run: () => setViewMode('edit') },
+      { label: 'Edit formatted Markdown', hint: '', run: () => setViewMode('visual') },
+    ] : []),
     { label: 'Toggle editor split', hint: '', run: toggleEditorSplit },
     { label: 'Toggle Zen mode', hint: 'Esc', run: toggleZenMode },
     ...(documentState.isMarkdown && !isMediaDocument(documentState) ? [{ label: 'Focused reading mode', hint: '', run: toggleReadingMode }] : []),
@@ -3647,7 +3805,7 @@ function openCommandPalette() {
 
 function closeCommandPalette() {
   commandPalette.hidden = true;
-  editor.focus();
+  focusActiveEditor();
 }
 
 async function captureFingerprint(path: string) {
@@ -3885,6 +4043,7 @@ function handleAction(action?: string) {
     case 'mode-edit': setViewMode('edit'); break;
     case 'mode-split': setViewMode('split'); break;
     case 'mode-preview': setViewMode('preview'); break;
+    case 'mode-visual': setViewMode('visual'); break;
   }
 }
 
@@ -4065,8 +4224,16 @@ editorTabSizeSelect.addEventListener('change', () => { const size = Number(edito
 editorLineEndingSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, lineEnding: editorLineEndingSelect.value === 'crlf' ? 'crlf' : 'lf' }; saveEditorOptions(); showToast(`New saves will use ${editorOptions.lineEnding.toUpperCase()} line endings.`); });
 editorSpellLanguageSelect.addEventListener('change', () => { editorOptions = { ...editorOptions, spellLanguage: editorSpellLanguageSelect.value }; saveEditorOptions(); });
 folderFilter.addEventListener('input', () => { folderFilterValue = folderFilter.value; persistWorkbenchState(); renderProjectTree(); });
-findInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); findNext(); } if (event.key === 'Escape') { closeFind(); } });
-replaceInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.shiftKey ? replaceAll() : replaceOne(); } if (event.key === 'Escape') { closeFind(); } });
+findInput.addEventListener('input', () => visualEditor?.search.clear());
+for (const option of [findCase, findRegex]) option.addEventListener('change', () => visualEditor?.search.clear());
+findbar.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeFind();
+});
+findInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); findNext(); } });
+replaceInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.shiftKey ? replaceAll() : replaceOne(); } });
 commandPaletteInput.addEventListener('input', () => { commandSelection = 0; renderCommandPalette(); });
 commandPaletteInput.addEventListener('keydown', (event) => {
   const commands = paletteCommands().filter((command) => command.label.toLocaleLowerCase().includes(commandPaletteInput.value.trim().toLocaleLowerCase()));
@@ -4113,7 +4280,7 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && readingMode) { event.preventDefault(); toggleReadingMode(); return; }
   if (event.key === 'Escape' && zenMode) { event.preventDefault(); toggleZenMode(); return; }
-  if (!commandPalette.hidden) return;
+  if (!commandPalette.hidden || event.defaultPrevented || event.isComposing) return;
   const primary = event.metaKey || event.ctrlKey;
   if (!primary) return;
   const key = event.key.toLowerCase();
@@ -4135,6 +4302,7 @@ window.addEventListener('keydown', (event) => {
   else if (key === '1') { event.preventDefault(); setViewMode('edit'); }
   else if (key === '2') { event.preventDefault(); setViewMode('split'); }
   else if (key === '3') { event.preventDefault(); setViewMode('preview'); }
+  else if (key === '4') { event.preventDefault(); setViewMode('visual'); }
 });
 
 window.addEventListener('resize', () => {

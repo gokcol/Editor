@@ -142,6 +142,41 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     await writeFile(join(reportDir, 'Windows-smoke.json'), JSON.stringify(results, null, 2) + '\n');
   }
 }
+
+if (process.env.EDITOR_VERIFY_UPDATES === '1') {
+  const path = join(directory, 'Visual Markdown.md');
+  const source = '# Visual Markdown\n\nA **visual** smoke test.\n\n| Task | Status |\n| --- | --- |\n| Draft | Ready |\n';
+  await writeFile(path, source, 'utf8');
+  const session = await start('7TXT', [path], 9222);
+  const { page } = session;
+  try {
+    const sourceEditor = page.locator('textarea.editor:not(.editor-secondary)');
+    await eventually(async () => await sourceEditor.inputValue() === source, '7TXT Markdown file open');
+    await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit formatted Markdown' }).click();
+    const visual = page.getByRole('textbox', { name: 'Visual Markdown editor' });
+    await visual.waitFor({ state: 'visible' });
+    assert.equal(await sourceEditor.inputValue(), source, 'Entering the visual editor preserves the Markdown');
+    await visual.getByRole('cell', { name: 'Ready', exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Add row below', exact: true }).click();
+    assert.equal(await visual.getByRole('row').count(), 3);
+
+    await page.getByRole('button', { name: 'Find and replace', exact: true }).click();
+    await page.getByRole('searchbox', { name: 'Find in document' }).fill('visual smoke');
+    await page.getByRole('searchbox', { name: 'Replace with' }).fill('formatted');
+    await page.getByRole('button', { name: 'All', exact: true }).click();
+    assert.match(await visual.innerText(), /A formatted test\./);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await eventually(async () => (await readFile(path, 'utf8')).includes('A **formatted** test.'), '7TXT saved formatted edits to disk');
+    results.find(result => result.app === '7TXT').nativeVisualMarkdown = true;
+    await writeFile(join(reportDir, 'Windows-smoke.json'), JSON.stringify(results, null, 2) + '\n');
+  } catch (error) {
+    await page.screenshot({ path: join(reportDir, '7TXT-Visual-Markdown-failure.png') }).catch(() => {});
+    throw error;
+  } finally {
+    await stop(session);
+  }
+}
 console.log(JSON.stringify(results, null, 2));
 
 if (process.env.EDITOR_STORE_SCREENSHOTS === '1') {

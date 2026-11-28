@@ -22,6 +22,19 @@ Markdown outline, and the visible Markdown preview refresh after a 200 ms typing
 pause. Opening a panel, switching documents, or printing refreshes the relevant
 view immediately. Closed split panes do not keep a second copy of the text.
 
+Markdown tabs offer **Source**, **Split**, and **Preview**. Preview opens read-only.
+Select **Edit** in the preview header to edit the formatted document with an icon
+toolbar for headings, emphasis, links, lists, tasks, quotes, code, and tables.
+Select **Done** to return to reading. Switching modes leaves the Markdown source
+intact. Visual edits save as ordinary Markdown and share the tab's undo history.
+Visual editing uses Source as a fallback for unsupported syntax or files above
+3,000 lines or 200,000 characters.
+
+In visual editing, right-click a table or list item for its context commands,
+or press Shift+F10 at the caret. Click a link to edit its text or address, remove
+the link, or open a web or email address. Use the magnifying glass or Cmd/Ctrl+F
+to find and replace visible text while staying in the formatted editor.
+
 Use **Open → Open Recent**, **File → Open Recent**, or the command palette to
 reopen files from the same local history shown in the sidebar. Hover or click
 **Open** for Open File / Open Recent, and **New tab** for Text / Markdown.

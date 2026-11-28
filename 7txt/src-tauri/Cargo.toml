@@ -1,6 +1,6 @@
 [package]
 name = "seventxt"
-version = "1.0.3"
+version = "1.0.4"
 description = "A lightweight native text and Markdown editor for macOS."
 authors = ["Orhan Gökçöl"]
 license = "MIT"
