@@ -1,16 +1,13 @@
 7TXT 1.0.4 / MSIX 1.0.4.0 — Windows 11 x64 desktop application.
 
-No account or subscription is needed. No ads or in-app purchases. Core text editing works offline. The package uses Windows 11's system Evergreen WebView2 runtime; it does not download a prerequisite installer on first launch.
+No account or subscription is needed. No ads or in-app purchases. Core text editing works offline. The package uses Windows 11's system Evergreen WebView2 runtime.
 
-Restricted capability: runFullTrust. This is a Tauri/Rust desktop editor with a native WebView2 UI. It needs native file dialogs, opening/saving user-selected local documents, clipboard operations and local recovery. Processes run at the current user's privileges. No administrator elevation, startup task, background service, unvirtualizedResources capability or virtualization exclusions are requested.
+Restricted capability: runFullTrust. This Tauri/Rust desktop editor uses native file dialogs, user-selected local files, clipboard operations, and draft recovery. It runs at the current user's privileges with standard MSIX virtualization.
 
-The MSIX uses Windows' default app-data and registry virtualization. New app-private preferences, history and unsaved recovery can be removed on uninstall/reset; user-selected document files are separate. Windows may reuse pre-existing AppData from the direct-download edition; no forced migration or cleanup of that data is performed. The Store product is limited to Windows.Desktop, minimum 10.0.22000.0, x64. It does not change the default application for any file type.
+Launch from Start, open a UTF-8 text file, edit Unicode text, and use Ctrl+S. Restart with an unfinished draft to verify recovery. Open a Markdown file and choose Preview > Edit. Right-click a table cell to insert a row or right-click a list item to indent it. Click a link to edit it, or use Ctrl+F to replace a phrase. Click Done to return to reading and save. The Open link action uses the system handler for web and email addresses.
 
-Launch from Start, open a UTF-8 text file, edit Unicode text, and use Ctrl+S. Restart with an unfinished draft to verify recovery. Open a Markdown file, choose Preview > Edit, then right-click a table cell to insert a row. Use Ctrl+F to replace a phrase, click Done to return to reading, and save the Markdown. Clicking a web or email link in visual editing opens an action menu. Selecting Open link launches the system handler at the current user's privileges. Ask AI and native WebKit PNG/PDF export are macOS-only in this version.
+Ask AI and native WebKit PNG/PDF export are macOS-only in this version. For update checks, choose Help > Check for Updates. Store-signed installations check Microsoft Store, and optional daily checks are off by default. Update checks keep documents and file paths on the device.
 
-The unsigned upload uses this product's assigned Partner Center identity and the 7TXT 1.0.4 Windows release executable. Automated packaged-app checks cover activation, visual Markdown editing, Unicode saving, recovery after forced restart, and uninstall. Test signing uses a separate disposable identity.
+The upload uses the assigned Partner Center identity and the released 7TXT 1.0.4 Windows executable. Automated checks use a separate disposable package identity.
 
-Support: orhan.gokcol@hotmail.com
 Privacy: https://github.com/gokcol/Editor/blob/main/PRIVACY.md
-
-Use Help > Check for Updates or the command palette. Microsoft Store-signed packages query Microsoft Store services. Optional daily checks are off by default. Sideloaded or test-signed packages show Store guidance. Update checks keep documents and file paths on the device.

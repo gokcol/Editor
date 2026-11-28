@@ -1,5 +1,24 @@
 # 7TXT and Yedit Microsoft Store updates
 
+## 7TXT 1.0.4.0 — 28 November 2026
+
+[7TXT submission 3](https://partner.microsoft.com/en-us/dashboard/products/9PB1F4G8F3WH/overview)
+is **In certification**. Partner Center accepted and validated MSIX **1.0.4.0**
+under submission `1152921505702531964`. Publishing starts automatically after
+certification passes. The English listing describes Visual Markdown editing,
+and the certification notes cover native file access and the new link action.
+
+The upload uses the released 7TXT **1.0.4** Windows x64 executable, the existing
+Windows 11 package identity, and `runFullTrust`. The upload file is
+`7TXT-1.0.4.0-store-x64.msix` (4,723,612 bytes), with SHA-256
+`882da7995901dfcc474f7c40896e649b1f95d700f25145c4346ec61ba5849cb1`.
+
+[Packaging and validation run](https://github.com/gokcol/Editor/actions/runs/46129861618)
+`cf6a9a0` passed installation, Visual Markdown editing, Unicode saving, recovery,
+uninstall and independent package block verification. WACK passed overall with
+one optional Blocked executables finding for desktop process-launch references.
+The local package and validation reports are in `release/store-submission-1.0.4/`.
+
 ## Version 1.0.2.0 — 21 November 2026
 
 Version **1.0.2.0** packages prepared **21 November 2026**, using the released
