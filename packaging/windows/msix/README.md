@@ -1,7 +1,8 @@
 # Microsoft Store packages
 
-The Store editions use the released 7TXT and Yedit **1.0.2** Windows x64
-executables, packaged as **1.0.2.0**. They require **Windows 11 (22000+)** and
+The Store packages use the released Windows x64 executables for 7TXT **1.0.4**
+and Yedit **1.0.2**, with MSIX versions **1.0.4.0** and **1.0.2.0** respectively.
+They require **Windows 11 (22000+)** and
 use the system Evergreen WebView2 runtime. The separate GitHub NSIS installers
 continue to support Windows 10 and 11.
 
@@ -20,8 +21,8 @@ TEST-ONLY package or private signing material.
 
 ## Build and verification
 
-Run the manually dispatched `store-msix.yml` workflow. It verifies the v1.0.2
-installer hashes against the release manifest, extracts the installed release
+Run the manually dispatched `store-msix.yml` workflow and select the product to
+package. It verifies installer hashes against each release manifest, extracts the installed release
 executables, and packages them with the Windows SDK's MakePri and MakeAppx.
 `package-store-msix.ps1` checks the AMD64 PE, version, identity, payload hash,
 capabilities and unsigned state. `verify-store-msix.py` independently checks the

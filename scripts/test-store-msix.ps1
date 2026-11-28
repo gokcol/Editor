@@ -1,6 +1,9 @@
 # Install a signed disposable COPY under separate test identities. Never upload
 # the signed copy/private key or modify the real-identity unsigned Store artifact.
-param([string]$PackageDirectory = 'release/store/test', [string]$Reports = 'release/store/reports')
+param(
+    [string]$PackageDirectory = 'release/store/test', [string]$Reports = 'release/store/reports',
+    [ValidateSet('7TXT','Yedit')][string[]]$Apps = @('7TXT','Yedit')
+)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Disposable CI only.' }
@@ -24,7 +27,7 @@ try {
         -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}')
     Export-Certificate -Cert $cert -FilePath (Join-Path $work 'test.cer') | Out-Null
     Import-Certificate -FilePath (Join-Path $work 'test.cer') -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
-    foreach ($app in @('7TXT','Yedit')) {
+    foreach ($app in $Apps) {
         $bundle = if ($app -eq '7TXT') { 'com.gokcol.7txt' } else { 'com.yedit.desktop' }
         $shared = Join-Path $env:APPDATA $bundle
         New-Item -ItemType Directory -Force $shared | Out-Null
@@ -60,7 +63,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native packaged-app checks failed.' }
     $wackResults = @()
     $appcert = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/App Certification Kit/appcert.exe'
-    foreach ($app in @('7TXT','Yedit')) {
+    foreach ($app in $Apps) {
         $report = Join-Path ([IO.Path]::GetFullPath($Reports)) "$app-WACK.xml"
         $status = 'not-available-on-runner'; $exitCode = $null
         if (Test-Path $appcert) {

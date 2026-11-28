@@ -17,6 +17,8 @@ await mkdir(reportDir, { recursive: true });
 const results = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const installed = await readFile(join(reportDir, 'Windows-installation.json'), 'utf8').then(text => JSON.parse(text.replace(/^\uFEFF/, ''))).catch(() => []);
+const ports = { '7TXT': 9222, Yedit: 9223 };
+const apps = installed.length ? installed.map(entry => entry.app) : Object.keys(ports);
 const normalize = value => value.replaceAll('\u00a0', ' ');
 
 async function eventually(action, message, timeout = 45000) {
@@ -83,7 +85,7 @@ async function stop({ child, browser }) {
   await delay(700);
 }
 
-for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
+for (const app of apps) {
   const initial = 'Native Windows fixture — Türkçe ıİşğü\nSecond line\n';
   const saved = `Saved by ${app} on Windows — ıİşğü\nA new line\n`;
   const recovered = `Unsaved recovery in ${app} — ıİ\nKeep this draft\n`;
@@ -94,7 +96,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   let checkpoint;
   let session;
   try {
-    session = await start(app, [source], 9222 + index);
+    session = await start(app, [source], ports[app]);
     const { page } = session;
     if (process.env.EDITOR_VERIFY_UPDATES === '1' || process.env.EDITOR_VERIFY_STORE_UPDATES === '1') {
       const updateInfo = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('updates_info'));
@@ -128,7 +130,7 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
     assert.ok(!(await readFile(checkpoint, 'utf8')).includes('Recovery could not be saved'));
     await page.screenshot({ path: join(reportDir, `${app}-Windows-editing.png`) });
     await stop(session); session = undefined;
-    session = await start(app, [], 9222 + index);
+    session = await start(app, [], ports[app]);
     await eventually(async () => app === '7TXT'
       ? (await session.page.locator('textarea.editor:not(.editor-secondary)').inputValue()).includes('Keep this draft')
       : normalize(await session.page.locator('.monaco-editor .view-lines').first().innerText()).includes('Keep this draft'), `${app} recovery after crash`);
@@ -143,7 +145,9 @@ for (const [index, app] of ['7TXT', 'Yedit'].entries()) {
   }
 }
 
-if (process.env.EDITOR_VERIFY_UPDATES === '1') {
+const verifyVisualMarkdown = process.env.EDITOR_VERIFY_UPDATES === '1'
+  || process.env.EDITOR_VERIFY_STORE_UPDATES === '1';
+if (apps.includes('7TXT') && verifyVisualMarkdown) {
   const path = join(directory, 'Visual Markdown.md');
   const source = '# Visual Markdown\n\nA **visual** smoke test.\n\n| Task | Status |\n| --- | --- |\n| Draft | Ready |\n';
   await writeFile(path, source, 'utf8');
@@ -187,7 +191,7 @@ if (process.env.EDITOR_STORE_SCREENSHOTS === '1') {
     ['Yedit', '02-diagram', 'Workflow.mmd', 'flowchart TD\n  A[Collect ideas] --> B[Write a draft]\n  B --> C{Review complete?}\n  C -->|Yes| D[Save and share]\n  C -->|Revise| B\n'],
   ];
   const evidence = [];
-  for (const [app, label, filename, source] of fixtures) {
+  for (const [app, label, filename, source] of fixtures.filter(([app]) => apps.includes(app))) {
     const path = join(directory, filename); await writeFile(path, source);
     const session = await start(app, [path], app === '7TXT' ? 9222 : 9223);
     try {

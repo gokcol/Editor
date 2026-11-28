@@ -1,12 +1,20 @@
 name: Microsoft Store preparation
 on:
   workflow_dispatch:
+    inputs:
+      product:
+        description: Store product to package
+        type: choice
+        options: [both, 7TXT, Yedit]
+        default: both
 permissions:
   contents: read
 jobs:
   package:
     runs-on: windows-latest
     timeout-minutes: 40
+    env:
+      EDITOR_STORE_APPS: ${{ inputs.product == 'both' && '7TXT,Yedit' || inputs.product }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,14 +24,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v1.0.2 --repo gokcol/Editor --pattern '*_x64-setup.exe' --pattern 'RELEASE-VERIFICATION.json' --dir input
-          $manifest = Get-Content input/RELEASE-VERIFICATION.json -Raw | ConvertFrom-Json
-          foreach ($entry in $manifest.artifacts | Where-Object { $_.name -like '*.exe' }) {
-            if ((Get-FileHash "input/$($entry.name)").Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'Release installer checksum mismatch.' }
+          $products = Get-Content packaging/windows/msix/products.json -Raw | ConvertFrom-Json
+          New-Item -ItemType Directory -Force input | Out-Null
+          foreach ($app in ($env:EDITOR_STORE_APPS -split ',')) {
+            $version = $products.$app.packageVersion -replace '\.0$', ''
+            $name = "${app}_${version}_x64-setup.exe"
+            $download = "release/store/source/$app"
+            gh release download "v$version" --repo gokcol/Editor --pattern $name --pattern 'RELEASE-VERIFICATION.json' --dir $download
+            if ($LASTEXITCODE -ne 0) { throw "Download failed for $app $version." }
+            $manifest = Get-Content "$download/RELEASE-VERIFICATION.json" -Raw | ConvertFrom-Json
+            $entry = @($manifest.artifacts | Where-Object { $_.name -ceq $name })
+            $digest = (Get-FileHash "$download/$name").Hash.ToLowerInvariant()
+            if ($manifest.version -ne $version -or $entry.Count -ne 1 -or $digest -ne $entry[0].sha256) {
+              throw "Release installer checksum or version mismatch for $app."
+            }
+            Move-Item "$download/$name" input/
           }
       - name: Install source binaries and prepare unsigned MSIX files
         run: |
-          ./scripts/install-windows-packages.ps1 -Packages input -Reports release/store/source
+          ./scripts/install-windows-packages.ps1 -Packages input -Reports release/store/source -Apps ($env:EDITOR_STORE_APPS -split ',')
           $apps = Get-Content release/store/source/Windows-installation.json -Raw | ConvertFrom-Json
           foreach ($app in $apps) {
             ./scripts/package-store-msix.ps1 -App $app.app -Executable $app.executable
@@ -37,9 +56,9 @@ jobs:
         run: |
           npm install --prefix "$env:RUNNER_TEMP/editor-smoke" --no-save playwright@1.65.1
           if ($LASTEXITCODE -ne 0) { throw 'Playwright installation failed.' }
-          ./scripts/test-store-msix.ps1
+          ./scripts/test-store-msix.ps1 -Apps ($env:EDITOR_STORE_APPS -split ',')
       - name: Independently validate Store upload bytes and every block hash
-        run: python scripts/verify-store-msix.py release/store/packages
+        run: python scripts/verify-store-msix.py release/store/packages ($env:EDITOR_STORE_APPS -split ',')
       - uses: actions/upload-artifact@v4
         if: always()
         with:

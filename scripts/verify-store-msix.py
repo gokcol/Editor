@@ -10,9 +10,11 @@ import zipfile
 
 folder = Path(sys.argv[1])
 products = json.loads(Path('packaging/windows/msix/products.json').read_text(encoding='utf-8'))
+apps = sys.argv[2:] or list(products)
 ns = {'m': 'http://schemas.microsoft.com/appx/manifest/foundation/windows10'}
 reports = []
-for app, product in products.items():
+for app in apps:
+    product = products[app]
     package = folder / f"{app}-{product['packageVersion']}-store-x64.msix"
     info = json.loads(Path(str(package) + '.json').read_text(encoding='utf-8-sig'))
     digest = hashlib.file_digest(package.open('rb'), 'sha256').hexdigest()

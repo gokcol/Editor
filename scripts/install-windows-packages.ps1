@@ -1,9 +1,12 @@
-param([string]$Packages = 'release', [string]$Reports = 'release')
+param(
+    [string]$Packages = 'release', [string]$Reports = 'release',
+    [ValidateSet('7TXT','Yedit')][string[]]$Apps = @('7TXT','Yedit')
+)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This installer verification helper is for disposable GitHub Actions runners only.' }
 New-Item -ItemType Directory -Force $Reports | Out-Null
 $installed = @()
-foreach ($app in @('7TXT', 'Yedit')) {
+foreach ($app in $Apps) {
     $setups = @(Get-ChildItem -Path $Packages -Filter "${app}_*_x64-setup.exe")
     if ($setups.Count -ne 1) { throw "Expected one $app installer" }
     $process = Start-Process -FilePath $setups[0].FullName -ArgumentList '/S' -PassThru -Wait
